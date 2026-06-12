@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Werkstatt Digital · CRM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b0e14; --panel:#121723; --panel2:#1a2130; --line:#232c3f;
+  --text:#e8ecf4; --dim:#8a94a8; --accent:#4f8cff; --accent2:#7c5cff;
+  --green:#34d399; --yellow:#fbbf24; --orange:#fb923c; --red:#f87171; --pink:#f472b6;
+  --r:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif;font-size:15px;min-height:100vh}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,textarea{font-family:inherit;color:var(--text)}
+::placeholder{color:#5a6478}
+
+/* ---------- Login ---------- */
+#login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:100}
+#login .box{width:min(360px,90vw);text-align:center}
+#login h1{font-size:22px;font-weight:800;letter-spacing:-.5px;margin-bottom:6px}
+#login h1 span{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+#login p{color:var(--dim);font-size:13px;margin-bottom:22px}
+#login input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;font-size:16px;outline:none;text-align:center}
+#login input:focus{border-color:var(--accent)}
+#login button{width:100%;margin-top:12px;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:var(--r);padding:14px;font-weight:700;font-size:15px;color:#fff}
+#login .err{color:var(--red);font-size:13px;margin-top:12px;min-height:18px}
+
+/* ---------- Header ---------- */
+header{position:sticky;top:0;z-index:50;background:rgba(11,14,20,.85);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);padding:12px 16px}
+.hrow{display:flex;align-items:center;gap:12px;max-width:1300px;margin:0 auto}
+.logo{font-weight:800;font-size:15px;letter-spacing:-.3px;white-space:nowrap}
+.logo span{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+#search{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 14px;font-size:14px;outline:none;min-width:0}
+#search:focus{border-color:var(--accent)}
+.tabs{display:flex;gap:4px;max-width:1300px;margin:10px auto 0;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{padding:8px 16px;border-radius:10px;font-size:13.5px;font-weight:600;color:var(--dim);white-space:nowrap}
+.tab.on{background:var(--panel2);color:var(--text)}
+.tab .n{font-size:11px;opacity:.7;margin-left:4px}
+
+/* ---------- Layout ---------- */
+main{max-width:1300px;margin:0 auto;padding:16px}
+.sec-title{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--dim);margin:18px 0 10px}
+.empty{color:var(--dim);text-align:center;padding:60px 20px;font-size:14px;line-height:1.7}
+
+/* ---------- Cards ---------- */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:10px;cursor:pointer;transition:border-color .15s}
+.card:hover{border-color:#34405c}
+.card .top{display:flex;align-items:flex-start;gap:10px}
+.score{flex-shrink:0;width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px}
+.s-hi{background:rgba(52,211,153,.14);color:var(--green)}
+.s-mid{background:rgba(251,191,36,.13);color:var(--yellow)}
+.s-lo{background:rgba(138,148,168,.12);color:var(--dim)}
+.card .name{font-weight:600;font-size:14.5px;line-height:1.35}
+.card .sub{color:var(--dim);font-size:12.5px;margin-top:3px;line-height:1.5}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}
+.chip{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--panel2);color:var(--dim)}
+.chip.b143{background:rgba(124,92,255,.16);color:#a78bfa}
+.chip.warm{background:rgba(251,146,60,.15);color:var(--orange)}
+.callbtn{margin-left:auto;flex-shrink:0;background:rgba(52,211,153,.12);color:var(--green);border-radius:10px;padding:8px 13px;font-weight:700;font-size:13px;text-decoration:none;display:flex;align-items:center;gap:5px}
+
+/* ---------- Pipeline ---------- */
+#pipeline{display:flex;gap:12px;overflow-x:auto;padding-bottom:20px;align-items:flex-start;scroll-snap-type:x proximity}
+.col{min-width:270px;width:270px;flex-shrink:0;scroll-snap-align:start}
+.col h3{font-size:12.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;padding:8px 4px;display:flex;align-items:center;gap:7px;position:sticky;top:0}
+.col h3 .dot{width:8px;height:8px;border-radius:99px}
+.col h3 .cnt{color:var(--dim);font-weight:600;margin-left:auto}
+.col .cards{min-height:40px}
+.col .card{padding:12px}
+
+/* ---------- Modal ---------- */
+#overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:none}
+#modal{position:fixed;z-index:70;inset:auto 0 0 0;max-height:92vh;background:var(--panel);border-radius:20px 20px 0 0;border:1px solid var(--line);overflow-y:auto;display:none;overscroll-behavior:contain}
+@media(min-width:760px){#modal{inset:4vh 0 auto 0;margin:0 auto;width:min(680px,94vw);border-radius:20px;max-height:88vh}}
+#modal .inner{padding:22px 20px 40px}
+#modal .close{position:absolute;top:14px;right:14px;background:var(--panel2);border-radius:99px;width:34px;height:34px;font-size:16px;color:var(--dim)}
+#modal h2{font-size:19px;font-weight:800;letter-spacing:-.3px;line-height:1.3;padding-right:44px}
+#modal .meta{color:var(--dim);font-size:13px;margin-top:5px;line-height:1.6}
+.statusrow{display:flex;flex-wrap:wrap;gap:6px;margin:16px 0}
+.statusbtn{padding:8px 14px;border-radius:10px;font-size:13px;font-weight:700;background:var(--panel2);color:var(--dim);border:1px solid transparent}
+.statusbtn.on{color:#fff;border-color:currentColor}
+.fieldgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:14px 0}
+@media(max-width:520px){.fieldgrid{grid-template-columns:1fr}}
+.fieldgrid label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);display:block;margin-bottom:4px}
+.fieldgrid input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;outline:none}
+.fieldgrid input:focus{border-color:var(--accent)}
+.actions{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}
+.abtn{flex:1;min-width:130px;text-align:center;padding:12px;border-radius:11px;font-weight:700;font-size:13.5px;text-decoration:none}
+.abtn.call{background:rgba(52,211,153,.13);color:var(--green)}
+.abtn.mail{background:rgba(79,140,255,.13);color:var(--accent)}
+.abtn.save{background:var(--panel2);color:var(--text)}
+.notes{margin-top:16px}
+.note{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:7px;line-height:1.55}
+.note .d{color:var(--dim);font-size:11px;font-weight:700;margin-bottom:2px}
+.addnote{display:flex;gap:8px;margin-top:10px}
+.addnote input{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 13px;font-size:14px;outline:none}
+.addnote input:focus{border-color:var(--accent)}
+.addnote button{background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:10px;padding:0 18px;font-weight:700;color:#fff}
+details.mailtpl{margin-top:18px;background:var(--bg);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+details.mailtpl summary{padding:13px 14px;font-weight:700;font-size:13.5px;cursor:pointer;color:var(--accent);list-style:none}
+details.mailtpl pre{white-space:pre-wrap;font-family:inherit;font-size:13px;line-height:1.6;padding:0 14px 14px;color:var(--dim)}
+.copybtn{margin:0 14px 14px;background:var(--panel2);border-radius:9px;padding:9px 16px;font-weight:700;font-size:13px}
+
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px 22px;font-weight:600;font-size:14px;z-index:90;display:none}
+#whoami{color:var(--dim);font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer}
+.spin{display:inline-block;width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:99px;animation:sp 1s linear infinite;vertical-align:-3px}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="box">
+    <h1>WERKSTATT <span>DIGITAL</span></h1>
+    <p>Team-CRM · 154 Werkstätten · live geteilt</p>
+    <input id="tokenInput" type="password" placeholder="Team-Schlüssel (github_pat_…)" autocomplete="current-password">
+    <input id="nameInput" type="text" placeholder="Dein Name (z.B. Murat oder Eris)" style="margin-top:10px">
+    <button onclick="doLogin()">Rein</button>
+    <div class="err" id="loginErr"></div>
+  </div>
+</div>
+
+<header style="display:none" id="hdr">
+  <div class="hrow">
+    <div class="logo">W<span>D</span> CRM</div>
+    <input id="search" placeholder="Suchen: Name, Ort, Produkt …" oninput="render()">
+    <div id="whoami" onclick="logout()" title="Klick zum Abmelden"></div>
+  </div>
+  <div class="tabs">
+    <button class="tab on" data-v="heute" onclick="setView('heute',this)">📞 Heute<span class="n" id="n-heute"></span></button>
+    <button class="tab" data-v="pipeline" onclick="setView('pipeline',this)">Pipeline</button>
+    <button class="tab" data-v="liste" onclick="setView('liste',this)">Liste<span class="n" id="n-liste"></span></button>
+  </div>
+</header>
+
+<main id="main" style="display:none"></main>
+
+<div id="overlay" onclick="closeModal()"></div>
+<div id="modal"></div>
+<div id="toast"></div>
+
+<script>
+const STATI = [
+  {k:"offen",     l:"Offen",     c:"#8a94a8"},
+  {k:"mail",      l:"Mail raus", c:"#4f8cff"},
+  {k:"call",      l:"Angerufen", c:"#7c5cff"},
+  {k:"gespraech", l:"Gespräch",  c:"#fbbf24"},
+  {k:"angebot",   l:"Angebot",   c:"#fb923c"},
+  {k:"pilot",     l:"PILOT 🎉",  c:"#34d399"},
+  {k:"tot",       l:"Tot",       c:"#f87171"},
+];
+const SC = Object.fromEntries(STATI.map(s=>[s.k,s]));
+let LEADS = [], VIEW = "heute";
+
+const token = () => localStorage.getItem("crm_token") || "";
+const wer   = () => localStorage.getItem("crm_name") || "";
+
+/* Daten liegen in einem privaten GitHub-Repo (leads.json). Login = Fine-grained PAT
+   mit Contents-Schreibrecht NUR auf dieses eine Repo. */
+const OWNER = "muratbhh222-hub", REPO = "werkstatt-crm-data", FILE = "leads.json";
+const GH = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${FILE}`;
+let SHA = null;
+
+const ghHeaders = () => ({ authorization: "Bearer " + token(), accept: "application/vnd.github+json" });
+
+function b64decode(b64) {
+  const bin = atob(b64.replace(/\n/g, ""));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+function b64encode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(bin);
+}
+
+async function loadLeads() {
+  const res = await fetch(GH + "?t=" + Date.now(), { headers: ghHeaders() });
+  if (res.status === 401) { logout(); throw new Error("auth"); }
+  if (!res.ok) throw new Error("api " + res.status);
+  const j = await res.json();
+  SHA = j.sha;
+  return JSON.parse(b64decode(j.content));
+}
+
+const heuteStr = () => new Date().toISOString().slice(0, 10);
+
+function applyUpd(lead, upd) {
+  const STATKEYS = STATI.map(s => s.k);
+  if (upd.status && STATKEYS.includes(upd.status) && upd.status !== lead.status) {
+    lead.status = upd.status;
+    lead.notizen = (lead.notizen ? lead.notizen + " | " : "") + `${heuteStr()}: → ${upd.status}` + (upd.wer ? ` (${upd.wer})` : "");
+  }
+  if (upd.note) {
+    lead.notizen = (lead.notizen ? lead.notizen + " | " : "") + `${heuteStr()}: ${upd.note}` + (upd.wer ? ` (${upd.wer})` : "");
+  }
+  for (const k of ["telefon", "email", "website", "ansprechpartner"]) {
+    if (typeof upd[k] === "string") lead[k] = upd[k];
+  }
+  lead.updated = new Date().toISOString();
+}
+
+async function updateLead(upd) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const leads = await loadLeads();          // immer frischesten Stand + SHA holen
+    const lead = leads.find(l => String(l.id) === String(upd.id));
+    if (!lead) throw new Error("lead not found");
+    applyUpd(lead, upd);
+    const res = await fetch(GH, {
+      method: "PUT", headers: ghHeaders(),
+      body: JSON.stringify({
+        message: `CRM: #${upd.id} ${lead.name}`.slice(0, 70) + (upd.wer ? ` (${upd.wer})` : ""),
+        content: b64encode(JSON.stringify(leads)),
+        sha: SHA,
+      }),
+    });
+    if (res.ok) { LEADS = leads; return lead; }
+    if (res.status !== 409 && res.status !== 422) throw new Error("api " + res.status);
+    // Konflikt (jemand anders hat gleichzeitig gespeichert) -> neu laden + nochmal
+  }
+  throw new Error("conflict");
+}
+
+async function doLogin() {
+  const t = document.getElementById("tokenInput").value.trim();
+  const n = document.getElementById("nameInput").value.trim();
+  if (!t || !n) { document.getElementById("loginErr").textContent = "Passwort und Name eingeben"; return; }
+  localStorage.setItem("crm_token", t);
+  localStorage.setItem("crm_name", n);
+  document.getElementById("loginErr").innerHTML = '<span class="spin"></span>';
+  try { await boot(); }
+  catch(e) {
+    localStorage.removeItem("crm_token");
+    document.getElementById("loginErr").textContent = "Falsches Passwort oder keine Verbindung";
+  }
+}
+
+function logout() {
+  localStorage.removeItem("crm_token");
+  location.reload();
+}
+
+async function boot() {
+  LEADS = await loadLeads();
+  document.getElementById("login").style.display = "none";
+  document.getElementById("hdr").style.display = "";
+  document.getElementById("main").style.display = "";
+  document.getElementById("whoami").textContent = wer() + " ·  abmelden";
+  render();
+}
+
+/* ---------- Helpers ---------- */
+const esc = s => String(s||"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const scoreCls = s => s >= 65 ? "s-hi" : s >= 45 ? "s-mid" : "s-lo";
+const is143 = l => /blind|sehbehindert/i.test(l.name + " " + (l.gruende||""));
+const telHref = t => "tel:" + String(t||"").replace(/[^+\d]/g,"");
+
+function lastDate(l) {
+  const m = String(l.notizen||"").match(/\d{4}-\d{2}-\d{2}/g);
+  return m ? m[m.length-1] : null;
+}
+function daysSince(d) {
+  return Math.floor((Date.now() - new Date(d).getTime()) / 864e5);
+}
+function warmDue(l) {
+  if (l.status !== "mail") return false;
+  const d = lastDate(l);
+  return d && daysSince(d) >= 2;
+}
+function query() { return document.getElementById("search").value.trim().toLowerCase(); }
+function filtered() {
+  const q = query();
+  if (!q) return LEADS;
+  return LEADS.filter(l => (l.name+" "+l.ort+" "+l.produkte+" "+l.bundesland+" "+l.notizen).toLowerCase().includes(q));
+}
+
+/* ---------- Card ---------- */
+function cardHTML(l, extra="") {
+  const tel = l.telefon ? `<a class="callbtn" href="${telHref(l.telefon)}" onclick="event.stopPropagation()">📞</a>` : "";
+  return `<div class="card" onclick="openModal(${l.id})">
+    <div class="top">
+      <div class="score ${scoreCls(l.score)}">${l.score}</div>
+      <div style="min-width:0">
+        <div class="name">${esc(l.name)}</div>
+        <div class="sub">${esc(l.ort||"Ort unbekannt")}${l.bundesland?" · "+esc(l.bundesland):""}</div>
+      </div>
+      ${tel}
+    </div>
+    <div class="chips">
+      ${is143(l) ? '<span class="chip b143">§143 legal</span>' : ""}
+      ${extra}
+      ${(l.produkte||"").split(",").filter(Boolean).slice(0,3).map(p=>`<span class="chip">${esc(p.trim())}</span>`).join("")}
+    </div>
+  </div>`;
+}
+
+/* ---------- Views ---------- */
+function setView(v, btn) {
+  VIEW = v;
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t===btn));
+  render();
+}
+
+function render() {
+  const main = document.getElementById("main");
+  const ls = filtered();
+  document.getElementById("n-liste").textContent = "(" + ls.length + ")";
+  const due = LEADS.filter(warmDue);
+  document.getElementById("n-heute").textContent = due.length ? "(" + due.length + ")" : "";
+
+  if (VIEW === "heute") {
+    const dueF = ls.filter(warmDue);
+    const aktiv = ls.filter(l => ["gespraech","angebot"].includes(l.status));
+    const calls = ls.filter(l => l.status === "call");
+    let h = "";
+    h += `<div class="sec-title">🔥 Warm Calls fällig (Mail ≥ 2 Tage raus)</div>`;
+    h += dueF.length ? dueF.map(l=>cardHTML(l,'<span class="chip warm">JETZT ANRUFEN</span>')).join("")
+                     : `<div class="empty">Nichts fällig. Neue Mails raus → Tab "Liste", beste zuerst.</div>`;
+    if (calls.length) { h += `<div class="sec-title">☎️ Angerufen, dranbleiben</div>`; h += calls.map(l=>cardHTML(l)).join(""); }
+    if (aktiv.length) { h += `<div class="sec-title">💬 Gespräche & Angebote (nachfassen)</div>`; h += aktiv.map(l=>cardHTML(l)).join(""); }
+    main.innerHTML = h;
+  }
+
+  if (VIEW === "pipeline") {
+    main.innerHTML = `<div id="pipeline">` + STATI.map(s => {
+      const col = ls.filter(l=>l.status===s.k);
+      return `<div class="col">
+        <h3><span class="dot" style="background:${s.c}"></span>${s.l}<span class="cnt">${col.length}</span></h3>
+        <div class="cards">${col.map(l=>cardHTML(l)).join("")}</div>
+      </div>`;
+    }).join("") + `</div>`;
+  }
+
+  if (VIEW === "liste") {
+    main.innerHTML = ls.map(l=>cardHTML(l, `<span class="chip" style="color:${SC[l.status].c}">${SC[l.status].l}</span>`)).join("")
+      || `<div class="empty">Nichts gefunden.</div>`;
+  }
+}
+
+/* ---------- Modal ---------- */
+function mailTemplate(l) {
+  const prods = (l.produkte||"Handwerksprodukte").split(",").map(s=>s.trim()).filter(Boolean);
+  const pk = prods[0] || "Produkte";
+  const ps = prods.length > 1 ? prods.slice(0,3).join(", ") + " und " + prods[Math.min(prods.length-1,3)] : pk;
+  const ort = l.ort && l.ort !== "?" ? "in " + l.ort : "in Ihrer Werkstatt";
+  const blind = is143(l) ? "\n\nEin Punkt, der speziell für Ihre Werkstatt gilt: Die aktive Ansprache von Unternehmen ist für Blindenwaren rechtlich ausdrücklich zulässig (§ 143 SGB IX). Diesen Kanal nutzt für Sie aktuell niemand." : "";
+  return `Betreff: Firmenkunden für Ihre ${pk} – kurze Idee für ${l.name}
+
+Guten Tag,
+
+ich habe gesehen, dass Sie ${ort} ${ps} in richtig guter Qualität herstellen. Was mir aufgefallen ist: an Firmenkunden verkaufen Sie das aktuell kaum aktiv, obwohl genau dort gerade viel Nachfrage nach nachhaltigen Geschenken aus Werkstätten besteht.
+
+Wir bei Werkstatt Digital bauen und betreiben genau diesen Firmenvertrieb für Werkstätten: eine verkaufsstarke Produktseite, aktive Ansprache von Unternehmen und sauberes Nachfassen. Sie produzieren, wir bringen die Anfragen. Kein Risiko und kein Aufwand für Ihr Team.${blind}
+
+Hätten Sie diese Woche 15 Minuten, damit ich kurz zeige, wie das für ${l.name} aussehen könnte?
+
+Beste Grüße
+Murat Bahce – Werkstatt Digital
+muratbhh222@gmail.com`;
+}
+
+function notesHTML(l) {
+  const parts = String(l.notizen||"").split(" | ").filter(Boolean).reverse();
+  if (!parts.length) return `<div class="note" style="color:var(--dim)">Noch keine Notizen.</div>`;
+  return parts.map(p => {
+    const m = p.match(/^(\d{4}-\d{2}-\d{2}):\s*(.*)$/s);
+    return m ? `<div class="note"><div class="d">${m[1]}</div>${esc(m[2])}</div>`
+             : `<div class="note">${esc(p)}</div>`;
+  }).join("");
+}
+
+function openModal(id) {
+  const l = LEADS.find(x=>x.id===id); if (!l) return;
+  const modal = document.getElementById("modal");
+  modal.innerHTML = `<div class="inner">
+    <button class="close" onclick="closeModal()">✕</button>
+    <h2>${esc(l.name)}</h2>
+    <div class="meta">
+      Score <b style="color:var(--text)">${l.score}</b>
+      ${l.ort ? " · " + esc(l.ort) : ""}${l.plz ? " (" + esc(l.plz) + ")" : ""}${l.bundesland ? " · " + esc(l.bundesland) : ""}
+      ${is143(l) ? ' · <span style="color:#a78bfa;font-weight:700">§143 legale Kaltakquise</span>' : ""}
+      <br>${esc(l.gruende||"")}
+      ${l.entia_url ? `<br><a href="${esc(l.entia_url)}" target="_blank" style="color:var(--accent)">entia-Seite ansehen ↗</a>` : ""}
+    </div>
+
+    <div class="statusrow">${STATI.map(s =>
+      `<button class="statusbtn ${l.status===s.k?"on":""}" style="${l.status===s.k?`background:${s.c}22;color:${s.c}`:""}"
+        onclick="setStatus(${l.id},'${s.k}')">${s.l}</button>`).join("")}
+    </div>
+
+    <div class="actions">
+      ${l.telefon ? `<a class="abtn call" href="${telHref(l.telefon)}">📞 ${esc(l.telefon)}</a>` : ""}
+      ${l.email ? `<a class="abtn mail" href="mailto:${esc(l.email)}">✉️ Mail</a>` : ""}
+      ${l.website ? `<a class="abtn save" target="_blank" href="${esc(l.website)}">🌐 Website</a>` : ""}
+    </div>
+
+    <div class="fieldgrid">
+      <div><label>Telefon</label><input id="f-telefon" value="${esc(l.telefon)}" placeholder="0731 …"></div>
+      <div><label>Email</label><input id="f-email" value="${esc(l.email)}" placeholder="info@…"></div>
+      <div><label>Ansprechpartner</label><input id="f-ansprechpartner" value="${esc(l.ansprechpartner)}" placeholder="Frau/Herr …"></div>
+      <div><label>Website</label><input id="f-website" value="${esc(l.website)}" placeholder="https://…"></div>
+    </div>
+    <button class="abtn save" style="width:100%" onclick="saveKontakt(${l.id})">Kontaktdaten speichern</button>
+
+    <div class="notes">
+      <div class="sec-title" style="margin-top:18px">Verlauf</div>
+      <div id="noteslist">${notesHTML(l)}</div>
+      <div class="addnote">
+        <input id="newnote" placeholder="Notiz … (z.B. 'AB besprochen, will Demo')" onkeydown="if(event.key==='Enter')addNote(${l.id})">
+        <button onclick="addNote(${l.id})">+</button>
+      </div>
+    </div>
+
+    <details class="mailtpl">
+      <summary>✉️ Fertige Outreach-Mail anzeigen</summary>
+      <pre id="mailtext">${esc(mailTemplate(l))}</pre>
+      <button class="copybtn" onclick="copyMail()">Mail kopieren</button>
+    </details>
+  </div>`;
+  document.getElementById("overlay").style.display = "block";
+  modal.style.display = "block";
+}
+
+function closeModal() {
+  document.getElementById("overlay").style.display = "none";
+  document.getElementById("modal").style.display = "none";
+}
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(t._h); t._h = setTimeout(()=>t.style.display="none", 1800);
+}
+
+async function setStatus(id, status) {
+  try {
+    await updateLead({id, status, wer: wer()});
+    toast("Status: " + SC[status].l);
+    openModal(id); render();
+  } catch(e) { toast("Fehler beim Speichern"); }
+}
+
+async function addNote(id) {
+  const inp = document.getElementById("newnote");
+  const note = inp.value.trim(); if (!note) return;
+  try {
+    await updateLead({id, note, wer: wer()});
+    openModal(id); render();
+  } catch(e) { toast("Fehler beim Speichern"); }
+}
+
+async function saveKontakt(id) {
+  const body = {id, wer: wer()};
+  for (const k of ["telefon","email","ansprechpartner","website"])
+    body[k] = document.getElementById("f-"+k).value.trim();
+  try {
+    await updateLead(body);
+    toast("Gespeichert"); render();
+  } catch(e) { toast("Fehler beim Speichern"); }
+}
+
+function copyMail() {
+  navigator.clipboard.writeText(document.getElementById("mailtext").textContent)
+    .then(()=>toast("Mail kopiert — Ansprechpartner checken, dann senden"));
+}
+
+/* ---------- Start ---------- */
+if (token() && wer()) boot().catch(()=>{ /* zeigt Login */ });
+setInterval(async () => {   // alle 60s frisch ziehen, damit beide live arbeiten
+  if (!token() || document.getElementById("modal").style.display === "block") return;
+  try { LEADS = await loadLeads(); render(); } catch(e){}
+}, 60000);
+</script>
+</body>
+</html>
