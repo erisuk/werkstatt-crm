@@ -107,6 +107,33 @@ details.mailtpl pre{white-space:pre-wrap;font-family:inherit;font-size:13px;line
 .copybtn{margin:0 14px 14px;background:var(--panel2);border-radius:9px;padding:9px 16px;font-weight:700;font-size:13px}
 
 #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px 22px;font-weight:600;font-size:14px;z-index:90;display:none}
+
+/* ---------- Call-Modus ---------- */
+#callmode{position:fixed;inset:0;background:var(--bg);z-index:80;display:none;overflow-y:auto}
+#callmode .cm-inner{max-width:640px;margin:0 auto;padding:18px 16px 60px}
+.cm-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+.cm-count{font-weight:800;font-size:14px;color:var(--dim)}
+.cm-count b{color:var(--text)}
+.cm-exit{background:var(--panel2);border-radius:10px;padding:9px 16px;font-weight:700;font-size:13px;color:var(--dim)}
+.cm-card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px}
+.cm-name{font-size:22px;font-weight:800;letter-spacing:-.4px;line-height:1.25}
+.cm-sub{color:var(--dim);font-size:14px;margin-top:6px;line-height:1.6}
+.cm-tel{display:block;text-align:center;background:linear-gradient(90deg,#16a34a,#34d399);color:#fff;border-radius:14px;padding:18px;font-size:20px;font-weight:800;text-decoration:none;margin:18px 0 10px}
+.cm-log{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.cm-log button{padding:14px;border-radius:12px;font-weight:700;font-size:14px;background:var(--panel2)}
+.cm-log .b-no{color:var(--red)}.cm-log .b-ab{color:var(--yellow)}
+.cm-log .b-talk{color:var(--accent)}.cm-log .b-win{background:rgba(52,211,153,.15);color:var(--green)}
+.cm-skip{width:100%;margin-top:8px;padding:11px;border-radius:11px;color:var(--dim);font-weight:700;background:var(--panel)}
+.cm-note{width:100%;margin-top:10px;background:var(--bg);border:1px solid var(--line);border-radius:11px;padding:11px 13px;font-size:14px;outline:none}
+details.cm-script{margin-top:14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+details.cm-script summary{padding:14px;font-weight:800;font-size:14px;cursor:pointer;color:var(--yellow);list-style:none}
+details.cm-script .s-body{padding:0 16px 16px;font-size:13.5px;line-height:1.75;color:var(--dim)}
+details.cm-script .s-body b{color:var(--text)}
+details.cm-script .s-body .q{color:var(--text);font-weight:600}
+.cm-done{text-align:center;padding:80px 20px}
+.cm-done .big{font-size:48px}
+.cm-done h2{font-size:20px;font-weight:800;margin:14px 0 8px}
+.cm-done p{color:var(--dim);font-size:14px;line-height:1.7}
 #whoami{color:var(--dim);font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer}
 .spin{display:inline-block;width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:99px;animation:sp 1s linear infinite;vertical-align:-3px}
 @keyframes sp{to{transform:rotate(360deg)}}
@@ -136,6 +163,7 @@ details.mailtpl pre{white-space:pre-wrap;font-family:inherit;font-size:13px;line
     <button class="tab" data-v="pipeline" onclick="setView('pipeline',this)">Pipeline</button>
     <button class="tab" data-v="liste" onclick="setView('liste',this)">Liste<span class="n" id="n-liste"></span></button>
     <button class="tab" data-v="team" onclick="setView('team',this)">👥 Team</button>
+    <button class="tab" style="color:var(--green);font-weight:800" onclick="startCallMode()">▶ Call-Modus</button>
   </div>
 </header>
 
@@ -143,6 +171,7 @@ details.mailtpl pre{white-space:pre-wrap;font-family:inherit;font-size:13px;line
 
 <div id="overlay" onclick="closeModal()"></div>
 <div id="modal"></div>
+<div id="callmode"></div>
 <div id="toast"></div>
 
 <script>
@@ -382,6 +411,21 @@ function render() {
         <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase">${s.l}</div></div>`;
     }).join("");
     let h = `<div class="sec-title">📊 Pipeline-Stand</div><div style="display:flex;gap:8px;flex-wrap:wrap">${statRow}</div>`;
+    /* Pipedrive-Prinzip: Pipeline in Euro denken. Angebot = 800€ Setup + 3 Mon. × 600€ */
+    const nAngebot = LEADS.filter(l=>l.status==="angebot").length;
+    const nPilot = LEADS.filter(l=>l.status==="pilot").length;
+    const ohneWV = LEADS.filter(l=>["mail","call","gespraech","angebot"].includes(l.status) && !l.wiedervorlage).length;
+    h += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <div style="flex:1;min-width:160px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px">
+        <div style="font-size:20px;font-weight:800;color:var(--orange)">${(nAngebot*2600).toLocaleString("de-DE")} €</div>
+        <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase">Offene Angebote (Wert)</div></div>
+      <div style="flex:1;min-width:160px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px">
+        <div style="font-size:20px;font-weight:800;color:var(--green)">${(nPilot*7200).toLocaleString("de-DE")} €</div>
+        <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase">Gewonnen (Jahres-Run-Rate)</div></div>
+      ${ohneWV ? `<div style="flex:1;min-width:160px;background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.3);border-radius:12px;padding:14px">
+        <div style="font-size:20px;font-weight:800;color:var(--red)">${ohneWV}</div>
+        <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase">Aktive Leads OHNE nächsten Schritt!</div></div>` : ""}
+    </div>`;
     h += `<div class="sec-title">🏆 Leaderboard</div>`;
     h += board.length ? board.map(([name,c],i) =>
       `<div class="card" style="cursor:default"><div class="top">
@@ -544,13 +588,122 @@ async function saveKontakt(id) {
   } catch(e) { toast("Fehler beim Speichern"); }
 }
 
+const plusTage = n => new Date(Date.now() + n*864e5).toISOString().slice(0,10);
+/* noCRM-Prinzip: kein Kontakt ohne nächsten Schritt — Auto-Wiedervorlage pro Ergebnis */
+const LOG_WV = { "Nicht erreicht": 1, "AB, Nachricht hinterlassen": 2, "Gespräch geführt": 3, "Termin vereinbart!": 1 };
+
 async function quickLog(id, text, status) {
   try {
     const body = {id, note: "📞 " + text, wer: wer()};
     if (status) body.status = status;
+    if (LOG_WV[text]) body.wiedervorlage = plusTage(LOG_WV[text]);
     await updateLead(body);
-    toast("Protokolliert: " + text);
+    toast("Protokolliert: " + text + (LOG_WV[text] ? " · WV " + body.wiedervorlage : ""));
     openModal(id); render();
+  } catch(e) { toast("Fehler beim Speichern"); }
+}
+
+/* ---------- Call-Modus (Close-Prinzip: im Fluss bleiben) ---------- */
+let CM_QUEUE = [], CM_IDX = 0, CM_DONE = 0;
+
+function buildQueue() {
+  const me = wer(), seen = new Set(), q = [];
+  const add = l => { if (!seen.has(l.id)) { seen.add(l.id); q.push(l); } };
+  LEADS.filter(l => wvDue(l) && l.zustaendig === me).forEach(add);
+  LEADS.filter(wvDue).forEach(add);
+  LEADS.filter(warmDue).forEach(add);
+  LEADS.filter(l => l.status === "call").forEach(add);
+  // §143-Blindenwerkstätten mit Nummer dürfen legal kalt angerufen werden
+  LEADS.filter(l => l.status === "offen" && l.telefon && is143(l)).forEach(add);
+  return q.slice(0, 30);
+}
+
+function startCallMode() {
+  CM_QUEUE = buildQueue(); CM_IDX = 0; CM_DONE = 0;
+  document.getElementById("callmode").style.display = "block";
+  renderCallMode();
+}
+function exitCallMode() {
+  document.getElementById("callmode").style.display = "none";
+  render();
+}
+
+const SKRIPT = `
+<b>Einstieg:</b><br>
+<span class="q">"Guten Tag, mein Name ist [DEIN NAME], ich rufe für Werkstatt Digital an. Wir entwickeln B2B-Vertriebskanäle speziell für Werkstätten. Hätten Sie kurz 5 Minuten?"</span><br><br>
+<b>Die 5 Fragen (Ziel: verstehen, nicht verkaufen):</b><br>
+<span class="q">1.</span> Wie läuft Ihr Verkauf an Firmenkunden aktuell ab?<br>
+<span class="q">2.</span> Hatten Sie Anfragen von Firmen, die Sie nicht bedienen konnten?<br>
+<span class="q">3.</span> Wer entscheidet bei Ihnen über neue Kooperationen?<br>
+<span class="q">4.</span> Was produzieren Sie am meisten, was hat die längste Lieferzeit?<br>
+<span class="q">5.</span> Könnten Sie 50-100 Boxen/Monat außerhalb Weihnachten liefern?<br><br>
+<b>Einwand "Wir haben schon entia":</b><br>
+<span class="q">"entia holt Ihnen Privatkunden, die 2-3 Kerzen kaufen. Ich hole Ihnen Firmen, die 200 Boxen bestellen. Unterschiedliche Kanäle, kein Widerspruch."</span><br><br>
+<b>Einwand "Keine Zeit":</b> <span class="q">"Verstehe ich, deshalb nur eine Frage: Hatten Sie schon mal eine Firmenanfrage, die liegen geblieben ist?"</span><br><br>
+<b>Ziel des Calls: 15-Minuten-Termin. NICHT verkaufen.</b><br>
+⚠️ Ausgleichsabgabe NIE als Argument (abgeschafft).`;
+
+function renderCallMode() {
+  const cm = document.getElementById("callmode");
+  if (CM_IDX >= CM_QUEUE.length) {
+    cm.innerHTML = `<div class="cm-inner"><div class="cm-done">
+      <div class="big">🏁</div><h2>Queue leer. ${CM_DONE} Anrufe geloggt.</h2>
+      <p>Stark. Neue Leads in den Topf: Tab "Liste", Mails raus,<br>in 2 Tagen füllt sich die Queue von selbst.</p>
+      <button class="cm-exit" style="margin-top:20px" onclick="exitCallMode()">Zurück zum CRM</button>
+    </div></div>`;
+    return;
+  }
+  const l = CM_QUEUE[CM_IDX];
+  const grund = wvDue(l) ? "⏰ Wiedervorlage fällig" : warmDue(l) ? "🔥 Warm Call (Mail ist raus)" :
+                l.status === "call" ? "☎️ Dranbleiben" : "§143: legaler Kaltanruf";
+  const letzteNotiz = String(l.notizen||"").split(" | ").filter(Boolean).slice(-2);
+  cm.innerHTML = `<div class="cm-inner">
+    <div class="cm-top">
+      <div class="cm-count">Lead <b>${CM_IDX+1}</b> / ${CM_QUEUE.length} · Geloggt heute: <b>${CM_DONE}</b></div>
+      <button class="cm-exit" onclick="exitCallMode()">✕ Beenden</button>
+    </div>
+    <div class="cm-card">
+      <div class="chips" style="margin:0 0 10px">
+        <span class="chip warm">${grund}</span>
+        ${is143(l) ? '<span class="chip b143">§143 legal</span>' : ""}
+        <span class="chip">Score ${l.score}</span>
+      </div>
+      <div class="cm-name">${esc(l.name)}</div>
+      <div class="cm-sub">
+        ${esc(l.ort||"Ort unbekannt")}${l.bundesland ? " · " + esc(l.bundesland) : ""}<br>
+        ${l.produkte ? "🛍 " + esc(l.produkte) : ""}
+        ${l.ansprechpartner ? "<br>👤 " + esc(l.ansprechpartner) : ""}
+        ${letzteNotiz.length ? "<br><br>📝 " + letzteNotiz.map(esc).join("<br>📝 ") : ""}
+      </div>
+      ${l.telefon ? `<a class="cm-tel" href="${telHref(l.telefon)}">📞 ${esc(l.telefon)}</a>`
+                  : `<div class="cm-tel" style="background:var(--panel2);color:var(--dim)">Keine Nummer — recherchieren!</div>`}
+      <input class="cm-note" id="cm-note" placeholder="Kurznotiz zum Anruf (optional) …">
+      <div class="cm-log">
+        <button class="b-no" onclick="cmLog('Nicht erreicht')">❌ Nicht erreicht<br><small>WV morgen</small></button>
+        <button class="b-ab" onclick="cmLog('AB, Nachricht hinterlassen')">📼 AB<br><small>WV +2 Tage</small></button>
+        <button class="b-talk" onclick="cmLog('Gespräch geführt','gespraech')">💬 Gespräch<br><small>WV +3 Tage</small></button>
+        <button class="b-win" onclick="cmLog('Termin vereinbart!','gespraech')">📅 TERMIN!<br><small>WV morgen</small></button>
+      </div>
+      <button class="cm-skip" onclick="CM_IDX++; renderCallMode()">⏭ Überspringen</button>
+    </div>
+    <details class="cm-script" open>
+      <summary>📜 Skript & Einwand-Konter</summary>
+      <div class="s-body">${SKRIPT}</div>
+    </details>
+  </div>`;
+}
+
+async function cmLog(text, status) {
+  const l = CM_QUEUE[CM_IDX];
+  const extra = document.getElementById("cm-note").value.trim();
+  try {
+    const body = {id: l.id, note: "📞 " + text + (extra ? " — " + extra : ""), wer: wer()};
+    if (status) body.status = status;
+    if (LOG_WV[text]) body.wiedervorlage = plusTage(LOG_WV[text]);
+    await updateLead(body);
+    CM_DONE++; CM_IDX++;
+    toast(text + " · nächster Lead");
+    renderCallMode();
   } catch(e) { toast("Fehler beim Speichern"); }
 }
 
