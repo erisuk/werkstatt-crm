@@ -117,7 +117,7 @@ details.mailtpl pre{white-space:pre-wrap;font-family:inherit;font-size:13px;line
 <div id="login">
   <div class="box">
     <h1>WERKSTATT <span>DIGITAL</span></h1>
-    <p>Team-CRM · 154 Werkstätten · live geteilt</p>
+    <p>Team-CRM · 154 Werkstätten · live geteilt<br>Neu im Team? Schlüssel vom Chef holen, eigenen Namen eintippen, los.</p>
     <input id="tokenInput" type="password" placeholder="Team-Schlüssel (github_pat_…)" autocomplete="current-password">
     <input id="nameInput" type="text" placeholder="Dein Name (z.B. Murat oder Eris)" style="margin-top:10px">
     <button onclick="doLogin()">Rein</button>
@@ -135,6 +135,7 @@ details.mailtpl pre{white-space:pre-wrap;font-family:inherit;font-size:13px;line
     <button class="tab on" data-v="heute" onclick="setView('heute',this)">📞 Heute<span class="n" id="n-heute"></span></button>
     <button class="tab" data-v="pipeline" onclick="setView('pipeline',this)">Pipeline</button>
     <button class="tab" data-v="liste" onclick="setView('liste',this)">Liste<span class="n" id="n-liste"></span></button>
+    <button class="tab" data-v="team" onclick="setView('team',this)">👥 Team</button>
   </div>
 </header>
 
@@ -191,20 +192,44 @@ async function loadLeads() {
 }
 
 const heuteStr = () => new Date().toISOString().slice(0, 10);
+const stamp = () => {
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
 
 function applyUpd(lead, upd) {
   const STATKEYS = STATI.map(s => s.k);
   if (upd.status && STATKEYS.includes(upd.status) && upd.status !== lead.status) {
     lead.status = upd.status;
-    lead.notizen = (lead.notizen ? lead.notizen + " | " : "") + `${heuteStr()}: → ${upd.status}` + (upd.wer ? ` (${upd.wer})` : "");
+    lead.notizen = (lead.notizen ? lead.notizen + " | " : "") + `${stamp()}: → ${upd.status}` + (upd.wer ? ` (${upd.wer})` : "");
   }
   if (upd.note) {
-    lead.notizen = (lead.notizen ? lead.notizen + " | " : "") + `${heuteStr()}: ${upd.note}` + (upd.wer ? ` (${upd.wer})` : "");
+    lead.notizen = (lead.notizen ? lead.notizen + " | " : "") + `${stamp()}: ${upd.note}` + (upd.wer ? ` (${upd.wer})` : "");
   }
-  for (const k of ["telefon", "email", "website", "ansprechpartner"]) {
+  for (const k of ["telefon", "email", "website", "ansprechpartner", "zustaendig", "wiedervorlage"]) {
     if (typeof upd[k] === "string") lead[k] = upd[k];
   }
   lead.updated = new Date().toISOString();
+}
+
+/* Aktivitäten aus allen Notizen ziehen (für Feed + Leaderboard) */
+function allActivities() {
+  const out = [];
+  for (const l of LEADS) {
+    for (const p of String(l.notizen || "").split(" | ")) {
+      const m = p.match(/^(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}))?:\s*(.*)$/s);
+      if (!m) continue;
+      const wm = m[3].match(/\(([^)]+)\)\s*$/);
+      out.push({ date: m[1], time: m[2] || "", text: m[3].replace(/\s*\([^)]+\)\s*$/, ""), wer: wm ? wm[1] : "?", lead: l });
+    }
+  }
+  return out.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+}
+function teamNamen() {
+  const s = new Set([wer()]);
+  for (const a of allActivities()) if (a.wer && a.wer !== "?") s.add(a.wer);
+  for (const l of LEADS) if (l.zustaendig) s.add(l.zustaendig);
+  return [...s];
 }
 
 async function updateLead(upd) {
@@ -266,6 +291,9 @@ function lastDate(l) {
   const m = String(l.notizen||"").match(/\d{4}-\d{2}-\d{2}/g);
   return m ? m[m.length-1] : null;
 }
+function wvDue(l) {
+  return l.wiedervorlage && l.wiedervorlage <= heuteStr() && !["pilot","tot"].includes(l.status);
+}
 function daysSince(d) {
   return Math.floor((Date.now() - new Date(d).getTime()) / 864e5);
 }
@@ -295,6 +323,8 @@ function cardHTML(l, extra="") {
     </div>
     <div class="chips">
       ${is143(l) ? '<span class="chip b143">§143 legal</span>' : ""}
+      ${l.zustaendig ? `<span class="chip" style="background:rgba(79,140,255,.13);color:var(--accent)">👤 ${esc(l.zustaendig)}</span>` : ""}
+      ${l.wiedervorlage ? `<span class="chip ${wvDue(l)?"warm":""}">⏰ ${esc(l.wiedervorlage)}</span>` : ""}
       ${extra}
       ${(l.produkte||"").split(",").filter(Boolean).slice(0,3).map(p=>`<span class="chip">${esc(p.trim())}</span>`).join("")}
     </div>
@@ -316,15 +346,53 @@ function render() {
   document.getElementById("n-heute").textContent = due.length ? "(" + due.length + ")" : "";
 
   if (VIEW === "heute") {
-    const dueF = ls.filter(warmDue);
-    const aktiv = ls.filter(l => ["gespraech","angebot"].includes(l.status));
-    const calls = ls.filter(l => l.status === "call");
+    const me = wer();
+    const wv = ls.filter(wvDue).sort((a,b) => (a.zustaendig===me?-1:0) - (b.zustaendig===me?-1:0) || b.score - a.score);
+    const dueF = ls.filter(l => warmDue(l) && !wvDue(l));
+    const aktiv = ls.filter(l => ["gespraech","angebot"].includes(l.status) && !wvDue(l));
+    const calls = ls.filter(l => l.status === "call" && !wvDue(l));
     let h = "";
+    if (wv.length) {
+      h += `<div class="sec-title">⏰ Wiedervorlagen fällig</div>`;
+      h += wv.map(l=>cardHTML(l, l.zustaendig===me ? '<span class="chip warm">DEINS</span>' : "")).join("");
+    }
     h += `<div class="sec-title">🔥 Warm Calls fällig (Mail ≥ 2 Tage raus)</div>`;
     h += dueF.length ? dueF.map(l=>cardHTML(l,'<span class="chip warm">JETZT ANRUFEN</span>')).join("")
                      : `<div class="empty">Nichts fällig. Neue Mails raus → Tab "Liste", beste zuerst.</div>`;
     if (calls.length) { h += `<div class="sec-title">☎️ Angerufen, dranbleiben</div>`; h += calls.map(l=>cardHTML(l)).join(""); }
     if (aktiv.length) { h += `<div class="sec-title">💬 Gespräche & Angebote (nachfassen)</div>`; h += aktiv.map(l=>cardHTML(l)).join(""); }
+    main.innerHTML = h;
+  }
+
+  if (VIEW === "team") {
+    const acts = allActivities();
+    const woche = new Date(Date.now() - 7*864e5).toISOString().slice(0,10);
+    const counts = {};
+    for (const a of acts) {
+      if (a.wer === "?") continue;
+      counts[a.wer] = counts[a.wer] || {heute: 0, woche: 0};
+      if (a.date === heuteStr()) counts[a.wer].heute++;
+      if (a.date >= woche) counts[a.wer].woche++;
+    }
+    const board = Object.entries(counts).sort((a,b) => b[1].heute - a[1].heute || b[1].woche - a[1].woche);
+    const statRow = STATI.map(s => {
+      const n = LEADS.filter(l=>l.status===s.k).length;
+      return `<div style="flex:1;min-width:90px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center">
+        <div style="font-size:22px;font-weight:800;color:${s.c}">${n}</div>
+        <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase">${s.l}</div></div>`;
+    }).join("");
+    let h = `<div class="sec-title">📊 Pipeline-Stand</div><div style="display:flex;gap:8px;flex-wrap:wrap">${statRow}</div>`;
+    h += `<div class="sec-title">🏆 Leaderboard</div>`;
+    h += board.length ? board.map(([name,c],i) =>
+      `<div class="card" style="cursor:default"><div class="top">
+        <div class="score ${i===0?"s-hi":"s-lo"}">${["🥇","🥈","🥉"][i]||(i+1)}</div>
+        <div><div class="name">${esc(name)}</div>
+        <div class="sub">Heute: <b style="color:var(--text)">${c.heute}</b> Aktionen · Letzte 7 Tage: ${c.woche}</div></div>
+      </div></div>`).join("") : `<div class="empty">Noch keine Aktivität.</div>`;
+    h += `<div class="sec-title">📡 Live-Feed (letzte 25 Aktionen)</div>`;
+    h += acts.slice(0,25).map(a =>
+      `<div class="note" style="cursor:pointer" onclick="openModal(${a.lead.id})">
+        <div class="d">${a.date}${a.time?" "+a.time:""} · ${esc(a.wer)} · ${esc(a.lead.name.slice(0,45))}</div>${esc(a.text)}</div>`).join("");
     main.innerHTML = h;
   }
 
@@ -370,7 +438,7 @@ function notesHTML(l) {
   const parts = String(l.notizen||"").split(" | ").filter(Boolean).reverse();
   if (!parts.length) return `<div class="note" style="color:var(--dim)">Noch keine Notizen.</div>`;
   return parts.map(p => {
-    const m = p.match(/^(\d{4}-\d{2}-\d{2}):\s*(.*)$/s);
+    const m = p.match(/^(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?):\s*(.*)$/s);
     return m ? `<div class="note"><div class="d">${m[1]}</div>${esc(m[2])}</div>`
              : `<div class="note">${esc(p)}</div>`;
   }).join("");
@@ -401,13 +469,23 @@ function openModal(id) {
       ${l.website ? `<a class="abtn save" target="_blank" href="${esc(l.website)}">🌐 Website</a>` : ""}
     </div>
 
+    <div class="sec-title" style="margin-top:4px">Anruf protokollieren (1 Klick)</div>
+    <div class="actions" style="margin-top:6px">
+      <button class="abtn save" onclick="quickLog(${l.id},'Nicht erreicht')">❌ Nicht erreicht</button>
+      <button class="abtn save" onclick="quickLog(${l.id},'AB, Nachricht hinterlassen')">📼 AB</button>
+      <button class="abtn save" onclick="quickLog(${l.id},'Gespräch geführt','gespraech')">💬 Gespräch</button>
+      <button class="abtn call" onclick="quickLog(${l.id},'Termin vereinbart!','gespraech')">📅 Termin!</button>
+    </div>
+
     <div class="fieldgrid">
       <div><label>Telefon</label><input id="f-telefon" value="${esc(l.telefon)}" placeholder="0731 …"></div>
       <div><label>Email</label><input id="f-email" value="${esc(l.email)}" placeholder="info@…"></div>
       <div><label>Ansprechpartner</label><input id="f-ansprechpartner" value="${esc(l.ansprechpartner)}" placeholder="Frau/Herr …"></div>
       <div><label>Website</label><input id="f-website" value="${esc(l.website)}" placeholder="https://…"></div>
+      <div><label>Zuständig</label><input id="f-zustaendig" value="${esc(l.zustaendig||"")}" list="namen" placeholder="Wer kümmert sich?"><datalist id="namen">${teamNamen().map(n=>`<option value="${esc(n)}">`).join("")}</datalist></div>
+      <div><label>Wiedervorlage</label><input id="f-wiedervorlage" type="date" value="${esc(l.wiedervorlage||"")}"></div>
     </div>
-    <button class="abtn save" style="width:100%" onclick="saveKontakt(${l.id})">Kontaktdaten speichern</button>
+    <button class="abtn save" style="width:100%" onclick="saveKontakt(${l.id})">Speichern</button>
 
     <div class="notes">
       <div class="sec-title" style="margin-top:18px">Verlauf</div>
@@ -458,11 +536,21 @@ async function addNote(id) {
 
 async function saveKontakt(id) {
   const body = {id, wer: wer()};
-  for (const k of ["telefon","email","ansprechpartner","website"])
+  for (const k of ["telefon","email","ansprechpartner","website","zustaendig","wiedervorlage"])
     body[k] = document.getElementById("f-"+k).value.trim();
   try {
     await updateLead(body);
     toast("Gespeichert"); render();
+  } catch(e) { toast("Fehler beim Speichern"); }
+}
+
+async function quickLog(id, text, status) {
+  try {
+    const body = {id, note: "📞 " + text, wer: wer()};
+    if (status) body.status = status;
+    await updateLead(body);
+    toast("Protokolliert: " + text);
+    openModal(id); render();
   } catch(e) { toast("Fehler beim Speichern"); }
 }
 
