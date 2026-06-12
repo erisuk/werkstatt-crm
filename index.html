@@ -162,7 +162,7 @@ details.cm-script .s-body .q{color:var(--text);font-weight:600}
     <button class="tab on" data-v="heute" onclick="setView('heute',this)">📞 Heute<span class="n" id="n-heute"></span></button>
     <button class="tab" data-v="pipeline" onclick="setView('pipeline',this)">Pipeline</button>
     <button class="tab" data-v="liste" onclick="setView('liste',this)">Liste<span class="n" id="n-liste"></span></button>
-    <button class="tab" data-v="team" onclick="setView('team',this)">👥 Team</button>
+    <button class="tab" data-v="team" onclick="setView('team',this)">📊 Dashboard</button>
     <button class="tab" style="color:var(--green);font-weight:800" onclick="startCallMode()">▶ Call-Modus</button>
   </div>
 </header>
@@ -397,42 +397,82 @@ function render() {
     const acts = allActivities();
     const woche = new Date(Date.now() - 7*864e5).toISOString().slice(0,10);
     const counts = {};
+    let termine = 0;
     for (const a of acts) {
+      if (/Termin vereinbart/i.test(a.text)) termine++;
       if (a.wer === "?") continue;
-      counts[a.wer] = counts[a.wer] || {heute: 0, woche: 0};
+      counts[a.wer] = counts[a.wer] || {heute: 0, woche: 0, gesamt: 0};
+      counts[a.wer].gesamt++;
       if (a.date === heuteStr()) counts[a.wer].heute++;
       if (a.date >= woche) counts[a.wer].woche++;
     }
     const board = Object.entries(counts).sort((a,b) => b[1].heute - a[1].heute || b[1].woche - a[1].woche);
-    const statRow = STATI.map(s => {
-      const n = LEADS.filter(l=>l.status===s.k).length;
-      return `<div style="flex:1;min-width:90px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center">
-        <div style="font-size:22px;font-weight:800;color:${s.c}">${n}</div>
-        <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase">${s.l}</div></div>`;
-    }).join("");
-    let h = `<div class="sec-title">📊 Pipeline-Stand</div><div style="display:flex;gap:8px;flex-wrap:wrap">${statRow}</div>`;
-    /* Pipedrive-Prinzip: Pipeline in Euro denken. Angebot = 800€ Setup + 3 Mon. × 600€ */
+
+    /* --- KPI-Reihe --- */
+    const aktiv = LEADS.filter(l=>["mail","call","gespraech","angebot"].includes(l.status)).length;
     const nAngebot = LEADS.filter(l=>l.status==="angebot").length;
     const nPilot = LEADS.filter(l=>l.status==="pilot").length;
     const ohneWV = LEADS.filter(l=>["mail","call","gespraech","angebot"].includes(l.status) && !l.wiedervorlage).length;
-    h += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-      <div style="flex:1;min-width:160px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px">
-        <div style="font-size:20px;font-weight:800;color:var(--orange)">${(nAngebot*2600).toLocaleString("de-DE")} €</div>
-        <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase">Offene Angebote (Wert)</div></div>
-      <div style="flex:1;min-width:160px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px">
-        <div style="font-size:20px;font-weight:800;color:var(--green)">${(nPilot*7200).toLocaleString("de-DE")} €</div>
-        <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase">Gewonnen (Jahres-Run-Rate)</div></div>
-      ${ohneWV ? `<div style="flex:1;min-width:160px;background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.3);border-radius:12px;padding:14px">
-        <div style="font-size:20px;font-weight:800;color:var(--red)">${ohneWV}</div>
-        <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase">Aktive Leads OHNE nächsten Schritt!</div></div>` : ""}
+    const heuteAkt = acts.filter(a=>a.date===heuteStr()).length;
+    const kpi = (wert, label, farbe, sub="") => `
+      <div style="flex:1;min-width:140px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px">
+        <div style="font-size:26px;font-weight:800;color:${farbe};letter-spacing:-.5px">${wert}</div>
+        <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-top:2px">${label}</div>
+        ${sub?`<div style="font-size:11px;color:var(--dim);margin-top:4px">${sub}</div>`:""}
+      </div>`;
+    let h = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+      ${kpi(aktiv, "Aktive Leads", "var(--accent)")}
+      ${kpi(heuteAkt, "Aktionen heute", "var(--text)")}
+      ${kpi(termine, "Termine vereinbart", "var(--yellow)")}
+      ${kpi((nAngebot*2600).toLocaleString("de-DE")+" €", "Pipeline-Wert", "var(--orange)", nAngebot+" offene Angebote")}
+      ${kpi((nPilot*7200).toLocaleString("de-DE")+" €", "Run-Rate / Jahr", "var(--green)", nPilot+" Piloten")}
     </div>`;
+    if (ohneWV) h += `<div style="margin-top:10px;background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.3);border-radius:12px;padding:12px 16px;font-size:13.5px;font-weight:600;color:var(--red)">
+      ⚠️ ${ohneWV} aktive Leads OHNE nächsten Schritt — im Lead die Wiedervorlage setzen!</div>`;
+
+    /* --- Funnel --- */
+    h += `<div class="sec-title">🔻 Funnel</div><div style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px">`;
+    const fStati = STATI.filter(s=>s.k!=="tot");
+    const maxN = Math.max(...fStati.map(s=>LEADS.filter(l=>l.status===s.k).length), 1);
+    h += fStati.map(s => {
+      const n = LEADS.filter(l=>l.status===s.k).length;
+      const w = Math.max(n/maxN*100, 2.5);
+      return `<div style="display:flex;align-items:center;gap:10px;margin:7px 0">
+        <div style="width:88px;font-size:12px;font-weight:700;color:var(--dim);text-align:right;flex-shrink:0">${s.l}</div>
+        <div style="flex:1;height:26px;background:var(--bg);border-radius:7px;overflow:hidden">
+          <div style="width:${w}%;height:100%;background:${s.c};opacity:.75;border-radius:7px"></div></div>
+        <div style="width:36px;font-size:14px;font-weight:800;color:${s.c}">${n}</div>
+      </div>`;
+    }).join("") + `</div>`;
+
+    /* --- Aktivität 14 Tage --- */
+    const tage = [...Array(14)].map((_,i)=> new Date(Date.now()-(13-i)*864e5).toISOString().slice(0,10));
+    const proTag = tage.map(t => acts.filter(a=>a.date===t).length);
+    const maxT = Math.max(...proTag, 1);
+    const WT = ["So","Mo","Di","Mi","Do","Fr","Sa"];
+    h += `<div class="sec-title">📈 Aktivität, letzte 14 Tage</div>
+      <div style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px">
+      <div style="display:flex;align-items:flex-end;gap:5px;height:110px">` +
+      tage.map((t,i) => {
+        const hh = Math.max(proTag[i]/maxT*100, 3);
+        const istHeute = t === heuteStr();
+        return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end" title="${t}: ${proTag[i]}">
+          ${proTag[i]?`<div style="font-size:10px;font-weight:700;color:var(--dim)">${proTag[i]}</div>`:""}
+          <div style="width:100%;height:${hh}%;background:${istHeute?"linear-gradient(180deg,var(--accent),var(--accent2))":"var(--panel2)"};border-radius:5px"></div>
+          <div style="font-size:9.5px;color:${istHeute?"var(--accent)":"var(--dim)"};font-weight:700">${WT[new Date(t).getDay()]}</div>
+        </div>`;
+      }).join("") + `</div></div>`;
+
+    /* --- Leaderboard --- */
     h += `<div class="sec-title">🏆 Leaderboard</div>`;
     h += board.length ? board.map(([name,c],i) =>
       `<div class="card" style="cursor:default"><div class="top">
         <div class="score ${i===0?"s-hi":"s-lo"}">${["🥇","🥈","🥉"][i]||(i+1)}</div>
         <div><div class="name">${esc(name)}</div>
-        <div class="sub">Heute: <b style="color:var(--text)">${c.heute}</b> Aktionen · Letzte 7 Tage: ${c.woche}</div></div>
+        <div class="sub">Heute: <b style="color:var(--text)">${c.heute}</b> · 7 Tage: <b style="color:var(--text)">${c.woche}</b> · Gesamt: ${c.gesamt}</div></div>
       </div></div>`).join("") : `<div class="empty">Noch keine Aktivität.</div>`;
+
+    /* --- Feed --- */
     h += `<div class="sec-title">📡 Live-Feed (letzte 25 Aktionen)</div>`;
     h += acts.slice(0,25).map(a =>
       `<div class="note" style="cursor:pointer" onclick="openModal(${a.lead.id})">
