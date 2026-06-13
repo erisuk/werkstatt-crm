@@ -588,6 +588,11 @@ function openModal(id) {
       </div>
     </div>
 
+    <details class="cm-script" style="margin-top:16px">
+      <summary>🎯 Gesprächsleitfaden — maßgeschneidert für diese Werkstatt</summary>
+      <div class="s-body" style="padding:0 16px 16px">${buildLeitfaden(l)}</div>
+    </details>
+
     <details class="mailtpl">
       <summary>✉️ Fertige Outreach-Mail anzeigen</summary>
       <pre id="mailtext">${esc(mailTemplate(l))}</pre>
@@ -677,20 +682,80 @@ function exitCallMode() {
   render();
 }
 
-const SKRIPT = `
-<b>Einstieg:</b><br>
-<span class="q">"Guten Tag, mein Name ist [DEIN NAME], ich rufe für Werkstatt Digital an. Wir entwickeln B2B-Vertriebskanäle speziell für Werkstätten. Hätten Sie kurz 5 Minuten?"</span><br><br>
-<b>Die 5 Fragen (Ziel: verstehen, nicht verkaufen):</b><br>
-<span class="q">1.</span> Wie läuft Ihr Verkauf an Firmenkunden aktuell ab?<br>
-<span class="q">2.</span> Hatten Sie Anfragen von Firmen, die Sie nicht bedienen konnten?<br>
-<span class="q">3.</span> Wer entscheidet bei Ihnen über neue Kooperationen?<br>
-<span class="q">4.</span> Was produzieren Sie am meisten, was hat die längste Lieferzeit?<br>
-<span class="q">5.</span> Könnten Sie 50-100 Boxen/Monat außerhalb Weihnachten liefern?<br><br>
-<b>Einwand "Wir haben schon entia":</b><br>
-<span class="q">"entia holt Ihnen Privatkunden, die 2-3 Kerzen kaufen. Ich hole Ihnen Firmen, die 200 Boxen bestellen. Unterschiedliche Kanäle, kein Widerspruch."</span><br><br>
-<b>Einwand "Keine Zeit":</b> <span class="q">"Verstehe ich, deshalb nur eine Frage: Hatten Sie schon mal eine Firmenanfrage, die liegen geblieben ist?"</span><br><br>
-<b>Ziel des Calls: 15-Minuten-Termin. NICHT verkaufen.</b><br>
-⚠️ Ausgleichsabgabe NIE als Argument (abgeschafft).`;
+/* 🎯 Produkt → konkreter Firmengeschenk-Anlass (für maßgeschneiderte Argumentation) */
+const ANLASS = {
+  "Bienenwachskerzen":"Weihnachts- und Adventsgeschenke, hochwertige Kundenpräsente",
+  "Kerzen":"Weihnachts- und Adventsgeschenke, Wellness-Pakete",
+  "Seifen":"Willkommens- und Wellnesspakete für neue Mitarbeiter",
+  "Keramik":"Firmenjubiläen und edle Tischkultur-Geschenke",
+  "Textilien":"nachhaltige Mitarbeiter-Ausstattung und Onboarding-Pakete",
+  "Webwaren":"Onboarding-Pakete und nachhaltige Firmengeschenke",
+  "Filzwaren":"Winter-Präsente und Mitarbeitergeschenke",
+  "Korbwaren":"Präsentkörbe und edle Geschenkboxen",
+  "Flechtwaren":"Präsentkörbe und Geschenkverpackungen",
+  "Schokolade":"Kundengeschenke und Präsentkörbe",
+  "Feinkost":"Präsentkörbe und Weihnachts-Kundengeschenke",
+  "Honig":"regionale Präsentkörbe mit Geschichte",
+  "Kaffee":"Büro- und Kundengeschenke",
+  "Tee":"Wellness- und Kundengeschenke",
+  "Likör":"Weihnachts- und Kundengeschenke",
+  "Säfte":"regionale Präsentkörbe",
+  "Marmelade":"Präsentkörbe und Frühstücksboxen",
+  "Gebäck":"Weihnachts- und Eventgeschenke",
+  "Lederwaren":"edle Kundengeschenke und Büroaccessoires",
+  "Messer":"hochwertige Jubiläums- und VIP-Geschenke",
+  "Holzspielzeug":"Familien-Geschenke für Mitarbeiter mit Kindern",
+  "Holzwaren":"hochwertige, langlebige Geschenkartikel",
+  "Papierwaren":"Branding-Sets und Notizbuch-Geschenke",
+  "Karten":"Firmen-Grußkarten und Weihnachtspost",
+  "Kunsthandwerk":"individuelle Firmengeschenke mit echter Geschichte",
+  "Deko":"saisonale Büro- und Event-Dekoration",
+  "Taschen":"nachhaltige Messe- und Event-Taschen",
+  "Bürsten":"langlebige Qualitätsprodukte mit Handwerks-Geschichte",
+  "Besen":"langlebige Qualitätsprodukte",
+  "Pinsel":"hochwertiges Qualitätswerkzeug",
+};
+
+/* 🎯 Maßgeschneiderter Gesprächsleitfaden pro Werkstatt — beratend, schließt mit offenen Fragen */
+function buildLeitfaden(l) {
+  const prods = (l.produkte||"").split(",").map(s=>s.trim()).filter(Boolean);
+  const p1 = prods[0] || "Produkte";
+  const pNenn = prods.length>1 ? prods.slice(0,2).join(" und ") : (prods[0] || "Ihre Produkte");
+  const anlass = prods.map(p=>ANLASS[p]).find(Boolean) || "hochwertige, nachhaltige Firmengeschenke";
+  const ortTxt = (l.ort && l.ort!=="?") ? `in ${l.ort}` : "bei Ihnen";
+  const blind = is143(l);
+  const ap = l.ansprechpartner ? ` (Ansprechpartner: ${esc(l.ansprechpartner)})` : "";
+
+  return `
+<div style="background:rgba(124,92,255,.08);border-left:3px solid #7c5cff;padding:10px 12px;border-radius:8px;margin-bottom:12px">
+<b>Maßgeschneidert für ${esc(l.name)}${ap}</b><br>
+<span style="font-size:12px">Produkte: ${esc(prods.join(", ")||"unbekannt — vorm Anruf Website checken")} · Anlass-Hook: <b style="color:var(--text)">${esc(anlass)}</b></span>
+</div>
+
+<b>1 · EINSTIEG</b> <span style="font-size:11px;color:var(--green)">(warm, ihr Produkt zuerst nennen)</span><br>
+<span class="q">"Guten Tag, mein Name ist [DEIN NAME] von Werkstatt Digital. Ich rufe an, weil mir aufgefallen ist, dass Sie ${esc(ortTxt)} ${esc(pNenn)} in einer Qualität herstellen, die man heute kaum noch findet — und genau danach sucht der Markt für Firmengeschenke gerade händeringend. Haben Sie zwei Minuten?"</span>
+${blind ? `<br><br><span style="font-size:12px;color:#a78bfa">💡 §143-Vorteil offen ansprechen:</span><br><span class="q">"Und weil Sie eine staatlich anerkannte Blindenwerkstatt sind, darf ich Sie dafür sogar direkt ansprechen — das ist gesetzlich ausdrücklich erlaubt, anders als bei normaler Werbung."</span>` : ""}
+<br><br>
+
+<b>2 · OFFENE FRAGEN</b> <span style="font-size:11px;color:var(--green)">(NICHT verkaufen — den Schmerz von ihm selbst aussprechen lassen)</span><br>
+<span class="q">"Wie verkaufen Sie Ihre ${esc(p1)} heute an Firmen — läuft das aktiv, oder kommt das eher zufällig über Laufkundschaft?"</span><br><br>
+<span class="q">"Angenommen, morgen will ein Unternehmen 300 Stück Ihrer ${esc(p1)} für die Weihnachtsfeier bestellen — über welchen Weg würde so eine Firma heute überhaupt zu Ihnen finden?"</span><br><br>
+<span class="q">"Was glauben Sie — wie viel Umsatz geht Ihnen jedes Jahr verloren, einfach weil niemand bei Ihnen die Zeit hat, aktiv auf Firmen zuzugehen?"</span><br><br>
+<span class="q">"Wenn so ein Firmenkanal auf dem Tisch läge — wer bei Ihnen würde darüber entscheiden?"</span><br><br>
+
+<b>3 · DER REFRAME</b> <span style="font-size:11px;color:var(--green)">(erst NACHDEM der Schmerz da ist)</span><br>
+<span class="q">"Genau da kommen wir rein: Sie produzieren weiter wie immer, wir bauen Ihre Firmenkundenseite, rufen aktiv Unternehmen an und bringen Ihnen die Aufträge. Für Ihre ${esc(p1)} heißt das konkret: ${esc(anlass)}. Kein Risiko und kein Aufwand für Ihr Team — Sie liefern nur."</span><br><br>
+
+<b>4 · EINWÄNDE</b><br>
+<span style="font-size:12px">▸ "Wir haben schon entia":</span> <span class="q">"entia ist Ihr Schaufenster für Privatkunden, die 2-3 Stück kaufen. Ich hole Ihnen Firmen, die 200 auf einmal bestellen. Anderer Kanal, kein Widerspruch."</span><br>
+<span style="font-size:12px">▸ "Keine Zeit / kein Bedarf":</span> <span class="q">"Verstehe. Eine Frage noch: Wie viele neue Firmenkunden kamen letztes Jahr von allein zu Ihnen, ohne dass jemand sie angerufen hat?"</span><br>
+<span style="font-size:12px">▸ "Wer sind Sie?":</span> <span class="q">"Ich baue Firmenvertrieb speziell für Werkstätten. Ich schick Ihnen gern vorher unsere Demo-Seite, dann sehen Sie sofort, was ich meine."</span><br><br>
+
+<b>5 · ABSCHLUSS</b> <span style="font-size:11px;color:var(--green)">(offene Frage, die den nächsten Schritt einleitet)</span><br>
+<span class="q">"Wenn Sie sich vorstellen, dass in einem halben Jahr regelmäßig Firmenaufträge für Ihre ${esc(p1)} reinkommen — was müsste ich Ihnen zeigen, damit Sie sagen: das testen wir?"</span><br>
+<span style="font-size:12px;color:var(--dim)">→ Dann konkret: "Ich schicke Ihnen ein kurzes Konzept plus eine Beispiel-Seite. Wann passen Ihnen nächste Woche 15 Minuten?"</span><br><br>
+<span style="font-size:12px;color:var(--dim)">🎯 Ziel: Termin + Mail-Adresse. ⚠️ Keine Preise nennen. Ausgleichsabgabe NIE erwähnen (abgeschafft).</span>`;
+}
 
 function renderCallMode() {
   const cm = document.getElementById("callmode");
@@ -736,8 +801,8 @@ function renderCallMode() {
       <button class="cm-skip" onclick="CM_IDX++; renderCallMode()">⏭ Überspringen</button>
     </div>
     <details class="cm-script" open>
-      <summary>📜 Skript & Einwand-Konter</summary>
-      <div class="s-body">${SKRIPT}</div>
+      <summary>🎯 Gesprächsleitfaden — maßgeschneidert für diese Werkstatt</summary>
+      <div class="s-body">${buildLeitfaden(l)}</div>
     </details>
   </div>`;
 }
