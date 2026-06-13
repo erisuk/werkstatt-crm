@@ -839,16 +839,16 @@ function buildLeitfaden(l) {
 <span style="font-size:12px">Produkte: ${esc(prods.join(", ")||"unbekannt — vorm Anruf Website checken")} · Anlass-Hook: <b style="color:var(--text)">${esc(anlass)}</b></span>
 </div>
 
-<b>1 · EINSTIEG</b> <span style="font-size:11px;color:var(--green)">(warm, ihr Produkt zuerst nennen)</span><br>
-<span class="q">"Guten Tag, mein Name ist [DEIN NAME] von Werkstatt Digital. Ich rufe an, weil mir aufgefallen ist, dass Sie ${esc(ortTxt)} ${esc(pNenn)} in einer Qualität herstellen, die man heute kaum noch findet — und genau danach sucht der Markt für Firmengeschenke gerade händeringend. Haben Sie zwei Minuten?"</span>
-${blind ? `<br><br><span style="font-size:12px;color:#a78bfa">💡 §143-Vorteil offen ansprechen:</span><br><span class="q">"Und weil Sie eine staatlich anerkannte Blindenwerkstatt sind, darf ich Sie dafür sogar direkt ansprechen — das ist gesetzlich ausdrücklich erlaubt, anders als bei normaler Werbung."</span>` : ""}
+<b>1 · EINSTIEG — sofort offene Frage</b> <span style="font-size:11px;color:var(--green)">(KEIN "haben Sie 2 Minuten" — das lädt zum Nein ein. Du führst mit einer Frage, auf die er reden MUSS.)</span><br>
+<span class="q">"Guten Tag, [DEIN NAME] von Werkstatt Digital. Ganz kurz und ehrlich — Sie stellen ja ${esc(pNenn)} ${esc(ortTxt)} her: Wie kommen Firmenkunden heute eigentlich zu Ihnen, läuft das aktiv oder eher über Zufall?"</span><br>
+<span style="font-size:11px;color:var(--dim)">→ Er antwortet immer. Damit bist du im Gespräch, nicht im Pitch. Zuhören, dann nachhaken.</span>
+${blind ? `<br><br><span style="font-size:12px;color:#a78bfa">💡 Falls er fragt "wer sind Sie / dürfen Sie das?":</span><br><span class="q">"Bei Ihnen als staatlich anerkannter Blindenwerkstatt ist genau dieser Anruf ausdrücklich erlaubt — anders als normale Werbung. Deshalb ruf ich gezielt Werkstätten wie Ihre an."</span>` : ""}
 <br><br>
 
-<b>2 · OFFENE FRAGEN</b> <span style="font-size:11px;color:var(--green)">(NICHT verkaufen — den Schmerz von ihm selbst aussprechen lassen)</span><br>
-<span class="q">"Wie verkaufen Sie Ihre ${esc(p1)} heute an Firmen — läuft das aktiv, oder kommt das eher zufällig über Laufkundschaft?"</span><br><br>
-<span class="q">"Angenommen, morgen will ein Unternehmen 300 Stück Ihrer ${esc(p1)} für die Weihnachtsfeier bestellen — über welchen Weg würde so eine Firma heute überhaupt zu Ihnen finden?"</span><br><br>
-<span class="q">"Was glauben Sie — wie viel Umsatz geht Ihnen jedes Jahr verloren, einfach weil niemand bei Ihnen die Zeit hat, aktiv auf Firmen zuzugehen?"</span><br><br>
-<span class="q">"Wenn so ein Firmenkanal auf dem Tisch läge — wer bei Ihnen würde darüber entscheiden?"</span><br><br>
+<b>2 · VERTIEFEN — eine offene Frage nach der anderen</b> <span style="font-size:11px;color:var(--green)">(er spricht den Schmerz selbst aus, du verkaufst NICHT)</span><br>
+<span class="q">"Und wenn morgen ein Unternehmen 300 Stück Ihrer ${esc(p1)} für die Weihnachtsfeier wollte — über welchen Weg würde so eine Firma heute überhaupt von Ihnen erfahren?"</span><br><br>
+<span class="q">"Was glauben Sie, wie viel Umsatz Ihnen jedes Jahr durchrutscht, einfach weil niemand bei Ihnen die Zeit hat, aktiv auf Firmen zuzugehen?"</span><br><br>
+<span class="q">"Wie wichtig wäre es für Sie, da einen festen Kanal zu haben — und wer bei Ihnen würde über sowas entscheiden?"</span><br><br>
 
 <b>3 · DER REFRAME</b> <span style="font-size:11px;color:var(--green)">(erst NACHDEM der Schmerz da ist)</span><br>
 <span class="q">"Genau da kommen wir rein: Sie produzieren weiter wie immer, wir bauen Ihre Firmenkundenseite, rufen aktiv Unternehmen an und bringen Ihnen die Aufträge. Für Ihre ${esc(p1)} heißt das konkret: ${esc(anlass)}. Kein Risiko und kein Aufwand für Ihr Team — Sie liefern nur."</span><br><br>
