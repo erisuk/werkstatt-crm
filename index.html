@@ -226,11 +226,19 @@ const stamp = () => {
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
+/* 🤖 Automation: Statuswechsel setzt automatisch den nächsten Schritt (Wiedervorlage) */
+const AUTO_WV = { mail: 2, call: 1, gespraech: 3, angebot: 3 };
+
 function applyUpd(lead, upd) {
   const STATKEYS = STATI.map(s => s.k);
   if (upd.status && STATKEYS.includes(upd.status) && upd.status !== lead.status) {
     lead.status = upd.status;
     lead.notizen = (lead.notizen ? lead.notizen + " | " : "") + `${stamp()}: → ${upd.status}` + (upd.wer ? ` (${upd.wer})` : "");
+    if (!upd.wiedervorlage && AUTO_WV[upd.status]) {
+      upd.wiedervorlage = plusTage(AUTO_WV[upd.status]);
+      upd._autoWV = upd.wiedervorlage;
+    }
+    if (upd.status === "pilot" || upd.status === "tot") upd.wiedervorlage = "";
   }
   if (upd.note) {
     lead.notizen = (lead.notizen ? lead.notizen + " | " : "") + `${stamp()}: ${upd.note}` + (upd.wer ? ` (${upd.wer})` : "");
@@ -583,7 +591,7 @@ function openModal(id) {
     <details class="mailtpl">
       <summary>✉️ Fertige Outreach-Mail anzeigen</summary>
       <pre id="mailtext">${esc(mailTemplate(l))}</pre>
-      <button class="copybtn" onclick="copyMail()">Mail kopieren</button>
+      <button class="copybtn" onclick="copyMail(${l.id})">Mail kopieren${l.status==="offen" ? " (setzt automatisch Status + Warm-Call-Termin)" : ""}</button>
     </details>
   </div>`;
   document.getElementById("overlay").style.display = "block";
@@ -603,8 +611,9 @@ function toast(msg) {
 
 async function setStatus(id, status) {
   try {
-    await updateLead({id, status, wer: wer()});
-    toast("Status: " + SC[status].l);
+    const upd = {id, status, wer: wer()};
+    await updateLead(upd);
+    toast("Status: " + SC[status].l + (upd._autoWV ? " · 🤖 WV " + upd._autoWV : ""));
     openModal(id); render();
   } catch(e) { toast("Fehler beim Speichern"); }
 }
@@ -747,9 +756,19 @@ async function cmLog(text, status) {
   } catch(e) { toast("Fehler beim Speichern"); }
 }
 
-function copyMail() {
-  navigator.clipboard.writeText(document.getElementById("mailtext").textContent)
-    .then(()=>toast("Mail kopiert — Ansprechpartner checken, dann senden"));
+async function copyMail(id) {
+  await navigator.clipboard.writeText(document.getElementById("mailtext").textContent);
+  const l = LEADS.find(x=>x.id===id);
+  /* 🤖 Automation: Mail kopiert bei offenem Lead -> Status "mail" + Warm Call in 2 Tagen */
+  if (l && l.status === "offen") {
+    try {
+      await updateLead({id, status: "mail", note: "🤖 Outreach-Mail kopiert", wer: wer()});
+      toast("🤖 Mail kopiert · Status 'Mail raus' · Warm Call " + plusTage(2));
+      openModal(id); render();
+      return;
+    } catch(e) {}
+  }
+  toast("Mail kopiert — Ansprechpartner checken, dann senden");
 }
 
 /* ---------- Start ---------- */
