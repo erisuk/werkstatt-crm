@@ -108,6 +108,31 @@ details.mailtpl pre{white-space:pre-wrap;font-family:inherit;font-size:13px;line
 
 #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px 22px;font-weight:600;font-size:14px;z-index:90;display:none}
 
+/* ---------- Motivations-Hero ---------- */
+.hero{background:linear-gradient(135deg,#1a2130,#1d1730);border:1px solid var(--line);border-radius:18px;padding:20px;margin-top:8px;position:relative;overflow:hidden}
+.hero .spruch{font-size:15px;font-weight:700;color:var(--text);line-height:1.4;margin-bottom:16px}
+.hero-grid{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.ring{position:relative;width:104px;height:104px;flex-shrink:0}
+.ring svg{transform:rotate(-90deg)}
+.ring .mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ring .mid .big{font-size:26px;font-weight:800;line-height:1;letter-spacing:-1px}
+.ring .mid .lbl{font-size:10px;color:var(--dim);font-weight:700;text-transform:uppercase;margin-top:2px}
+.hero-stats{flex:1;min-width:180px;display:flex;flex-direction:column;gap:10px}
+.hs-row{display:flex;align-items:center;gap:10px}
+.hs-emoji{font-size:26px;width:36px;text-align:center}
+.hs-txt .v{font-size:18px;font-weight:800;letter-spacing:-.3px}
+.hs-txt .l{font-size:11px;color:var(--dim);font-weight:600}
+.rankbar{height:7px;background:var(--bg);border-radius:99px;overflow:hidden;margin-top:5px}
+.rankbar div{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:99px}
+
+/* ---------- Konfetti ---------- */
+#confetti{position:fixed;inset:0;pointer-events:none;z-index:200;overflow:hidden;display:none}
+.cf{position:absolute;width:11px;height:11px;top:-20px;will-change:transform,opacity;animation:fall linear forwards}
+@keyframes fall{to{transform:translateY(105vh) rotate(720deg);opacity:.9}}
+#winbanner{position:fixed;top:30%;left:50%;transform:translateX(-50%) scale(.6);background:linear-gradient(135deg,#16a34a,#34d399);color:#fff;padding:22px 34px;border-radius:18px;font-weight:800;font-size:22px;z-index:201;display:none;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+#winbanner.show{display:block;animation:pop .5s cubic-bezier(.2,1.4,.4,1) forwards}
+@keyframes pop{to{transform:translateX(-50%) scale(1)}}
+
 /* ---------- Call-Modus ---------- */
 #callmode{position:fixed;inset:0;background:var(--bg);z-index:80;display:none;overflow-y:auto}
 #callmode .cm-inner{max-width:640px;margin:0 auto;padding:18px 16px 60px}
@@ -172,6 +197,8 @@ details.cm-script .s-body .q{color:var(--text);font-weight:600}
 <div id="overlay" onclick="closeModal()"></div>
 <div id="modal"></div>
 <div id="callmode"></div>
+<div id="confetti"></div>
+<div id="winbanner"></div>
 <div id="toast"></div>
 
 <script>
@@ -267,6 +294,55 @@ function teamNamen() {
   for (const a of allActivities()) if (a.wer && a.wer !== "?") s.add(a.wer);
   for (const l of LEADS) if (l.zustaendig) s.add(l.zustaendig);
   return [...s];
+}
+
+/* ---------- Motivations-Logik ---------- */
+const TAGESZIEL = 10;  // Anrufe pro Tag
+const RAENGE = [
+  {min:0,   name:"Frischling",  emoji:"🐣"},
+  {min:5,   name:"Wählhand",    emoji:"☎️"},
+  {min:20,  name:"Closer",      emoji:"🔥"},
+  {min:50,  name:"Telefon-Maschine", emoji:"⚡"},
+  {min:100, name:"Vertriebs-Legende", emoji:"👑"},
+];
+function istAnruf(a){ return /^📞/.test(a.text); }
+function rang(total){
+  let r = RAENGE[0], next = null;
+  for (let i=0;i<RAENGE.length;i++){ if(total>=RAENGE[i].min){ r=RAENGE[i]; next=RAENGE[i+1]||null; } }
+  return {r, next};
+}
+function streak(acts){  // aufeinanderfolgende Tage mit Aktivität, bis heute/gestern
+  const tage = new Set(acts.map(a=>a.date));
+  let s = 0, d = new Date();
+  if (!tage.has(d.toISOString().slice(0,10))) d.setDate(d.getDate()-1); // gestern zählt noch
+  while (tage.has(d.toISOString().slice(0,10))){ s++; d.setDate(d.getDate()-1); }
+  return s;
+}
+function spruch(callsHeute, termineGesamt){
+  if (termineGesamt > 0 && callsHeute >= TAGESZIEL) return "🎉 Tagesziel geknackt UND Termine im Sack. Du bist nicht zu stoppen.";
+  if (callsHeute === 0) return "📞 Noch kein Anruf heute. Der erste ist der schwerste — danach läuft's. Los!";
+  if (callsHeute < TAGESZIEL) return `🔥 ${callsHeute} von ${TAGESZIEL}. Du bist im Flow, dranbleiben!`;
+  return "💪 Tagesziel geknackt! Jeder weitere Anruf ist purer Bonus.";
+}
+
+/* ---------- Konfetti bei Erfolg ---------- */
+function celebrate(text){
+  const box = document.getElementById("confetti");
+  box.style.display = "block"; box.innerHTML = "";
+  const farben = ["#4f8cff","#7c5cff","#34d399","#fbbf24","#f472b6","#fb923c"];
+  for (let i=0;i<120;i++){
+    const p = document.createElement("div");
+    p.className = "cf";
+    p.style.left = Math.random()*100 + "vw";
+    p.style.background = farben[i%farben.length];
+    p.style.animationDuration = (1.6 + Math.random()*1.4) + "s";
+    p.style.animationDelay = (Math.random()*0.4) + "s";
+    if (Math.random()>.5) p.style.borderRadius = "50%";
+    box.appendChild(p);
+  }
+  const bn = document.getElementById("winbanner");
+  bn.textContent = text; bn.className = "show";
+  setTimeout(()=>{ box.style.display="none"; box.innerHTML=""; bn.className=""; }, 3200);
 }
 
 async function updateLead(upd) {
@@ -416,6 +492,35 @@ function render() {
     }
     const board = Object.entries(counts).sort((a,b) => b[1].heute - a[1].heute || b[1].woche - a[1].woche);
 
+    /* --- Motivations-Hero --- */
+    const me = wer();
+    const meineActs = acts.filter(a=>a.wer===me);
+    const callsHeute = meineActs.filter(a=>a.date===heuteStr() && istAnruf(a)).length;
+    const callsGesamt = meineActs.filter(istAnruf).length;
+    const myStreak = streak(meineActs);
+    const {r, next} = rang(callsGesamt);
+    const zielPct = Math.min(callsHeute/TAGESZIEL*100, 100);
+    const C = 2*Math.PI*46, off = C - C*zielPct/100;
+    const rankPct = next ? Math.min((callsGesamt-r.min)/(next.min-r.min)*100, 100) : 100;
+    let h = `<div class="hero">
+      <div class="spruch">${spruch(callsHeute, termine)}</div>
+      <div class="hero-grid">
+        <div class="ring">
+          <svg width="104" height="104"><circle cx="52" cy="52" r="46" fill="none" stroke="#232c3f" stroke-width="9"/>
+          <circle cx="52" cy="52" r="46" fill="none" stroke="url(#g)" stroke-width="9" stroke-linecap="round"
+            stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/>
+          <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4f8cff"/><stop offset="1" stop-color="#7c5cff"/></linearGradient></defs></svg>
+          <div class="mid"><div class="big">${callsHeute}<span style="font-size:14px;color:var(--dim)">/${TAGESZIEL}</span></div><div class="lbl">Anrufe heute</div></div>
+        </div>
+        <div class="hero-stats">
+          <div class="hs-row"><div class="hs-emoji">${myStreak>0?"🔥":"😴"}</div><div class="hs-txt"><div class="v">${myStreak} Tag${myStreak===1?"":"e"}</div><div class="l">Streak in Folge</div></div></div>
+          <div class="hs-row"><div class="hs-emoji">${r.emoji}</div><div class="hs-txt" style="flex:1"><div class="v">${r.name}</div>
+            <div class="l">${next ? `${next.min-callsGesamt} Anrufe bis ${next.emoji} ${next.name}` : "Höchster Rang erreicht!"}</div>
+            <div class="rankbar"><div style="width:${rankPct}%"></div></div></div></div>
+        </div>
+      </div>
+    </div>`;
+
     /* --- KPI-Reihe --- */
     const aktiv = LEADS.filter(l=>["mail","call","gespraech","angebot"].includes(l.status)).length;
     const nAngebot = LEADS.filter(l=>l.status==="angebot").length;
@@ -428,7 +533,7 @@ function render() {
         <div style="font-size:11px;color:var(--dim);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-top:2px">${label}</div>
         ${sub?`<div style="font-size:11px;color:var(--dim);margin-top:4px">${sub}</div>`:""}
       </div>`;
-    let h = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+    h += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
       ${kpi(aktiv, "Aktive Leads", "var(--accent)")}
       ${kpi(heuteAkt, "Aktionen heute", "var(--text)")}
       ${kpi(termine, "Termine vereinbart", "var(--yellow)")}
@@ -618,7 +723,9 @@ async function setStatus(id, status) {
   try {
     const upd = {id, status, wer: wer()};
     await updateLead(upd);
-    toast("Status: " + SC[status].l + (upd._autoWV ? " · 🤖 WV " + upd._autoWV : ""));
+    if (status === "pilot") celebrate("🎉 PILOT GEWONNEN! Der erste zahlende Kunde!");
+    else if (status === "angebot") celebrate("💰 ANGEBOT RAUS! " + wer() + " liefert.");
+    else toast("Status: " + SC[status].l + (upd._autoWV ? " · 🤖 WV " + upd._autoWV : ""));
     openModal(id); render();
   } catch(e) { toast("Fehler beim Speichern"); }
 }
@@ -816,7 +923,8 @@ async function cmLog(text, status) {
     if (LOG_WV[text]) body.wiedervorlage = plusTage(LOG_WV[text]);
     await updateLead(body);
     CM_DONE++; CM_IDX++;
-    toast(text + " · nächster Lead");
+    if (/Termin vereinbart/i.test(text)) celebrate("📅 TERMIN! Stark, " + wer() + "!");
+    else toast(text + " · nächster Lead");
     renderCallMode();
   } catch(e) { toast("Fehler beim Speichern"); }
 }
