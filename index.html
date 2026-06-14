@@ -37,6 +37,8 @@ header{position:sticky;top:0;z-index:50;background:rgba(11,14,20,.85);backdrop-f
 .logo span{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
 #search{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 14px;font-size:14px;outline:none;min-width:0}
 #search:focus{border-color:var(--accent)}
+#bl-filter{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px;outline:none;color:var(--text);cursor:pointer;flex-shrink:0}
+#bl-filter:focus{border-color:var(--accent)}
 .tabs{display:flex;gap:4px;max-width:1300px;margin:10px auto 0;overflow-x:auto;scrollbar-width:none}
 .tabs::-webkit-scrollbar{display:none}
 .tab{padding:8px 16px;border-radius:10px;font-size:13.5px;font-weight:600;color:var(--dim);white-space:nowrap}
@@ -181,6 +183,7 @@ details.cm-script .s-body .q{color:var(--text);font-weight:600}
   <div class="hrow">
     <div class="logo">W<span>D</span> CRM</div>
     <input id="search" placeholder="Suchen: Name, Ort, Produkt …" oninput="render()">
+    <select id="bl-filter" onchange="BL_FILTER=this.value;render()"><option value="">Alle Bundesländer</option></select>
     <div id="whoami" onclick="logout()" title="Klick zum Abmelden"></div>
   </div>
   <div class="tabs">
@@ -212,7 +215,7 @@ const STATI = [
   {k:"tot",       l:"Tot",       c:"#f87171"},
 ];
 const SC = Object.fromEntries(STATI.map(s=>[s.k,s]));
-let LEADS = [], VIEW = "heute";
+let LEADS = [], VIEW = "heute", BL_FILTER = "";
 
 const token = () => localStorage.getItem("crm_token") || "";
 const wer   = () => localStorage.getItem("crm_name") || "";
@@ -418,8 +421,9 @@ function warmDue(l) {
 function query() { return document.getElementById("search").value.trim().toLowerCase(); }
 function filtered() {
   const q = query();
-  if (!q) return LEADS;
-  return LEADS.filter(l => (l.name+" "+l.ort+" "+l.produkte+" "+l.bundesland+" "+l.notizen).toLowerCase().includes(q));
+  let list = BL_FILTER ? LEADS.filter(l => l.bundesland === BL_FILTER) : LEADS;
+  if (!q) return list;
+  return list.filter(l => (l.name+" "+l.ort+" "+l.produkte+" "+l.bundesland+" "+l.notizen).toLowerCase().includes(q));
 }
 
 /* ---------- Card ---------- */
@@ -430,7 +434,7 @@ function cardHTML(l, extra="") {
       <div class="score ${scoreCls(l.score)}">${l.score}</div>
       <div style="min-width:0">
         <div class="name">${esc(l.name)}</div>
-        <div class="sub">${esc(l.ort||"Ort unbekannt")}${l.bundesland?" · "+esc(l.bundesland):""}</div>
+        <div class="sub">${esc(l.ort||"Ort unbekannt")}${l.bundesland?" · "+esc(l.bundesland):""}${l.telefon?` · <span style="color:var(--green);font-weight:600">📞 ${esc(l.telefon)}</span>`:""}</div>
       </div>
       ${tel}
     </div>
@@ -452,6 +456,11 @@ function setView(v, btn) {
 }
 
 function render() {
+  const blSel = document.getElementById("bl-filter");
+  if (blSel && blSel.options.length <= 1) {
+    const bls = [...new Set(LEADS.map(l=>l.bundesland).filter(Boolean))].sort();
+    bls.forEach(b => { const o = document.createElement("option"); o.value = b; o.textContent = b; blSel.appendChild(o); });
+  }
   const main = document.getElementById("main");
   const ls = filtered();
   document.getElementById("n-liste").textContent = "(" + ls.length + ")";
