@@ -28,7 +28,8 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         idx = idx.tz_localize("UTC")
     df.index = idx.tz_convert(NY)
     df = df[~df.index.duplicated(keep="last")].sort_index()
-    return df[COLUMNS].astype(float)
+    df = df[COLUMNS].astype(float)
+    return df.dropna(subset=["open", "high", "low", "close"])
 
 
 def load_csv(path: str | Path) -> pd.DataFrame:

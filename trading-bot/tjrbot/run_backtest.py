@@ -75,7 +75,13 @@ def main():
     a = p.parse_args()
 
     frames = load_frames(a)
-    cfg = config.load(a.config, **parse_set(a.set))
+    over = parse_set(a.set)
+    if a.yahoo and "warmup_days" not in over:
+        over["warmup_days"] = 1   # nur ~7 Tage Daten
+    cfg = config.load(a.config, **over)
+    if len(frames) == 1 and cfg["require_index_alignment"]:
+        print("⚠️  Nur ein Index geladen: TJR verlangt ES/NQ-Abgleich -> keine Trades. "
+              "Beide Indizes laden oder --set require_index_alignment=false.")
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     if not engine.load_calendar(cfg):

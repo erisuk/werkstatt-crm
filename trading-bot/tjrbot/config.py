@@ -70,7 +70,13 @@ DEFAULTS: dict = {
     # --- News ---
     "news_calendar": "data/news_calendar.csv",
     "post_release_wait_min": 20,
-    "no_trade_events": ["FOMC", "CPI", "Core CPI", "Non-Farm", "NFP", "Nonfarm"],
+    # Regex (Anfang des Event-Namens): FOMC-Entscheid, CPI, NFP -> kein Trade. NICHT: ADP, FOMC-Minutes, PPI.
+    "no_trade_events": [r"^FOMC (Statement|Rate Decision|Press Conference|Economic Projections)",
+                        r"^Federal Funds Rate", r"^(Core )?CPI\b", r"^(Non-?Farm (Employment Change|Payrolls)|NFP)\b"],
+    # --- Daten / Historie ---
+    "warmup_days": 20,              # vollständige Sessions vor dem ersten Trade (Spec: lookback_4h_days + 10)
+    "session_start_tol_min": 5,
+    "big_win_R": 3.0,               # Tag nach >= 3R -> halbe Größe (None = aus)
 }
 
 
@@ -90,9 +96,11 @@ def load(path: str | Path | None = None, **overrides) -> dict:
     return cfg
 
 
-def hm(s: str | None) -> int | None:
+def hm(s: str | int | None) -> int | None:
     """'09:50' -> Minuten seit Mitternacht."""
     if s is None:
         return None
+    if isinstance(s, int) and not isinstance(s, bool):
+        return s  # YAML 1.1 liest unquotiertes 11:00 als 660 (= Minuten)
     h, m = str(s).split(":")
     return int(h) * 60 + int(m)

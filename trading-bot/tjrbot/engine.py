@@ -12,12 +12,14 @@ Ablauf je Handelstag (Details + Quellen: research/tjr_spec_final.json):
             auf 5m in dieselbe Richtung zeigt (ES/NQ-Abgleich), Bias-Filter "lean".
   6. Stop hinter dem Retrace-Hoch/Tief ("second high") + Puffer. Ziele = nächste gegenüberliegende
             Liquidität, TP1 >= 1R. Teilgewinn + Break-even, Runner. 1 Trade pro Tag.
+Widersprechen sich 4H- und 1H-Trend, wird die Leiter eskaliert (15m Bestätigung, 5m Trigger, 1H Ziele).
 """
 from __future__ import annotations
 
 import bisect
 import csv
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,18 +27,18 @@ import numpy as np
 import pandas as pd
 
 from . import backtest as bt
+from . import cme_calendar
 from .config import INSTRUMENTS, ROOT, hm
 from .tfstate import DOWN, NONE, UP, Bar, TFState
-from .timeline import SESSION_LEN, aggregate, align, day_anchor, minute_to_ts, to_bars
+from .timeline import SESSION_LEN, aggregate, day_anchor, minute_to_ts, to_bars
 
 HTFS = (5, 15, 60, 240)
-SIDE_NAME = {UP: "HIGH", DOWN: "LOW"}
 DIR_NAME = {UP: "LONG", DOWN: "SHORT", NONE: "NEUTRAL"}
 
 
 def at(anchor: int, clock: str | int) -> int:
     """Minute des Handelstags (Anker 18:00) zur Uhrzeit `clock`."""
-    m = hm(clock) if isinstance(clock, str) else clock
+    m = hm(clock)
     return anchor + (m - 18 * 60) % 1440
 
 
@@ -66,6 +68,7 @@ class Setup:
     sweep_extreme_t: int
     leg_origin: int
     leg_origin_t: int
+    ladder: tuple = (5, 1, 15)          # (confirm_tf, trigger_tf, tp_ref_tf) – bei Erstellung fixiert
     state: str = "SWEPT"
     confirm_kind: str = ""
     confirm_time: int | None = None
@@ -113,14 +116,18 @@ class IndexState:
         self.h = np.array([b.h for b in self.bars], dtype=np.int64)
         self.l = np.array([b.l for b in self.bars], dtype=np.int64)
         self.tfs = {1: TFState(1, cfg["fvg_max_age_min"][1], cfg["min_fvg_ticks"])}
-        self.htf_bars = {}
-        self.ptr = {}
+        self.htf_bars, self.ptr = {}, {}
         for tf in HTFS:
             self.tfs[tf] = TFState(tf, cfg["fvg_max_age_min"][tf], cfg["min_fvg_ticks"])
             self.htf_bars[tf] = aggregate(self.bars, tf)
             self.ptr[tf] = 0
         self.levels: list[Level] = []
-        self.pos = -1
+        self.pos = -1          # Index der zuletzt verarbeiteten 1m-Bar
+        self.next = 0          # nächste unverarbeitete 1m-Bar
+
+    @property
+    def last(self) -> Bar | None:
+        return self.bars[self.pos] if self.pos >= 0 else None
 
     def rng(self, t_from: int, t_to: int) -> slice:
         """1m-Bars mit Open-Zeit in [t_from, t_to)."""
@@ -142,149 +149,178 @@ class IndexState:
         k = int(arr.argmax() if want_high else arr.argmin())
         return int(arr[k]), int(self.t[s.start + k])
 
-    def advance(self, k: int) -> Bar:
-        """1m-Bar k verarbeiten und alle höheren TF-Bars, die bis zu ihrem Close fertig sind."""
-        b = self.bars[k]
-        self.pos = k
-        self.tfs[1].update(b)
+    def step(self, m: int) -> tuple[Bar | None, list]:
+        """Uhr steht auf Minute m (Entscheidung bei T = m + 1): eigene 1m-Bar (falls vorhanden) und alle
+        HTF-Bars mit Close <= T verarbeiten. Fehlt die Minute bei diesem Index -> keine Aktualisierung."""
+        b = None
+        if self.next < len(self.bars) and self.bars[self.next].t == m:
+            b = self.bars[self.next]
+            self.pos = self.next
+            self.next += 1
+            self.tfs[1].update(b)
+        T = m + 1
         closed = []
         for tf in HTFS:
             hb = self.htf_bars[tf]
-            while self.ptr[tf] < len(hb) and hb[self.ptr[tf]].ct <= b.ct:
+            while self.ptr[tf] < len(hb) and hb[self.ptr[tf]].ct <= T:
                 self.tfs[tf].update(hb[self.ptr[tf]])
                 closed.append(tf)
                 self.ptr[tf] += 1
+        if b is not None:
+            for st in self.tfs.values():
+                st.wick_expire(b)
         return b, closed
 
 
 # ---------------------------------------------------------------------------- Engine
 class Engine:
     def __init__(self, frames: dict[str, pd.DataFrame], cfg: dict, calendar: dict | None = None):
-        frames = align({k: v for k, v in frames.items() if v is not None and len(v)})
+        frames = {k: v for k, v in frames.items() if v is not None and len(v)}
         if not frames:
             raise ValueError("keine Daten")
         self.cfg = cfg
         self.X = {name: IndexState(name, df, cfg) for name, df in sorted(frames.items())}
         self.names = list(self.X)
         self.pair = len(self.names) == 2
-        n = {len(s.bars) for s in self.X.values()}
-        if len(n) != 1:
-            raise ValueError("ES/NQ-Bars nicht deckungsgleich")
         self.calendar = calendar if calendar is not None else load_calendar(cfg)
         self.signals: list[Signal] = []
         self.journal: list[dict] = []
         self.days: list[dict] = []
         self._sid = 0
-        c = cfg
-        self.m = {k: hm(c[k]) for k in ("scan_start", "entry_start", "alignment_deadline", "flat_time",
-                                          "ny_rth_start")}
-        self.m["cutoff"] = hm(c["cutoff"]) if c["cutoff"] else hm("15:00")
+        self.m = {k: hm(cfg[k]) for k in ("scan_start", "entry_start", "alignment_deadline", "flat_time",
+                                            "ny_rth_start")}
+        self.m["cutoff"] = hm(cfg["cutoff"]) if cfg["cutoff"] else hm("15:00")
+        self.base_ladder = (cfg["confirm_tf"], cfg["trigger_tf"], cfg["tp_ref_tf"])
+        self._prev_T = -1
+        self._day_R = 0.0
+        self.prev_day_R = 0.0
+        self._complete_days = 0
+        self._prev_complete = False
+        self._first_t = min(int(xs.t[0]) for xs in self.X.values() if len(xs.t))
 
     # ----------------------------------------------------------------- Hauptschleife
     def run(self) -> "Engine":
-        N = len(self.X[self.names[0]].bars)
+        minutes = sorted(set().union(*(xs.t.tolist() for xs in self.X.values())))
         day = None
-        for k in range(N):
-            closed = {}
-            b = {}
+        for m in minutes:
+            b, closed = {}, {}
             for name, xs in self.X.items():
-                b[name], closed[name] = xs.advance(k)
-            b0 = b[self.names[0]]
-            if b0.day != day:
+                b[name], closed[name] = xs.step(m)
+            a = day_anchor(m)
+            if a != day:
                 if day is not None:
                     self._end_day()
-                day = b0.day
-                self._start_day(day)
-            self._step(b, closed[self.names[0]])
+                day = a
+                self._start_day(a)
+            self._step(m, m + 1, b, closed)
+            self._prev_T = m + 1
         if day is not None:
             self._end_day()
         return self
 
     def _start_day(self, a: int):
-        self.d = {
-            "anchor": a, "date": str(minute_to_ts(a + 1440).date()), "levels_built": False, "pre_added": False,
+        cfg = self.cfg
+        if self._prev_complete:
+            self._complete_days += 1
+        self.prev_day_R, self._day_R = self._day_R, 0.0
+        date = str(minute_to_ts(a + 1440).date())
+        self.d = d = {
+            "anchor": a, "date": date, "levels_built": False, "pre_added": False, "pending": [],
             "setups": [], "trades": 0, "done": False, "done_reason": "", "bias": NONE, "bias_draws": set(),
             "bias_info": {}, "aligned_checked": False, "busy_until": None, "last_R": None,
-            "news": self.calendar.get(str(minute_to_ts(a + 1440).date()), {}),
+            "ladder": self.base_ladder, "news": self.calendar.get(date, {}),
         }
-        news = self.d["news"]
-        if news.get("no_trade"):
-            self.d["done"], self.d["done_reason"] = True, f"NO_TRADE_DAY ({news['no_trade']})"
+        self._prev_complete = self._first_t <= a + cfg["session_start_tol_min"]
+        if d["news"].get("no_trade"):
+            d["done"], d["done_reason"] = True, f"NO_TRADE_DAY ({d['news']['no_trade']})"
+        elif cme_calendar.is_half_day(date) or cme_calendar.is_early_close(date):
+            d["done"], d["done_reason"] = True, "NO_TRADE_DAY (Feiertag/früher Schluss)"
+        elif self._complete_days < cfg["warmup_days"]:
+            d["done"], d["done_reason"] = True, f"WARMUP ({self._complete_days}/{cfg['warmup_days']} Tage Historie)"
 
     def _end_day(self):
         d = self.d
         for s in d["setups"]:
-            if s.state not in ("DONE",):
-                self._close_setup(s, "CUTOFF" if s.state != "IN_TRADE" else "ENTERED")
+            if s.state != "DONE":
+                self._close_setup(s, "CUTOFF")
         self.days.append({"date": d["date"], "trades": d["trades"], "bias": DIR_NAME[d["bias"]],
                           "done_reason": d["done_reason"], "setups": len(d["setups"])})
 
-    def _step(self, b: dict, closed: list):
-        d, a = self.d, self.d["anchor"]
-        b0 = b[self.names[0]]
-        t, T = b0.t, b0.ct
+    def _step(self, t: int, T: int, b: dict, closed: dict):
+        d, a, cfg = self.d, self.d["anchor"], self.cfg
         scan, flat = at(a, self.m["scan_start"]), at(a, self.m["flat_time"])
         if t < scan or t >= flat:
             return
         cutoff = at(a, self.m["cutoff"])
+        any_closed = set().union(*closed.values())
         if not d["levels_built"]:
             for xs in self.X.values():
                 self._build_levels(xs, a, scan)
             d["levels_built"] = True
-        if not d["pre_added"] and T >= at(a, "09:30") and self.cfg["include_premarket"]:
+        for item in list(d["pending"]):            # Session-Levels, deren Fenster erst nach 08:30 endet
+            typ, t0, t1, rank = item
+            if T >= t1:
+                for xs in self.X.values():
+                    self._session_level(xs, typ, t0, t1, t1, rank, T)
+                d["pending"].remove(item)
+        if not d["pre_added"] and T >= at(a, "09:30") and cfg["include_premarket"]:
             for xs in self.X.values():
                 self._add_premarket(xs, a)
             d["pre_added"] = True
-        # späte 1H/4H-Swings als Levels
-        for xs in self.X.values():
+        for xs in self.X.values():                 # späte 1H/4H-Swings als Levels
             for tf in (60, 240):
-                if tf in closed:
-                    for s in xs.tfs[tf].swings[-2:]:
-                        if s.detected_at == T:
+                if tf in closed[xs.name]:
+                    for s in xs.tfs[tf].swings[-3:]:
+                        if self._prev_T < s.detected_at <= T:
                             self._add_level(xs, f"{tf // 60}H_SWING", s.kind, s.price, 3 if tf == 60 else 4,
                                             s.anchor_t, T)
-        # Bias um 09:25 und zu jedem 1H-Close
-        if (T >= at(a, "09:25") and not d["bias_info"]) or (60 in closed and T > at(a, "09:25")):
+        if (T >= at(a, "09:25") and not d["bias_info"]) or (60 in any_closed and T > at(a, "09:25")):
             self._compute_bias(T)
-        # SMT-Auswertungen
         for s in d["setups"]:
             if s.smt is None and s.smt_t_eval is not None and T >= s.smt_t_eval:
                 self._eval_smt(s, T)
 
-        if T < cutoff and not d["done"] and d["trades"] < self.cfg["max_trades_per_day"]:
+        if T < cutoff and not d["done"] and d["trades"] < cfg["max_trades_per_day"]:
             busy = d["busy_until"] is not None and T <= d["busy_until"]
-            triggers = []
+            triggers, deferred = [], []
             for s in sorted(d["setups"], key=lambda s: (s.created_at, s.index, s.dir)):
-                xs = self.X[s.index]
+                xs, bx = self.X[s.index], b[s.index]
+                if bx is None:
+                    continue
+                tr = ""
                 if s.state == "ARMED":
-                    tr = self._trigger(s, xs, b[s.index])
+                    tr = self._trigger(s, xs, bx, closed[s.index])
                     if tr:
                         triggers.append((s, tr))
                 if s.state in ("CONFIRMED", "ARMED"):
-                    self._continuation(s, xs, b[s.index], closed)
-                elif s.state == "SWEPT":
-                    if b[s.index].t > s.sweep_bar_t:
-                        if s.dir == DOWN and b[s.index].h > s.sweep_extreme:
-                            s.sweep_extreme, s.sweep_extreme_t = b[s.index].h, b[s.index].t
-                        if s.dir == UP and b[s.index].l < s.sweep_extreme:
-                            s.sweep_extreme, s.sweep_extreme_t = b[s.index].l, b[s.index].t
+                    hold = bool(tr) and cfg["allow_trigger_on_new_extreme"]
+                    if self._continuation(s, xs, bx, closed[s.index], hold_new_leg=hold) == "DEFER":
+                        deferred.append(s)
+                elif s.state == "SWEPT" and bx.t > s.sweep_bar_t:
+                    if s.dir == DOWN and bx.h > s.sweep_extreme:
+                        s.sweep_extreme, s.sweep_extreme_t = bx.h, bx.t
+                    if s.dir == UP and bx.l < s.sweep_extreme:
+                        s.sweep_extreme, s.sweep_extreme_t = bx.l, bx.t
             for name in self.names:
-                self._sweeps(self.X[name], b[name], T, create=not busy)
-            if self.cfg["confirm_tf"] in closed:
-                for s in list(d["setups"]):
-                    if s.state == "SWEPT":
-                        self._confirm(s, self.X[s.index], T)
+                if b[name] is not None:
+                    self._sweeps(self.X[name], b[name], T, create=not busy)
+            for s in list(d["setups"]):
+                if s.state == "SWEPT" and s.ladder[0] in closed[s.index]:
+                    self._confirm(s, self.X[s.index], T)
             for s in d["setups"]:
-                if s.state == "SWEPT" and T - s.created_at > self.cfg["sweep_max_age_bars"] * self.cfg["confirm_tf"]:
+                if s.state == "SWEPT" and T - s.created_at > cfg["sweep_max_age_bars"] * s.ladder[0]:
                     self._close_setup(s, "EXPIRED_NO_REACTION")
             if triggers and not busy:
                 self._gate_and_enter(triggers, b, T)
+            for s in deferred:                      # kein Einstieg auf dieser Bar -> neuer Lauf
+                if s.state in ("CONFIRMED", "ARMED"):
+                    self._new_leg(s, b[s.index])
 
         if not d["aligned_checked"] and T >= at(a, self.m["alignment_deadline"]):
             d["aligned_checked"] = True
-            if self.pair and self.cfg["require_index_alignment"] and not d["done"] and d["trades"] == 0:
-                of = [self.X[n].tfs[self.cfg["confirm_tf"]].orderflow for n in self.names]
-                if of[0] != of[1] or NONE in of:
+            if cfg["require_index_alignment"] and not d["done"] and d["trades"] == 0:
+                of = [self.X[n].tfs[d["ladder"][0]].orderflow for n in self.names]
+                if not self.pair or of[0] != of[1] or NONE in of:
                     d["done"], d["done_reason"] = True, "ALIGNMENT_DEADLINE (ES/NQ uneinig)"
         if T >= cutoff:
             for s in d["setups"]:
@@ -297,40 +333,49 @@ class Engine:
         for L in xs.levels:
             if L.side == side and L.price == price:
                 L.types.add(typ)
-                if rank > L.rank:
-                    L.rank = rank
+                L.rank = max(L.rank, rank)
+                L.formed_at = min(L.formed_at, formed_at)
                 return L
         L = Level(f"{xs.name}:{typ}:{price}", {typ}, side, price, rank, anchor_t, formed_at, alive)
         xs.levels.append(L)
         return L
 
-    def _session_level(self, xs, typ, t_from, t_to, formed_at, rank, scan):
+    def _session_level(self, xs, typ, t_from, t_to, formed_at, rank, now):
+        """High/Low eines abgeschlossenen Fensters [t_from, t_to); lebendig, wenn bis `now` nicht durchbrochen."""
         for side, want_high in ((UP, True), (DOWN, False)):
             p, pt = xs.argext(t_from, t_to, want_high)
             if p is None:
                 continue
             if want_high:
-                after = xs.max_high(formed_at, scan)
+                after = xs.max_high(formed_at, now)
                 alive = after is None or after <= p
             else:
-                after = xs.min_low(formed_at, scan)
+                after = xs.min_low(formed_at, now)
                 alive = after is None or after >= p
             self._add_level(xs, f"{typ}_{'H' if want_high else 'L'}", side, p, rank, pt, formed_at, alive)
 
+    def _session(self, xs, typ, t_from, t_to, rank, scan):
+        if t_to <= scan:
+            self._session_level(xs, typ, t_from, t_to, t_to, rank, scan)
+        elif (typ, t_from, t_to, rank) not in self.d["pending"]:
+            self.d["pending"].append((typ, t_from, t_to, rank))
+
+    def _prev_session_anchor(self, xs, a):
+        k = bisect.bisect_left(xs.t, a) - 1
+        return day_anchor(int(xs.t[k])) if k >= 0 else None
+
     def _build_levels(self, xs: IndexState, a: int, scan: int):
         xs.levels = []
-        # Vortag: letzter Handelstag vor a mit Daten
-        k = bisect.bisect_left(xs.t, a) - 1
-        pa = day_anchor(int(xs.t[k])) if k >= 0 else None
+        pa = self._prev_session_anchor(xs, a)
+        # Globex-Feiertagssession zählt zum Folgetag -> Vortag = reguläre Session davor
+        if pa is not None and cme_calendar.is_half_day(str(minute_to_ts(pa + 1440).date())):
+            pa = self._prev_session_anchor(xs, pa)
         if pa is not None:
-            self._session_level(xs, "PD", pa, pa + SESSION_LEN, pa + SESSION_LEN, 3, scan)
+            self._session(xs, "PD", pa, pa + SESSION_LEN, 3, scan)
             if self.cfg["include_prev_ny"]:
-                self._session_level(xs, "PREV_NY", at(pa, self.m["ny_rth_start"]), pa + SESSION_LEN,
-                                    pa + SESSION_LEN, 2, scan)
-        asia_end, lon_end = at(a, self.cfg["asia_end"]), at(a, self.cfg["london_end"])
-        self._session_level(xs, "ASIA", at(a, self.cfg["asia_start"]), asia_end, asia_end, 2, scan)
-        self._session_level(xs, "LONDON", at(a, self.cfg["london_start"]), lon_end, lon_end, 2, scan)
-        # 1H/4H-Swings der letzten N Handelstage
+                self._session(xs, "PREV_NY", at(pa, self.m["ny_rth_start"]), pa + SESSION_LEN, 2, scan)
+        self._session(xs, "ASIA", at(a, self.cfg["asia_start"]), at(a, self.cfg["asia_end"]), 2, scan)
+        self._session(xs, "LONDON", at(a, self.cfg["london_start"]), at(a, self.cfg["london_end"]), 2, scan)
         for tf, days, rank in ((60, self.cfg["lookback_1h_days"], 3), (240, self.cfg["lookback_4h_days"], 4)):
             since = self._n_days_back(xs, a, days)
             for s in xs.tfs[tf].swings:
@@ -361,7 +406,7 @@ class Engine:
 
     # ----------------------------------------------------------------- Bias
     def _compute_bias(self, T: int):
-        d = self.d
+        d, cfg = self.d, self.cfg
         trends = {}
         for tf in (240, 60):
             vals = [self.X[n].tfs[tf].trend_with_gap_flip(T) for n in self.names]
@@ -376,13 +421,14 @@ class Engine:
             bias = t4 if t4 != NONE else t1
         else:
             bias = NONE
-        # Draws über/unter dem Kurs
         up, dn, draws = 0, 0, {UP: set(), DOWN: set()}
         ok = {UP: True, DOWN: True}
         for n in self.names:
             xs = self.X[n]
-            close = xs.bars[xs.pos].c
-            radius = self.cfg["draw_radius_pct"] * close
+            if xs.last is None:
+                continue
+            close = xs.last.c
+            radius = cfg["draw_radius_pct"] * close
             u = [L for L in xs.levels if L.alive and L.formed_at <= T and L.side == UP and 0 < L.price - close <= radius]
             w = [L for L in xs.levels if L.alive and L.formed_at <= T and L.side == DOWN and 0 < close - L.price <= radius]
             up, dn = up + len(u), dn + len(w)
@@ -392,14 +438,16 @@ class Engine:
             ok[DOWN] &= bool(w)
         if bias != NONE and not ok[bias]:
             bias = NONE
-        if bias == NONE and abs(up - dn) >= self.cfg["draw_imbalance_min"]:
+        if bias == NONE and abs(up - dn) >= cfg["draw_imbalance_min"]:
             bias = UP if up > dn else DOWN
-        if conflict and self.cfg["htf_conflict_action"] == "stand_down" and not d["done"]:
+        if conflict and cfg["htf_conflict_action"] == "stand_down" and not d["done"]:
             d["done"], d["done_reason"] = True, "HTF_CONFLICT (4H vs 1H)"
+        d["ladder"] = (15, 5, 60) if (conflict and cfg["htf_conflict_action"] == "escalate_15m") else self.base_ladder
         d["bias"] = bias
         d["bias_draws"] = draws[bias] if bias != NONE else set()
         d["bias_info"] = {"t4": DIR_NAME[t4], "t1": DIR_NAME[t1], "draws_up": up, "draws_down": dn,
-                          "conflict": conflict, "at": str(minute_to_ts(T).time())}
+                          "conflict": conflict, "ladder": "/".join(f"{x}m" for x in d["ladder"]),
+                          "at": str(minute_to_ts(T).time())[:5]}
 
     # ----------------------------------------------------------------- Sweep / Setup
     def _sweeps(self, xs: IndexState, b: Bar, T: int, create: bool = True):
@@ -425,7 +473,8 @@ class Engine:
                 if s.state in ("CONFIRMED", "ARMED"):
                     s.log.append(f"{_ts(T)} weiterer Sweep {L.id} ignoriert")
                     return
-        ctf = self.cfg["confirm_tf"]
+        ladder = d["ladder"]
+        ctf = ladder[0]
         floor_t = b.t - self.cfg["leg_max_bars"] * ctf
         sw = xs.tfs[ctf].highs if dirn == DOWN else xs.tfs[ctf].lows
         t0 = floor_t
@@ -439,26 +488,30 @@ class Engine:
         a = b.day
         leg_t = a + ((pt - a) // ctf) * ctf
         self._sid += 1
-        s = Setup(self._sid, xs.name, dirn, [L], T, b.t, b.h if dirn == DOWN else b.l, b.t, p, leg_t)
+        s = Setup(self._sid, xs.name, dirn, [L], T, b.t, b.h if dirn == DOWN else b.l, b.t, p, leg_t, ladder)
         s.smt_t_eval = a + ((b.t - a) // ctf + 1) * ctf  # erster confirm_tf-Close nach dem Sweep
-        s.log.append(f"{_ts(T)} Sweep {L.id} -> {DIR_NAME[dirn]}-Setup")
+        s.log.append(f"{_ts(T)} Sweep {L.id} -> {DIR_NAME[dirn]}-Setup"
+                     + (f" (Leiter {ladder[0]}m/{ladder[1]}m)" if ladder != self.base_ladder else ""))
         d["setups"].append(s)
 
+    def _other(self, s: Setup) -> IndexState | None:
+        rest = [n for n in self.names if n != s.index]
+        return self.X[rest[0]] if rest else None
+
     def _eval_smt(self, s: Setup, T: int):
-        if not self.pair:
+        other = self._other(s)
+        if other is None:
             s.smt = False
             return
         L = s.levels[0]
-        other = self.X[[n for n in self.names if n != s.index][0]]
-        ctf = self.cfg["confirm_tf"]
+        ctf = s.ladder[0]
         w0 = s.created_at - self.cfg["smt_window_bars"] * ctf
-        typ = next(iter(L.types))
         ref = None
-        if not typ.endswith("SWING"):
-            for M in other.levels:
-                if typ in M.types and M.side == L.side:
-                    ref = M.price
-                    break
+        for typ in sorted(t for t in L.types if not t.endswith("SWING")):
+            M = next((M for M in other.levels if M.side == L.side and typ in M.types), None)
+            if M is not None:
+                ref = M.price
+                break
         if ref is None:
             span = self.cfg["smt_align_bars"] * ctf
             ref = (other.max_high if L.side == UP else other.min_low)(L.anchor_t - span, L.anchor_t + span + 1)
@@ -475,7 +528,7 @@ class Engine:
             s.log.append(f"{_ts(T)} SMT: {other.name} hat das Level nicht mitgenommen")
 
     def _confirm(self, s: Setup, xs: IndexState, T: int):
-        ctf = self.cfg["confirm_tf"]
+        ctf = s.ladder[0]
         st = xs.tfs[ctf]
         c = st.bars[-1]
         if c.ct <= s.created_at:
@@ -504,16 +557,20 @@ class Engine:
 
     def _range_other(self, s: Setup, xs: IndexState, T: int) -> int:
         """SHORT: Range-High = jüngster confirm_tf-Swing-High zwischen Sweep-Extrem und Range-Low, sonst Sweep-Extrem."""
-        st = xs.tfs[self.cfg["confirm_tf"]]
+        st = xs.tfs[s.ladder[0]]
         seq = st.highs if s.dir == DOWN else st.lows
         for sw in reversed(seq):
             if sw.detected_at <= T and s.sweep_extreme_t <= sw.anchor_t < s.range_ext_t:
                 return sw.price
         return s.sweep_extreme
 
-    def _continuation(self, s: Setup, xs: IndexState, b: Bar, closed: list):
+    def _new_leg(self, s: Setup, b: Bar):
+        s.range_ext, s.range_ext_t = (b.l if s.dir == DOWN else b.h), b.t
+        s.state, s.zone_touched, s.counter_bos, s.retrace_ext = "CONFIRMED", False, False, None
+
+    def _continuation(self, s: Setup, xs: IndexState, b: Bar, closed: list, hold_new_leg: bool = False):
         T = b.ct
-        ctf = self.cfg["confirm_tf"]
+        ctf, ttf = s.ladder[0], s.ladder[1]
         short = s.dir == DOWN
         # (2) Abbruch
         if (short and b.h > s.sweep_extreme) or (not short and b.l < s.sweep_extreme):
@@ -525,9 +582,10 @@ class Engine:
                 return self._close_setup(s, "CANCELLED_INVALIDATION (Range zurückerobert)")
         # (3) neuer Lauf
         if (short and b.l < s.range_ext) or (not short and b.h > s.range_ext):
-            s.range_ext, s.range_ext_t = (b.l if short else b.h), b.t
-            s.state, s.zone_touched, s.counter_bos, s.retrace_ext = "CONFIRMED", False, False, None
-            return
+            if hold_new_leg:
+                return "DEFER"          # Trigger auf dieser Bar -> erst Gates prüfen
+            self._new_leg(s, b)
+            return None
         # (4) Zone / Counter-BOS
         if b.t > s.range_ext_t:
             if short:
@@ -548,36 +606,43 @@ class Engine:
                 s.zone_touched = True
             if "FVG" in zones and any(b.l <= g.top for g in xs.tfs[ctf].eligible_gaps(UP, b, s.sweep_extreme_t)):
                 s.zone_touched = True
-        sh1, sl1 = xs.tfs[self.cfg["trigger_tf"]].pre
-        if b.t > s.range_ext_t:
-            if short and sh1 is not None and b.c > sh1.price:
-                s.counter_bos, s.counter_bos_time = True, T
-            if not short and sl1 is not None and b.c < sl1.price:
-                s.counter_bos, s.counter_bos_time = True, T
+        if ttf == 1 or ttf in closed:
+            tb = b if ttf == 1 else xs.tfs[ttf].bars[-1]
+            sh1, sl1 = xs.tfs[ttf].pre
+            if tb.t > s.range_ext_t:
+                if short and sh1 is not None and tb.c > sh1.price:
+                    s.counter_bos, s.counter_bos_time = True, T
+                if not short and sl1 is not None and tb.c < sl1.price:
+                    s.counter_bos, s.counter_bos_time = True, T
         if s.state == "CONFIRMED" and s.counter_bos and (s.zone_touched or not self.cfg["require_zone_touch"]):
             s.state = "ARMED"
-            s.log.append(f"{_ts(T)} Retrace bestätigt (1m-Gegen-BOS{', Zone berührt' if s.zone_touched else ''}) -> ARMED")
+            s.log.append(f"{_ts(T)} Retrace bestätigt ({ttf}m-Gegen-BOS{', Zone berührt' if s.zone_touched else ''}) -> ARMED")
+        return None
 
-    def _trigger(self, s: Setup, xs: IndexState, b: Bar):
-        st = xs.tfs[self.cfg["trigger_tf"]]
+    def _trigger(self, s: Setup, xs: IndexState, b: Bar, closed: list) -> str:
+        ttf = s.ladder[1]
+        if ttf != 1 and ttf not in closed:
+            return ""
+        st = xs.tfs[ttf]
+        tb = b if ttf == 1 else st.bars[-1]
         sh1, sl1 = st.pre
         kind = ""
         if s.dir == DOWN:
             sw = sl1 if (sl1 is not None and sl1.anchor_t > s.range_ext_t and id(sl1) not in s.fired_swings) else None
-            if sw is not None and b.c < sw.price:
-                s.fired_swings.add(id(sw)); kind = "1m-BOS"
+            if sw is not None and tb.c < sw.price:
+                s.fired_swings.add(id(sw)); kind = f"{ttf}m-BOS"
             if self.cfg["ifvg_enabled"]:
-                k = st.ifvg_against(UP, b, s.range_ext_t)
+                k = st.ifvg_against(UP, tb, s.range_ext_t)
                 if k is not None and id(k) not in s.fired_stacks:
-                    s.fired_stacks.add(id(k)); kind = kind or "1m-IFVG"
+                    s.fired_stacks.add(id(k)); kind = kind or f"{ttf}m-IFVG"
         else:
             sw = sh1 if (sh1 is not None and sh1.anchor_t > s.range_ext_t and id(sh1) not in s.fired_swings) else None
-            if sw is not None and b.c > sw.price:
-                s.fired_swings.add(id(sw)); kind = "1m-BOS"
+            if sw is not None and tb.c > sw.price:
+                s.fired_swings.add(id(sw)); kind = f"{ttf}m-BOS"
             if self.cfg["ifvg_enabled"]:
-                k = st.ifvg_against(DOWN, b, s.range_ext_t)
+                k = st.ifvg_against(DOWN, tb, s.range_ext_t)
                 if k is not None and id(k) not in s.fired_stacks:
-                    s.fired_stacks.add(id(k)); kind = kind or "1m-IFVG"
+                    s.fired_stacks.add(id(k)); kind = kind or f"{ttf}m-IFVG"
         return kind
 
     # ----------------------------------------------------------------- Gates + Einstieg
@@ -597,21 +662,21 @@ class Engine:
             if not self._bias_ok(s, T):
                 s.log.append(f"{_ts(T)} Trigger {kind} gegen Bias {DIR_NAME[d['bias']]} -> warten (BIAS_WAIT)")
                 continue
-            if self.pair and cfg["require_index_alignment"]:
-                other = [n for n in self.names if n != s.index][0]
-                if self.X[other].tfs[cfg["confirm_tf"]].orderflow != s.dir:
-                    s.log.append(f"{_ts(T)} Trigger {kind}: {other} nicht ausgerichtet -> warten (UNALIGNED)")
+            if cfg["require_index_alignment"]:
+                other = self._other(s)
+                if other is None or other.last is None or other.last.ct != T:
+                    s.log.append(f"{_ts(T)} Trigger {kind}: zweiter Index fehlt -> warten (UNALIGNED)")
                     continue
-            # Stop
+                if other.tfs[s.ladder[0]].orderflow != s.dir:
+                    s.log.append(f"{_ts(T)} Trigger {kind}: {other.name} nicht ausgerichtet -> warten (UNALIGNED)")
+                    continue
             price = bar.c
             buf = max(cfg["stop_buffer_ticks"], math.ceil(cfg["stop_buffer_pct"] * price))
             if s.dir == DOWN:
-                ext = max(v for v in (s.retrace_ext, bar.h) if v is not None)
-                stop = ext + buf
+                stop = max(v for v in (s.retrace_ext, bar.h) if v is not None) + buf
                 risk = stop - price
             else:
-                ext = min(v for v in (s.retrace_ext, bar.l) if v is not None)
-                stop = ext - buf
+                stop = min(v for v in (s.retrace_ext, bar.l) if v is not None) - buf
                 risk = price - stop
             if risk < cfg["min_stop_pct"] * price or risk > cfg["max_stop_pct"] * price:
                 self._close_setup(s, f"STOP_GATE (Risiko {risk} Ticks)")
@@ -620,7 +685,11 @@ class Engine:
             if not targets:
                 self._close_setup(s, "NO_TARGET (keine Liquidität >= 1R)")
                 continue
-            mult = 0.5 if (d["news"].get("halve") or risk > cfg["wide_stop_pct"] * price) else 1.0
+            big = cfg.get("big_win_R")
+            mult = 0.5 if (d["news"].get("halve") or risk > cfg["wide_stop_pct"] * price
+                           or (big is not None and self.prev_day_R >= big)
+                           or cme_calendar.is_pre_holiday(d["date"])
+                           or cfg["max_trades_per_day"] >= 2) else 1.0
             inst, qty = self._size(s.index, risk, mult)
             if qty <= 0:
                 self._close_setup(s, f"SIZE/COST (Risiko {risk} Ticks)")
@@ -641,17 +710,20 @@ class Engine:
         for o in d["setups"]:
             if o is not s and o.state in ("SWEPT", "CONFIRMED", "ARMED"):
                 self._close_setup(o, "CANCELLED (anderer Trade eröffnet)")
-        # Ausführung simulieren (für Tagesstatus; nutzt nur Daten nach T)
+        # Ausführung simulieren (nutzt nur Bars nach T; Tagesstatus erst ab Trade-Ende)
         xs = self.X[s.index]
-        sig.trade = bt.simulate_signal(xs.bars, xs.pos + 1, sig, self.cfg, flat_t=at(d["anchor"], self.m["flat_time"]),
+        flat_t = at(d["anchor"], self.m["flat_time"])
+        sig.trade = bt.simulate_signal(xs.bars, xs.pos + 1, sig, cfg, flat_t=flat_t,
                                        news_times=d["news"].get("red_times", []))
         tr = sig.trade
-        if tr is not None and tr.exit_t is not None:
+        if tr.exit_t is not None:
             d["busy_until"] = tr.exit_t
             d["last_R"] = tr.r_multiple
+            if tr.r_multiple is not None:
+                self._day_R += tr.r_multiple
         else:
-            d["busy_until"] = at(d["anchor"], self.m["flat_time"])
-        if d["trades"] >= self.cfg["max_trades_per_day"] or (tr is not None and tr.r_multiple is not None and tr.r_multiple < -0.1):
+            d["busy_until"] = flat_t
+        if d["trades"] >= cfg["max_trades_per_day"] or (tr.r_multiple is not None and tr.r_multiple < -0.1):
             d["done"], d["done_reason"] = True, "TRADE_DONE"
 
     def _bias_ok(self, s: Setup, T: int) -> bool:
@@ -663,12 +735,12 @@ class Engine:
         # lean: Gegen-Bias nur, wenn der Draw des Bias geliefert wurde + SMT + anderer Index dreht mit
         if not any(L.id in self.d["bias_draws"] for L in s.levels):
             return False
-        if not self.pair:
+        other = self._other(s)
+        if other is None:
             return False
         if self.cfg["lean_requires_smt"] and not s.smt:
             return False
-        other = self.X[[n for n in self.names if n != s.index][0]]
-        return other.tfs[self.cfg["confirm_tf"]].orderflow_events_since(s.dir, s.created_at, T)
+        return other.tfs[s.ladder[0]].orderflow_events_since(s.dir, s.created_at, T)
 
     def _news_block(self, T: int) -> bool:
         return any(s <= T < e for s, e in self.d["news"].get("blocks", []))
@@ -686,15 +758,17 @@ class Engine:
             if L.alive and L.formed_at <= T and L.side == want:
                 add(L.price, "/".join(sorted(L.types)))
         a = self.d["anchor"]
-        tp_tf = self.cfg["tp_ref_tf"]
+        tp_tf = s.ladder[2]
         for sw in (xs.tfs[tp_tf].lows if short else xs.tfs[tp_tf].highs):
             if sw.anchor_t >= a and sw.detected_at <= T:
                 ext = xs.min_low(sw.detected_at, T) if short else xs.max_high(sw.detected_at, T)
                 if ext is None or (short and ext >= sw.price) or (not short and ext <= sw.price):
                     add(sw.price, f"{tp_tf}m_SWING")
-        if self.cfg["tp_include_internal"]:
-            bar = xs.bars[xs.pos]
-            for tf in (15, 60, 240):
+        if self.cfg["tp_include_internal"] and xs.last is not None:
+            bar = xs.last
+            for tf in sorted({15, 60, 240} | {tp_tf}):
+                if tf < tp_tf:
+                    continue
                 for dirg in (UP, DOWN):
                     for g in xs.tfs[tf].eligible_gaps(dirg, bar):
                         if g.touched_at is not None:
@@ -729,10 +803,8 @@ class Engine:
             per = risk * tv + spec["commission_rt"] + slip
             q = min(int(cfg["account"] * cfg["risk_pct"] * mult // per), cfg["max_contracts"])
             cost_r = (spec["commission_rt"] + slip) / (risk * tv)
-            if q >= 1 and cost_r <= cfg["max_cost_R"]:
-                return inst, q
             if q >= 1:
-                return inst, 0
+                return (inst, q) if cost_r <= cfg["max_cost_R"] else (inst, 0)
             if not (cfg["allow_micros"] and spec["micro"]):
                 return inst, 0
             inst = spec["micro"]
@@ -754,21 +826,19 @@ class Engine:
         rows = []
         for sg in self.signals:
             t = sg.trade
+            tick = INSTRUMENTS[sg.index]["tick"]
             rows.append({
                 "date": _ts(sg.T)[:10], "signal": _ts(sg.T), "index": sg.index, "instrument": sg.instrument,
                 "dir": DIR_NAME[sg.dir], "trigger": sg.trigger_kind, "confirm": sg.setup.confirm_kind,
                 "levels": ", ".join(sorted({t_ for L in sg.setup.levels for t_ in L.types})),
                 "bias": DIR_NAME[sg.bias], "qty": sg.qty,
-                "entry": t.entry_price * self._tick(sg) if t and t.entry_price is not None else None,
-                "stop": sg.stop * self._tick(sg), "tp": ", ".join(f"{p * self._tick(sg):.2f}" for p in sg.targets),
+                "entry": t.entry_price * tick if t and t.entry_price is not None else None,
+                "stop": sg.stop * tick, "tp": ", ".join(f"{p * tick:.2f}" for p in sg.targets),
                 "tp_kinds": ", ".join(sg.target_kinds), "exit": t.exit_reason if t else "",
                 "R": round(t.r_multiple, 2) if t and t.r_multiple is not None else None,
                 "usd": round(t.pnl_usd, 2) if t and t.pnl_usd is not None else None,
             })
         return pd.DataFrame(rows)
-
-    def _tick(self, sg):
-        return INSTRUMENTS[sg.index]["tick"]
 
 
 def _ts(m: int | None) -> str:
@@ -778,19 +848,19 @@ def _ts(m: int | None) -> str:
 # ---------------------------------------------------------------------------- News-Kalender
 def load_calendar(cfg: dict, path: str | Path | None = None) -> dict:
     """CSV: date,time,event,impact  (NY-Zeit; impact = red|orange). Rückgabe je Datum:
-    no_trade (FOMC/CPI/NFP), halve (andere rote News), blocks [(start,end)] in Minuten, red_times."""
+    no_trade (FOMC-Entscheid/CPI/NFP), halve (andere rote News), blocks [(start,end)] in Minuten, red_times."""
     path = Path(path or ROOT / cfg["news_calendar"])
     out: dict = {}
     if not path.exists():
         return out
     wait = cfg["post_release_wait_min"]
+    pats = [re.compile(p, re.I) for p in cfg["no_trade_events"]]
     with path.open() as f:
         for row in csv.DictReader(r for r in f if not r.lstrip().startswith("#")):
             date, tm = row["date"].strip(), (row.get("time") or "").strip()
-            ev, imp = row["event"].strip(), row.get("impact", "red").strip().lower()
+            ev, imp = row["event"].strip(), (row.get("impact") or "red").strip().lower()
             dd = out.setdefault(date, {"blocks": [], "red_times": []})
-            is_nt = imp == "red" and any(k.lower() in ev.lower() for k in cfg["no_trade_events"])
-            if is_nt:
+            if imp == "red" and any(p.match(ev) for p in pats):
                 dd["no_trade"] = ev
                 continue
             if not tm:

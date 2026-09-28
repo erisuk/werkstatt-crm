@@ -71,7 +71,9 @@ def brief_message(eng: engine.Engine) -> str:
     if d["news"].get("no_trade"):
         lines.append(f"🚫 Heute kein Trade: {d['news']['no_trade']}")
     for name, xs in eng.X.items():
-        close = xs.bars[xs.pos].c
+        if xs.last is None:
+            continue
+        close = xs.last.c
         above = sorted((L for L in xs.levels if L.alive and L.side == UP and L.price > close), key=lambda L: L.price)[:5]
         below = sorted((L for L in xs.levels if L.alive and L.side == DOWN and L.price < close), key=lambda L: -L.price)[:5]
         lines.append(f"\n{name} @ {fmt_price(close, name)}")
@@ -94,17 +96,23 @@ def update_paper_log(eng: engine.Engine):
 
 
 def run(dry_run: bool = False, window_min: int = 30, frames: dict | None = None, now: datetime | None = None):
-    cfg = config.load()
-    frames = frames or {"NQ": data.download_yahoo("NQ=F", "1m", "7d"), "ES": data.download_yahoo("ES=F", "1m", "7d")}
+    # Yahoo liefert nur ~7 Tage 1m -> kurze Aufwärmphase (4H-Lookback ist dadurch verkürzt)
+    cfg = config.load(warmup_days=1)
+    if frames is None:
+        frames = {"NQ": data.download_yahoo("NQ=F", "1m", "7d"), "ES": data.download_yahoo("ES=F", "1m", "7d")}
+        # letzte Zeile = noch laufende Kerze (teils mit Sekunden-Zeitstempel) -> nur geschlossene Bars verwenden
+        frames = {k: v[v.index.second == 0].iloc[:-1] for k, v in frames.items()}
     eng = engine.Engine(frames, cfg).run()
     st = _load_state()
     now = now or datetime.now(NY)
     last_bar = engine.minute_to_ts(eng.X[eng.names[0]].bars[-1].ct)
     msgs = []
 
-    # Morgen-Briefing einmal pro Tag ab 09:20
+    # Morgen-Briefing einmal pro Tag, sobald Bias und Pre-Market-Levels berechnet sind (~09:30 Datenzeit)
     today = str(now.date())
-    if now.hour * 60 + now.minute >= 9 * 60 + 20 and today not in st["briefs"] and eng.d["date"] == today:
+    d = eng.d
+    ready = bool(d["bias_info"]) and (d["pre_added"] or not cfg["include_premarket"])  # Bias (09:25) + PRE (09:30)
+    if ready and today not in st["briefs"] and d["date"] == today:
         msgs.append(brief_message(eng))
         st["briefs"].append(today)
 

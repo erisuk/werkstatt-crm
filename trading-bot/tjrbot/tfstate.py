@@ -51,6 +51,7 @@ class Gap:
     touched_at: int | None = None
     inverted_at: int | None = None
     expired_at: int | None = None
+    exp_sw: "Swing | None" = None      # erster gleichgerichteter Swing nach der Lücke (für Ablauf-Regel a)
 
     def eligible(self, bar_t: int, bar_ct: int) -> bool:
         return (self.detected_at <= bar_t
@@ -187,6 +188,28 @@ class TFState:
         self.gaps[d].append(g)
         self._live[d].append(g)
         self._last_gap_mid[d] = mid_idx
+
+    def wick_expire(self, b1: Bar) -> None:
+        """FVG-Ablauf (a): unberührte Lücke, 1m-Docht jenseits des ersten gleichgerichteten Swings nach der Lücke
+        ("once we push above the high ... we no longer need these gaps"). Nur mit bereits bestätigten Swings."""
+        for d in (UP, DOWN):
+            pool = self.highs if d == UP else self.lows
+            keep = []
+            for g in self._live[d]:
+                sw = g.exp_sw
+                if sw is None:
+                    for s in reversed(pool):        # Swings sind nach Erkennung sortiert; Lücken sind jung
+                        if s.anchor_t <= g.anchor_t:
+                            break
+                        if s.detected_at <= b1.t:
+                            sw = s
+                    g.exp_sw = sw
+                if (g.touched_at is None and sw is not None
+                        and (b1.h > sw.price if d == UP else b1.l < sw.price)):
+                    g.expired_at = b1.ct   # für b1 selbst noch wählbar, ab der nächsten Bar nicht mehr
+                else:
+                    keep.append(g)
+            self._live[d] = keep
 
     # ------------------------------------------------------------------ Abfragen
     def latest_gap(self, d: int, b: Bar, t0: int | None = None, min_anchor: int | None = None) -> Gap | None:

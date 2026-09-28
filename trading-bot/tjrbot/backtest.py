@@ -78,6 +78,11 @@ def simulate_signal(bars: list, k: int, sig, cfg: dict, flat_t: int, news_times:
 
     for i in range(k, len(bars)):
         b = bars[i]
+        if i > k and b.day != fb.day:          # Session vorbei (früher Schluss/Datenlücke) -> nie über Nacht halten
+            prev = bars[i - 1]
+            fills.append((prev.ct, remaining, prev.c - d * slip, "session_end"))
+            remaining, exit_t, reason = 0, prev.ct, "SESSION_END"
+            break
         if be_pending_from is not None and b.t >= be_pending_from:
             stop = fill + d * cfg["be_offset_ticks"]  # Break-even +1 Tick
             be_pending_from = None

@@ -71,13 +71,3 @@ def aggregate(bars1: list[Bar], tf: int) -> list[Bar]:
     if cur is not None and bars1 and bars1[-1].ct >= cur.ct:
         out.append(cur)
     return out
-
-
-def align(frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
-    """Nur gemeinsame Zeitstempel behalten (fehlende Minuten werden NICHT aufgefüllt)."""
-    if len(frames) < 2:
-        return frames
-    common = None
-    for df in frames.values():
-        common = df.index if common is None else common.intersection(df.index)
-    return {k: v.loc[common] for k, v in frames.items()}

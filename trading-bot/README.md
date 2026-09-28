@@ -73,8 +73,12 @@ Yahoo liefert nur 7 Tage 1m und ist ~10 Min. verzögert.
   engen Stops viel Edge → im Report immer auf `avg_R` nach Kosten schauen.
 - TJRs Regeln haben sich über die Zeit geändert (Order Blocks raus, 10:30 vs. 11:00 Cutoff, Zone Pflicht vs.
   optional, SMT leading vs. lagging). Default = neueste klare Version, der Rest als Parameter/Varianten.
-- Noch nicht umgesetzt (in der Spezifikation beschrieben): 15m-Eskalation bei 4H/1H-Konflikt, 79 %-Extension,
-  Chop-Filter, Spike-Test nach News, Stop am Sweep-Extrem (2023), PM-Session, Prop-Firm-Regeln.
+- Noch nicht umgesetzt (in der Spezifikation beschrieben): 79 %-Extension, Chop-Filter, Spike-Test nach News,
+  Stop am Sweep-Extrem (2023), PM-Session, Prop-Firm-Regeln, Live-Kill-Switches, 2. Trade nur nach BE/Gewinn
+  mit neuem Sweep (der Parameter `max_trades_per_day: 2` ist nur grob umgesetzt).
+- **Aufwärmphase:** Standardmäßig werden die ersten 20 vollständigen Sessions nur zum Aufbau von Levels/Struktur
+  genutzt (`warmup_days`). Live/Yahoo nutzt 1 Tag, weil nur 7 Tage Daten verfügbar sind (4H-Lookback verkürzt).
+- Feiertage (Globex-Halbtage) und frühe Schlüsse werden automatisch ausgelassen (`tjrbot/cme_calendar.py`).
 - Video-Transkripte: YouTube blockiert die inoffizielle Transkript-Abfrage oft von Cloud-Servern und sie
   verstößt gegen die YouTube-AGB. Abschaltbar in `config.yaml` (`fetch_transcripts: false`); dann fasst der Bot
   Titel + Beschreibung zusammen, oder du fügst ein Transkript selbst ein:
