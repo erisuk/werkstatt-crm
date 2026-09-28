@@ -1,0 +1,63 @@
+# Nächtliche Lernschleife: Backtest -> Coach-Agent (Fehleranalyse + Vorschläge) -> Optimierer (neue Varianten
+# + Coach-Vorschläge, Champion nur bei Bestehen auf ungesehenen Daten) -> Bericht per Telegram.
+# Secrets: NQ_CSV_URL, ES_CSV_URL (Download-Links zu 1m-CSV), ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+name: TJR Lernschleife
+
+on:
+  schedule:
+    - cron: "17 3 * * 2-6"   # nach jedem Handelstag, ~23:17 NY
+  workflow_dispatch:
+    inputs:
+      trials:
+        description: "Anzahl neuer Varianten"
+        default: "300"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tjr-learn
+  cancel-in-progress: false
+
+jobs:
+  learn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    defaults:
+      run:
+        working-directory: trading-bot
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: trading-bot/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Daten laden
+        env:
+          NQ_URL: ${{ secrets.NQ_CSV_URL }}
+          ES_URL: ${{ secrets.ES_CSV_URL }}
+        run: |
+          if [ -z "$NQ_URL" ] || [ -z "$ES_URL" ]; then echo "::error::NQ_CSV_URL/ES_CSV_URL fehlen – ohne echte Daten kein Lernen"; exit 1; fi
+          curl -sSfL "$NQ_URL" -o data/NQ_1m.csv
+          curl -sSfL "$ES_URL" -o data/ES_1m.csv
+      - name: Backtest (aktueller Stand)
+        run: python -m tjrbot.run_backtest --nq data/NQ_1m.csv --es data/ES_1m.csv --out reports
+      - name: Coach-Agent
+        run: python -m tjrbot.coach --reports reports
+      - name: Optimierer
+        run: |
+          python -m tjrbot.optimize --nq data/NQ_1m.csv --es data/ES_1m.csv \
+            --trials "${{ github.event.inputs.trials || '300' }}" --workers 4 --seed "${{ github.run_number }}" \
+            | tee reports/optimize.log
+      - name: Ergebnis speichern
+        run: |
+          git config user.name "tjr-bot"
+          git config user.email "tjr-bot@users.noreply.github.com"
+          git add state reports/coach
+          git diff --cached --quiet || (git commit -m "TJR-Lernschleife: Bestenliste/Coach" && git pull --rebase && git push)

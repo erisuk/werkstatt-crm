@@ -30,6 +30,18 @@ NY = ZoneInfo("America/New_York")
 DISCLAIMER = "Inoffizieller TJR-inspirierter Bot – nicht von TJR. Keine Anlageberatung, nur Paper-Trading."
 
 
+def champion_overrides() -> dict:
+    """Gelernten Champion nur nutzen, wenn in config.yaml `learning: use_champion: true` steht."""
+    import yaml
+
+    cfg_file = ROOT / "config.yaml"
+    doc = yaml.safe_load(cfg_file.read_text()) if cfg_file.exists() else {}
+    champ = ROOT / "state" / "champion.yaml"
+    if (doc or {}).get("learning", {}).get("use_champion") and champ.exists():
+        return (yaml.safe_load(champ.read_text()) or {}).get("params", {})
+    return {}
+
+
 def _load_state() -> dict:
     return json.loads(STATE.read_text()) if STATE.exists() else {"notified": [], "briefs": []}
 
@@ -97,7 +109,7 @@ def update_paper_log(eng: engine.Engine):
 
 def run(dry_run: bool = False, window_min: int = 30, frames: dict | None = None, now: datetime | None = None):
     # Yahoo liefert nur ~7 Tage 1m -> kurze Aufwärmphase (4H-Lookback ist dadurch verkürzt)
-    cfg = config.load(warmup_days=1)
+    cfg = config.load(warmup_days=1, **champion_overrides())
     if frames is None:
         frames = {"NQ": data.download_yahoo("NQ=F", "1m", "7d"), "ES": data.download_yahoo("ES=F", "1m", "7d")}
         # letzte Zeile = noch laufende Kerze (teils mit Sekunden-Zeitstempel) -> nur geschlossene Bars verwenden

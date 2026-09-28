@@ -64,6 +64,25 @@ Yahoo liefert nur 7 Tage 1m und ist ~10 Min. verzögert.
    Einmalig `python -m tjrbot.monitor --init` laufen lassen (oder den ersten Lauf abwarten), damit nicht alle
    alten Videos auf einmal kommen – standardmäßig werden max. 5 gemeldet.
 
+## Lernschleife: Analyse, Coach-Agent, Optimierer
+
+| Teil | Datei | Aufgabe |
+|---|---|---|
+| Analyse | `tjrbot/analysis.py` | Gewinne/Verluste nach Uhrzeit, Level, Bestätigung, Bias, Ausstieg; welche Filter blockieren |
+| Coach-Agent | `tjrbot/coach.py` | Zweiter Agent (Claude): erklärt Fehler und rote Zahlen, schlägt Experimente vor |
+| Optimierer | `tjrbot/optimize.py` | Testet laufend Varianten + Coach-Vorschläge, kürt einen Champion |
+| Automatik | `.github/workflows/tjr-learn.yml` | Jede Nacht: Backtest → Coach → Optimierer → Telegram |
+
+Der Bot „lernt“ nur Parameter innerhalb von TJRs Modell. Ein neuer Champion wird nur gekürt, wenn er auf
+**ungesehenen Daten** (letzte 40 % der Historie) statistisch überzeugt (t-Wert, Schwelle steigt mit der Zahl
+der Versuche) und auch seine Nachbar-Varianten gut sind. Live nutzt ihn erst mit `learning.use_champion: true`.
+
+```bash
+python -m tjrbot.run_backtest --nq data/NQ_1m.csv --es data/ES_1m.csv --out reports
+python -m tjrbot.coach --reports reports
+python -m tjrbot.optimize --nq data/NQ_1m.csv --es data/ES_1m.csv --trials 500 --workers 8
+```
+
 ## Ehrliche Grenzen
 
 - **TJRs Handel ist teils diskretionär** („welcher Draw ist *der* Draw“, genaues „second high“, Chop, News-Reaktion).

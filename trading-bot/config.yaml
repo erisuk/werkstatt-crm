@@ -17,3 +17,8 @@ strategy:
   # require_zone_touch: true  # false = TJRs vereinfachte Version vom 05.06.2026 (nur 1m-BOS)
   # bias_mode: lean         # lean | filter | off
   # max_trades_per_day: 1
+
+learning:
+  # true = Live-Signale nutzen den vom Optimierer gekürten Champion (state/champion.yaml)
+  # statt der TJR-Standardwerte. Erst einschalten, wenn der Champion auf echten Daten gekürt wurde.
+  use_champion: false
