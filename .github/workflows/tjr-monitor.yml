@@ -4,7 +4,7 @@ name: TJR Video-Monitor
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "7,37 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -39,4 +39,4 @@ jobs:
           git config user.name "tjr-bot"
           git config user.email "tjr-bot@users.noreply.github.com"
           git add state knowledge
-          git diff --cached --quiet || (git commit -m "TJR-Monitor: neue Videos" && git push)
+          git diff --cached --quiet || (git commit -m "TJR-Monitor: neue Videos" && git pull --rebase && git push)

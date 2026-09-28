@@ -1,0 +1,19 @@
+# Konfiguration des TJR-Strategie-Bots.
+# Alle Strategie-Parameter mit Defaults + Erklärung: tjrbot/config.py und research/tjr_spec_final.json
+
+monitor:
+  # TJRs YouTube-Kanal (@TJRTrades). ID laut Recherche abgeleitet – einmal im Browser prüfen:
+  # https://www.youtube.com/feeds/videos.xml?channel_id=UCGHBUXjDCeiIXNdKR0HUZnA
+  youtube_channel_id: UCGHBUXjDCeiIXNdKR0HUZnA
+  # Transkripte automatisch holen (inoffizielle YouTube-Schnittstelle; laut YouTube-AGB nicht erlaubt,
+  # von Cloud-IPs oft blockiert). false = nur Titel/Beschreibung oder manuell eingefügte Transkripte.
+  fetch_transcripts: true
+
+strategy:
+  # Beispiele – auskommentiert = TJR-Default (Stand 2026):
+  # account: 50000          # Kontogröße in USD
+  # risk_pct: 0.01          # 1 % Risiko pro Trade
+  # cutoff: "10:30"         # letzter Einstieg (TJR persönlich); Varianten "11:00", "11:30"
+  # require_zone_touch: true  # false = TJRs vereinfachte Version vom 05.06.2026 (nur 1m-BOS)
+  # bias_mode: lean         # lean | filter | off
+  # max_trades_per_day: 1

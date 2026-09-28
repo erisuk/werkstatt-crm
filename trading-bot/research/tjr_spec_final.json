@@ -1,0 +1,1293 @@
+{
+  "summary": "This is an unofficial, deterministic approximation of the intraday index-futures model that TJR (@TJRTrades) teaches in his public 2025-2026 material, mainly Path to Profitability (Jan 2026) and 'My UPDATED Day Trading Strategy (2026)' (2026-06-05). It runs on ES and NQ on New York time with DST-safe bars. CME futures stand in for the charts he shows. His actual execution venue is unverified; it is probably index CFDs.\n\nThe model works in this order:\n1. Mark external draws on liquidity: PDH/PDL of the 18:00-17:00 futures day, the Asia 18:00-03:00 high/low, the London 03:00-08:30 high/low, the pre-market high/low, the previous NY high/low, and unswept 1H/4H two-candle swings. NDOG/NWOG, the news candle and PWH/PWL are optional. Internal liquidity (unfilled HTF FVGs) is marked too, for targets only.\n2. From 08:30 on, a level is traded through. A wick is enough.\n3. 5m confirmation against the sweep is whichever comes first: a body close through the most recent 5m swing (BOS), or a body close through the floor/ceiling of the most recent FVG stack in the leg that ran into the level (IFVG).\n4. A retrace, seen as a 1m BOS against the trade. By default it must reach 5m equilibrium or a 5m FVG of the new leg. TJR's 2026-06-05 simplification drops that zone requirement; both configurations come from him and both are reported.\n5. A 1m BOS or 1m IFVG event back in trade direction is a market entry, only between 09:50 and 10:30 ET (10:30 is his personal cutoff), and only when ES and NQ 5m order flow agree. HTF bias (4H/1H swing sequence, HTF-gap respect, side of stacked draws) acts as a lean by default, not as a veto.\n6. The stop sits beyond the retrace swing (the 'second high/low') plus a buffer of 2 ticks on ES, scaled up on NQ.\n7. Targets are the next opposing external or internal draws, with TP1 >= 1R. At TP1, take a partial and move the stop to break-even; a runner continues.\n8. Risk is 1% calculated per trade (our safety default; he now uses fixed contracts) and 1 trade per day (his beginner recommendation). FOMC, CPI and NFP days are skipped. On PPI and other red releases the bot waits 15-20 minutes and halves size.\n\nOrder and breaker blocks are excluded; he retired them as continuation confluences (stated 2026-02-03). The build is lookahead-free:\n- every object carries anchor_t and detected_at\n- FVGs are never deleted\n- triggers are one-off events\n- each setup locks its timeframe ladder\n- history is built per contract\n- fills follow an explicit order state machine\n\nWhere his statements conflict, the choices are exposed as parameters or variants. Independent mechanical replications did not reproduce his self-reported 64% daily win rate, and costs relative to his very tight stops dominate results. The trading bot, the signal notifier and the video monitor are labelled as unofficial and TJR-inspired. They speak in a neutral third-person voice and never speak or post as TJR.",
+  "instruments": [
+    "ES (CME E-mini S&P 500 futures): primary. Serves as the data/execution proxy for his S&P charts and is always evaluated together with NQ.",
+    "NQ (CME E-mini Nasdaq-100 futures): primary.",
+    "MES / MNQ micros for small accounts: same rules, tick value 1.25 / 0.50 USD. Fees do not scale down by 1/10, so cost in R is roughly 2-4x higher.",
+    "Index CFDs (US500/NAS100 on MT5): probably his actual 2023-2025 execution venue (SPX500/Nas100 recap titles, AirFX/MT5 in Boot Camp 2.0, 'before fees and swap'). Available only as variant venue='cfd', with spread + swap costs and venue-dependent 4H alignment.",
+    "SPY / QQQ only as research proxies: they have no overnight session, so Asia/London levels are missing, and wicks depend on the feed.",
+    "Out of scope: gold, forex (GBPUSD, GBPJPY) and crypto. He teaches them too, but they have no ES/NQ SMT partner and use different sessions and news exposure. Each would need its own instrument table and session windows (e.g. GC tick 0.10 = 10 USD)."
+  ],
+  "timezone": "America/New_York (ET). DST-aware wall-clock binning is required; never use a fixed UTC offset, and never use pandas resample with an ET origin, which drifts by 1h during EDT. A futures trading day runs from 18:00 ET the previous day to the session end (17:00 ET or an early close), taken from an exchange calendar. 17:00-18:00 is the untradeable spread hour.",
+  "components": [
+    {
+      "name": "data_and_timeframes",
+      "description": "Bar construction, timestamp convention, DST-safe resampling, contract roll, integer-tick arithmetic, warm-up, instrument table and the no-lookahead rules every other component relies on.",
+      "algorithm": "INPUT: 1m OHLCV per contract for ES and NQ (plus MES/MNQ if micros are allowed), UTC index. All wall-clock logic runs in America/New_York.\nLOAD CHECKS: (1) Bar label convention: bar.t must be the interval START (Databento ohlcv ts_event). Assert that on CPI/NFP days the 08:30 ET spike sits in the bar labelled 08:30; otherwise shift labels by -1m. (2) Prices -> integer ticks: p = round(price/0.25); do every comparison in ints; round derived levels conservatively (equilibrium, extension_79, stop_loss). (3) Never forward-fill missing 1m bars. A bar missing on one index means 'no update' for that index, never a flat bar. ES and NQ timestamps must align. Days with more than max_missing_min missing minutes in [08:30, 12:00) on either index -> SKIP_DATA.\nTIME CONVENTION (every swing, level, FVG, BOS, IFVG, sweep): anchor_t = open time of the bar where its price sits; detected_at = close_time of the bar that revealed it. An object is usable at decision time T iff detected_at <= T. Comparisons of the form 'inside the leg' or 'after X' use anchor_t.\nBAR: bar.t = open; close_time = min(key + tf, session_end), with session_end from the exchange calendar (17:00 ET or the early close).\nDST-SAFE RESAMPLING (1m -> 5m, 15m, 1H, 4H): wall = ts.tz_convert('America/New_York').tz_localize(None); anchor = (wall - 18h).normalize() + 18h; key = anchor + floor((wall - anchor)/tf)*tf. Do NOT use pandas resample(origin=18:00 ET) or offset='18h': during EDT the bins drift to 19/23/03/07/11/15 (verified with pandas 3.0.6). The recipe is exact because DST switches (Sunday 02:00) always fall inside the weekend closure. 4H bars open at 18, 22, 02, 06, 10, 14 (the last one is 3h). Assert for every day that a 4H bar closes at 10:00 ET.\nTRADING DAY D = [18:00 ET of the previous session, session_end of D), taken from an exchange calendar (exchange_calendars 'CMES' or pandas_market_calendars 'CME_Equity'). A Globex-only holiday session is merged into the next trading day for PDH/PDL.\nAVAILABILITY: at T (close of a 1m bar) a tf-bar is readable only if close_time <= T. A forming higher-TF candle is never read.\nCONTRACT ROLL: roll ES, NQ, MES and MNQ together on the CME roll date (2nd Thursday of Mar/Jun/Sep/Dec = 8 calendar days before the 3rd-Friday expiry), from one explicit calendar. For trading day D, build EVERY historical object (levels, swings, FVGs, trend/orderflow state, warm-up) from the 1m history of the contract traded on D; that contract trades for months before the roll. Never splice raw prices. Panama back-adjustment (spread from the 16:00 ET prints of both contracts) is only a logged fallback when that history is missing. Unit test: no swing or FVG spans a contract change. Optional: skip the roll day.\nWARM-UP: start all state machines at D - (lookback_4h_days + 10) trading days. Convergence test: decisions for D must be identical when the warm-up is doubled.\nLADDERS: L_aligned = {confirm_tf 5m, trigger_tf 1m, tp_ref_tf 15m}. L_conflict (see daily_bias) = {confirm_tf 15m, trigger_tf 5m, tp_ref_tf 1H}. A setup locks its ladder at creation (S.ladder); ladder changes affect only new setups and are logged. Bar-count parameters (sweep_max_age, leg_max_bars, SMT windows) are counted in bars of S.ladder.confirm_tf and converted to time with that tf.\nINSTRUMENT TABLE (verify against CME contract specs): tick 0.25 for ES, NQ, MES, MNQ. Tick value ES 12.50, NQ 5.00, MES 1.25, MNQ 0.50 USD. Point value ES 50, NQ 20, MES 5, MNQ 2. Commission + exchange + NFA fees per round trip: ES/NQ about 4.50, MES/MNQ about 1.00-1.50 (broker-specific).\nVENUE: CME futures are the DATA PROXY for the charts he shows; his execution venue is unverified (probably index CFDs on MT5). venue='cfd' variant: cost = spread + overnight swap, and MT5 server 4H bars close at 09:00/13:00 ET, so the premise that the 4H candle closes at 10:00 depends on the venue.\nPer-bar update order: see daily_orchestration.",
+      "parameters": [
+        {
+          "name": "tz",
+          "default": "America/New_York",
+          "range": "fixed",
+          "why": "TJR sets charts to New York time. Fixed UTC offsets silently shift session ranges twice a year, a documented bug in third-party bots and in the MT5 thesis EA (ET_UTC_OffsetHours=-5)."
+        },
+        {
+          "name": "four_hour_origin",
+          "default": "18:00 ET wall clock (DST-safe recipe)",
+          "range": "17:00 | 18:00",
+          "why": "Only an 18:00 origin makes a 4H candle close at 10:00, as he states in video 096 and as TradingView CME charts show. One third-party bot uses 17:00. The alignment is venue-dependent."
+        },
+        {
+          "name": "ladder_aligned",
+          "default": "confirm 5m / trigger 1m / TP-ref 15m",
+          "range": "fixed",
+          "why": "'5-minute order flow dictates everything ... then I scale down to the 1-minute to look for an entry'."
+        },
+        {
+          "name": "ladder_conflict",
+          "default": "confirm 15m / trigger 5m / TP-ref 1H",
+          "range": "or stand_down",
+          "why": "2024 video 67vLAkcdPu4: if 4H and 1H disagree, demand 15m confirmation. Not restated in 2026."
+        },
+        {
+          "name": "max_missing_min",
+          "default": "5",
+          "range": "0-15",
+          "why": "Our assumption; gaps in the 08:30-12:00 window corrupt sweeps and triggers."
+        },
+        {
+          "name": "venue",
+          "default": "futures",
+          "range": "futures | cfd",
+          "why": "His venue is unverified. The CFD variant changes costs (spread + swap) and 4H bar alignment."
+        },
+        {
+          "name": "warmup_days",
+          "default": "lookback_4h_days + 10 trading days",
+          "range": ">= 15",
+          "why": "Trend, swing and FVG state depend on history; the convergence test checks that the warm-up is sufficient."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step301_tjr_rules.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step436_spec_conflicts_resolved.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step437_replay_results.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step452_bootcamp2_spec.md",
+        "https://github.com/D1349375/traders-debate-system/blob/main/.claude/skills/tjr-perspective/references/research/05-decisions.md",
+        "https://github.com/joshyattridge/smart-money-concepts/issues/101",
+        "https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.resample.html",
+        "https://databento.com/docs/schemas-and-data-formats/ohlcv"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "TJR reads charts visually and never specifies bar alignment. The 18:00 wall-clock 4H origin, the stop-first rule, integer ticks and per-contract history are our engineering choices. He rejects bar-replay backtests because the HTF candle is shown completed; the availability rule (detected_at <= T) is the code-level fix for exactly that lookahead."
+    },
+    {
+      "name": "sessions",
+      "description": "Session windows (ET) used to build session high/low levels. Only the NY cash session is traded.",
+      "algorithm": "Windows are defined on bar OPEN time t: a 1m bar belongs to [a, b) iff a <= t < b.\nFor trading day D:\n  ASIA   = [18:00 (evening before D), 03:00)\n  LONDON = [london_start, 08:30)   # truncated when the next session opens\n  NY_PRE = [08:30, 09:30)   # observe only, never enter\n  NY_RTH = [09:30, ny_rth_end)\n  SPREAD = [17:00, 18:00)   # no trading\nFor each session s: s.high/s.low = extremes of its 1m bars; formed_at (= detected_at) = s.end. A session level is usable at T only if formed_at <= T. With a london_end variant later than 08:30, the London H/L is neither trigger nor target before it forms.\nlondon_start: london_anchor = 'fixed_ET_0300' (default, his ET session boxes) or 'london_local_0800' (= 04:00 ET in the weeks when US and UK DST dates differ). Log mismatch days.\nPDH/PDL = extremes of the whole trading day D-1 [18:00, session_end). PREV_NY_H/L = extremes of NY_RTH of D-1.\nAsia and London only mark levels; indexes are not traded there.",
+      "parameters": [
+        {
+          "name": "asia_window",
+          "default": "18:00-03:00",
+          "range": "start 18:00 | 19:00 | 20:00. 20:00-00:00 is the ICT Asian range used by third-party scripts, not TJR's.",
+          "why": "Time Theory (L4xz2o23aPQ, 2026-01-12) and his newest liquidity guide use 18:00."
+        },
+        {
+          "name": "london_window",
+          "default": "03:00-08:30",
+          "range": "end 08:30 | 11:00 | 11:30 (later ends make London H/L unusable until formed)",
+          "why": "He ends each session when the next one opens ('technically London goes till 11:30')."
+        },
+        {
+          "name": "ny_pre_start",
+          "default": "08:30",
+          "range": "08:00 | 08:30",
+          "why": "08:30 for indexes; 08:00 is his forex / single-video variant."
+        },
+        {
+          "name": "ny_rth_end",
+          "default": "17:00",
+          "range": "17:00 | 16:00",
+          "why": "17:00 matches his NY session box (09:30-17:00). 16:00 is the cash-close variant, since 16:00-17:00 is not RTH."
+        },
+        {
+          "name": "london_anchor",
+          "default": "fixed_ET_0300",
+          "range": "fixed_ET_0300 | london_local_0800",
+          "why": "He draws ET-fixed boxes. The local-time anchor is our test option for the DST-mismatch weeks."
+        }
+      ],
+      "sources": [
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/L4xz2o23aPQ.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step431_tjr_spec_entries.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step460_dated_index_and_january_course.md"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "His NY-session window for NY highs/lows conflicts between videos (09:30-17:00 vs 08:30-18:00), so we split it into NY_PRE and NY_RTH. The availability rule for later London ends is ours."
+    },
+    {
+      "name": "schedule",
+      "description": "Intraday clock: manipulation window, entry window, alignment deadline, cutoff and time exits.",
+      "algorithm": "Decisions are made at 1m closes T (ET).\nT < 09:30: never enter. Sweeps and confirmations are tracked from scan_start (bars with t >= 08:30).\n[09:30, entry_start): the 'manipulation' window, where the sweep is expected. A trigger event with T < entry_start is ignored and logged as PRE_WINDOW_TRIGGER. The setup stays ARMED and needs a NEW trigger event with T >= entry_start; it is never cancelled just for being early.\nentries_allowed(T) = entry_start <= T < cutoff AND day is not NO_TRADE AND no news block at T (filters) AND trades_today < max_trades_per_day AND day is not DONE.\n[09:50, 10:10): preferred 'macro' window (4H/1H close at 10:00). Log in_macro; prefer_macro_only restricts entries to this window.\nALIGNMENT DEADLINE (mode 'orderflow', default): at the first 1m close T >= alignment_deadline, the day is DONE if orderflow[ES][5m] != orderflow[NQ][5m] or either is NONE. Otherwise continue until cutoff with setups in any state. Mode 'strict' (variant): DONE if no CONFIRMED/ARMED setup has a direction equal to the common orderflow.\nT >= cutoff: cancel all un-entered setups; no new setups. Open positions are NOT closed at cutoff.\nTime exits for an open position, whichever comes first: stall_exit and max_hold_minutes (trade_management), pre-event flatten (filters), flat_time = min(15:55, session_end - 5 min). The bot never holds overnight or over a weekend (our rule).\nPM session disabled by default ('Me, personally, I don't trade this').",
+      "parameters": [
+        {
+          "name": "entry_start",
+          "default": "09:50",
+          "range": "09:40-10:00",
+          "why": "'from 9:50 to 10:10 we have our entry period'; 'at 9:41 I typically don't take trades'. The edge is soft ('sometimes 9:45')."
+        },
+        {
+          "name": "cutoff",
+          "default": "10:30",
+          "range": "10:20-11:30 | none (11:00 = 2023 Boot Camp; 11:30/none = 2026-06-05)",
+          "why": "This is his personal preference, not a rule of the setup: 'If I can't find a trade by 10:30, I'm done for the day' (2026-01-12, 2026-05-07, 2026-06-05). The same 2026-06-05 video calls an 11:05-11:20 entry 'technically when you would want to enter using our strategy', though he skips it."
+        },
+        {
+          "name": "prefer_macro_only",
+          "default": "false",
+          "range": "true|false",
+          "why": "09:50-10:10 is a preference, not a hard rule ('I take trades at 10:20 sometimes')."
+        },
+        {
+          "name": "alignment_deadline",
+          "default": "10:20",
+          "range": "10:10-10:30",
+          "why": "'If neither of the indexes are aligned and it's 10:20 ... call it a day'. This refers to ES/NQ 5m order-flow agreement, not to setup state."
+        },
+        {
+          "name": "alignment_deadline_mode",
+          "default": "orderflow",
+          "range": "orderflow | strict",
+          "why": "The orderflow mode follows the quote. The strict mode is our stricter reading."
+        },
+        {
+          "name": "flat_time",
+          "default": "min(15:55, session_end - 5 min)",
+          "range": "12:00-16:55",
+          "why": "Our assumption. Whether he is always flat by the close is unverified: his 2026 account figures are quoted 'before fees and swap'."
+        },
+        {
+          "name": "max_hold_minutes",
+          "default": "180",
+          "range": "60-300",
+          "why": "Our backstop, from 'I like to catch one to three-hour moves'. The progress-based stall_exit handles stalled trades first."
+        }
+      ],
+      "sources": [
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/L4xz2o23aPQ.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step434_tjr_spec_bias_and_strategy.md",
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt",
+        "https://github.com/getofflabel/cryptobot/blob/main/step454_newest_corpus_delta.md"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "All his time edges are soft, and he has traded later (10:45, around 12:00, PM). A third-party bot missed 31 of his recap trades because of a hard 10:30 cutoff, yet loosening it worsened P&L. Keep 10:30 as the default and test 11:00, 11:30 and none as TJR-sourced variants. flat_time, max_hold and the no-overnight rule are ours."
+    },
+    {
+      "name": "key_levels",
+      "description": "External draws on liquidity marked before the open on BOTH ES and NQ, which act as sweep triggers and targets. Internal liquidity (imbalances) is marked as targets and bias draws only.",
+      "algorithm": "Per index X, built from the contract traded on D. Level = {id, type, side HIGH|LOW, price_ticks, tf_rank, anchor_t, formed_at, alive, cluster_id, resistance}.\nAt scan_start (08:30) of day D build:\n  PDH/PDL (trading day D-1)                               rank 3\n  ASIA_H/L (formed 03:00), LONDON_H/L (formed 08:30)       rank 2\n  PREV_NY_H/L (if include_prev_ny)                         rank 2\n  1H two-candle swing H/L with detected_at <= 08:30 from the last lookback_1h_days    rank 3\n  4H two-candle swing H/L from the last lookback_4h_days                               rank 4\n  optional: PWH/PWL (include_weekly; week = Sun 18:00 -> Fri session_end) rank 5; daily two-candle swing H/L (htf_stack includes D) rank 5; NEWS_H/L = high/low of the 1m bar of a red USD release today (include_news_candle), formed at that bar's close\nALIVE: a HIGH level dies at the first 1m bar after formed_at with high > price (LOW: low < price).\nCANDIDATES at 08:30 = alive levels with formed_at <= 08:30. A level already pushed through in Asia/London is dead ('there was no reaction off of it ... that draw on liquidity is pretty much useless').\nLATE JOINERS: PRE_H/L = extremes of [08:30, 09:30), formed at 09:30 (include_premarket). 1H/4H swings detected after 08:30 join at their detected_at.\nDEDUPE: identical (index, side, price_ticks) -> one level. Keep the highest tf_rank and the earliest formed_at, and take the union of types.\nCLUSTERS: same-side levels within eq_tol = max(2 ticks, ceil(eq_tol_pct*price/tick)) form a cluster; strength = count (relatively equal highs/lows = stronger draw). Each level is still swept individually.\nRESISTANCE (used only when draw_weighting = 'resistance'): LOW-resistance if the level is in a cluster (strength >= 2) or part of an LRL run (>= 3 consecutive same-side 5m/15m swings of today that step monotonically toward price, e.g. rising lows under price); otherwise HIGH-resistance. LOW-resistance draws weigh 2 in bias draw counts and win TP ties.\nINTERNAL LIQUIDITY (targets and bias draws only, never sweep triggers): eligible unfilled FVGs on tp_ref_tf and higher (15m/1H/4H). If include_opening_gaps: NDOG = gap between the last close before 17:00 and the 18:00 open, formed daily at 18:00; NWOG = gap between the Friday close and the Sunday 18:00 open; each is alive until fully traded through. NCOG is ignored.\nA swept level is never reused as a trigger or target on the same day.",
+      "parameters": [
+        {
+          "name": "lookback_1h_days",
+          "default": "3",
+          "range": "1-5",
+          "why": "Our assumption; TJR gives no lookback."
+        },
+        {
+          "name": "lookback_4h_days",
+          "default": "10",
+          "range": "5-20",
+          "why": "Our assumption (a third-party 'OURS' value)."
+        },
+        {
+          "name": "include_prev_ny",
+          "default": "true",
+          "range": "true|false",
+          "why": "He lists 'New York highs, New York lows' among session draws."
+        },
+        {
+          "name": "include_premarket",
+          "default": "true",
+          "range": "true|false",
+          "why": "In a third-party replay, omitting NY/pre-market levels caused most 'no level pushed through' stand-downs."
+        },
+        {
+          "name": "include_news_candle",
+          "default": "false",
+          "range": "true|false",
+          "why": "Off for simplicity, not because of his teaching. On 2026-01-05 he calls news-candle H/L 'very very beneficial ... high probability draws in liquidity', so test true."
+        },
+        {
+          "name": "include_weekly",
+          "default": "false",
+          "range": "true|false",
+          "why": "PWH/PWL belong to the older D/W top-down layer; optional."
+        },
+        {
+          "name": "include_opening_gaps",
+          "default": "false",
+          "range": "true|false",
+          "why": "NDOG/NWOG are defined in Advanced Imbalance Concepts (2026-01-08). He prefers NWOG but admits he rarely uses them."
+        },
+        {
+          "name": "eq_tol_pct",
+          "default": "0.0001 (0.01%)",
+          "range": "0.00005-0.0003",
+          "why": "His only example: two S&P lows 'literally 50 cents apart' are close enough (about 0.5 pt on ES)."
+        },
+        {
+          "name": "draw_weighting",
+          "default": "count",
+          "range": "count | resistance",
+          "why": "Relative-equal highs/lows attract 'four times the amount of buy orders' (2026-01-05). The weighting numbers are ours."
+        },
+        {
+          "name": "scan_start",
+          "default": "08:30",
+          "range": "08:00-09:30",
+          "why": "A pre-market sweep can be the day's sweep."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step431_tjr_spec_entries.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step434_tjr_spec_bias_and_strategy.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step438_results.md",
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/TEp3a-7GUds.md",
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/pKIo-aVic-c.md",
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/PlsHO33j6B8.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step460_dated_index_and_january_course.md"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "He marks 'all of them' and, asked which one price will target, says 'you don't need to know'. The following are our deterministic choices: lookbacks, tolerance, the dead-level rule for pre-08:30 breaches, treating NDOG/NWOG as internal (target-only) liquidity, and the LRL/resistance proxy. BPR (overlap of opposing FVGs) is mentioned in his 2026 tutorial but left as an off-by-default variant."
+    },
+    {
+      "name": "swing_detection",
+      "description": "TJR's two-candle swing high/low definition, run separately on every timeframe.",
+      "algorithm": "prev = None\nfor i, b in enumerate(bars):            # completed bars of ONE timeframe, one contract, integer ticks\n    if b.close == b.open: continue      # doji skipped (our handling)\n    if prev is not None:\n        p = bars[prev]\n        if p.close > p.open and b.close < b.open:     # up candle then down candle\n            emit SwingHigh(price = max(high[prev..i]), anchor_t = t of the argmax bar, detected_at = b.close_time)\n        elif p.close < p.open and b.close > b.open:   # down candle then up candle\n            emit SwingLow(price = min(low[prev..i]), anchor_t = t of the argmin bar, detected_at = b.close_time)\n    prev = i\nTwo same-colour candles never form a swing. No N-bar lookback, no size/ATR filter. 'Most recent swing' = the latest one with detected_at <= T, even a lower low inside an uptrend.",
+      "parameters": [
+        {
+          "name": "swing_mode",
+          "default": "two_candle",
+          "range": "two_candle | fractal_N (N=2-5, third-party)",
+          "why": "'A high consists of an up candle, then a down candle ... the highest wick of those two'. Fractal pivots sit 35-44% farther from price, which roughly doubles stops."
+        },
+        {
+          "name": "doji_rule",
+          "default": "skip",
+          "range": "skip | treat_as_break",
+          "why": "Our assumption (a third-party TJR indicator ignores dojis)."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step301_tjr_rules.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step431_tjr_spec_entries.md"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "He sometimes speaks of 'significant' highs/lows chosen by eye; the two-candle rule is his stated definition and is what we code. Third-party interpretation, not TJR: https://in.tradingview.com/scripts/candlestick/page-2/"
+    },
+    {
+      "name": "structure_break",
+      "description": "Close-based break of structure, a shared order-flow state (BOS + IFVG), and the HTF trend rule including a range/consolidation state.",
+      "algorithm": "Per (index, tf): sh/sl = most recent swing high/low (each with a broken flag); state is read as of the bar's open.\non each completed bar b:\n    if sl and not sl.broken and b.close < sl.price:  sl.broken = True; emit BOS{dir: DOWN, ref: sl, detected_at: b.close_time}\n    if sh and not sh.broken and b.close > sh.price:  sh.broken = True; emit BOS{dir: UP, ref: sh, detected_at: b.close_time}\n    then register swings detected at b.close_time (the newest replaces sh/sl)\nRules: body close only (wicks never count); close == level is not a break; only the newest swing is watched; no displacement/body-size requirement. A TJR reversal 'BOS' = the first close through the most recent opposite swing (standard SMC calls this CHoCH/MSS).\nTREND (5m, 1m, and 4H/1H when htf_trend_rule = 'single_break'): trend = direction of the latest BOS (NONE before the first).\nORDERFLOW[X][tf] in {UP, DOWN, NONE} = direction of the latest BOS event OR stack-level IFVG event on that (index, tf). A bearish IFVG sets DOWN and a bullish one sets UP. It is stamped with detected_at. index_alignment, the alignment deadline, the lean bias check and the chop proxy all use it.\nHTF TREND (4H/1H, htf_trend_rule = 'hh_hl_sequence', default): keep the last two confirmed swing highs (SH1 older, SH2) and lows (SL1, SL2). UP iff the latest BOS on tf was UP AND SH2 > SH1 AND SL2 > SL1. DOWN iff the latest BOS was DOWN AND SH2 < SH1 AND SL2 < SL1. Otherwise RANGE (consolidation), which counts as NONE for bias. A lower low that sweeps a low changes nothing until a close-based BOS.",
+      "parameters": [
+        {
+          "name": "bos_requires_close",
+          "default": "true",
+          "range": "fixed",
+          "why": "'It's not a candlestick wick. It's a candlestick closure'."
+        },
+        {
+          "name": "impulse_body_min",
+          "default": "0 (off)",
+          "range": "0 | 0.5 of range",
+          "why": "Body > 50% of range is a third-party filter (TJR v4, ds82385), not TJR's rule."
+        },
+        {
+          "name": "htf_trend_rule",
+          "default": "hh_hl_sequence",
+          "range": "hh_hl_sequence | single_break",
+          "why": "His daily-bias lesson (ironJFzNBic, 2026-01-14) defines 4H/1H trends as HH+HL / LH+LL sequences. Day 44 warns that 'a 5m BOS is often just a 15m retracement'. single_break was the draft behaviour; test both."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step301_tjr_rules.md",
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/ironJFzNBic.md",
+        "https://github.com/hartnastics/finance-agent/tree/main/knowledge/videos/TJR-Traiding/Bootcamp-Days",
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "Conflict: the draft's single-break HTF trend vs his HH/HL sequence definition; both are exposed. Consolidation ('uptrend, downtrend, consolidation', Order Flow Explained 2025-02-20) is modelled as RANGE. Adding IFVG to the order-flow state is our reading of 'either via break of structure or an inverse fair value gap'. Third-party interpretations, not TJR: https://videohighlight.com/v/PmhuPbY8ZHo?mediaType=youtube&language=en&summaryType=compressed&summaryId=lpgf26EeRjKnZmzR26eJ&aiFormatted=false, https://quizlet.com/810912109/tjr-strategy-flash-cards/, https://www.tradingview.com/script/N3UmFTLJ-TJR-BOS-CHOCH-Real-time-Swings/"
+    },
+    {
+      "name": "fvg",
+      "description": "Fair value gap detection, a never-delete lifecycle with snapshot eligibility, stacking, and stack-level IFVG events.",
+      "algorithm": "DETECT at completed bar i >= 2 of a tf: c1 = bars[i-2], c2 = bars[i-1], c3 = bars[i]. All three must be time-contiguous (c3.t - c1.t == 2*tf) and lie in one trading day and one contract.\n  bullish if c3.low - c1.high >= min_fvg_ticks: zone [bottom = c1.high, top = c3.low]\n  bearish if c1.low - c3.high >= min_fvg_ticks: zone [bottom = c3.high, top = c1.low]\n  record G = {id, index, tf, dir, bottom, top, c1_t, anchor_t = c2.t, detected_at = c3.close_time, touched_at: None, inverted_at: None, expired_at: None, stack_id}. Candle colours are irrelevant; overlapping wicks = no gap. Gaps are NEVER deleted.\nELIGIBILITY for any consumer evaluating bar b (snapshot as of b's open): eligible(G, b) = G.detected_at <= b.t AND (G.inverted_at is None OR G.inverted_at >= b.close_time) AND (G.expired_at is None OR G.expired_at > b.t). A gap inverted by b itself therefore still counts for b.\nLIFECYCLE on later bars j:\n  touched_at = first j with (bullish) low <= top / (bearish) high >= bottom. This is a fill, not an invalidation.\n  inverted_at = j.close_time of the first j with (bullish) close < bottom / (bearish) close > top (body close). A single gap inverting emits NO event.\n  expired_at: (a) the gap is untouched and a 1m wick trades beyond the first same-direction swing with anchor_t > G.anchor_t (usable only after that swing's detected_at) ('once we push above the high ... we no longer need these gaps'), or (b) age > fvg_max_age[tf].\n  Gaps are never dragged forward in time.\nSTACKS (our rule): same-direction gaps whose middle candles are separated only by candles of the same colour (dojis allowed) share one stack_id. For a caller with leg start t0: bullish floor = min(bottom) over members with c1_t >= t0 (inverted members included); bearish ceiling = max(top).\nSTACK IFVG EVENT: when a bar closes below the floor of a bullish stack (bearish IFVG) or above the ceiling of a bearish stack (bullish IFVG), emit IFVG{stack_id, dir, index, tf, detected_at}. Only this stack-level event counts as an IFVG ('the last fair value gap that is holding up the trend'). For the global orderflow state, the stack is the one containing the most recently detected eligible gap, with t0 = none.\nUNIT TEST: in a synthetic 5-bar series where bar 5 closes through a bullish gap, confirmation must return confirm_kind == 'IFVG' at bar 5.",
+      "parameters": [
+        {
+          "name": "min_fvg_ticks",
+          "default": "1",
+          "range": "1-4",
+          "why": "TJR states no minimum and uses 'the tiniest bullish gap ever created'."
+        },
+        {
+          "name": "fvg_max_age",
+          "default": "1m: 2h; 5m: 24h; 15m: 3 trading days; 1H: 10 trading days; 4H: 20 trading days",
+          "range": "x0.5-x2",
+          "why": "Our assumption. Ages are set per timeframe in time units; a single bar count would mean 4.8h on 1m but 48 days on 4H."
+        },
+        {
+          "name": "stack_rule",
+          "default": "same_colour_between_middles",
+          "range": "same_colour | no_opposite_swing",
+          "why": "Our deterministic reading of 'no retrace between gaps'."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step301_tjr_rules.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step432_tjr_spec_confluences.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step461_bias_is_a_lean_and_the_clock_is_gone.md"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "Expiry, stack grouping and the snapshot/never-delete lifecycle are ours; he points at 'the' gap on the chart. The never-delete rule fixes a real bug: if an inverted gap is removed from 'alive' before consumers run, IFVG confirmations and the HTF-gap bias flip can never fire. Third-party interpretation, not TJR: https://quizlet.com/810912109/tjr-strategy-flash-cards/"
+    },
+    {
+      "name": "ifvg",
+      "description": "Inverse FVG: a body close through an opposite-direction FVG stack, used as confirmation (5m) and as trigger (1m).",
+      "algorithm": "Bearish IFVG at bar b w.r.t. bullish stack K: b.close < K.floor(t0) (strict). Bullish IFVG w.r.t. bearish stack K: b.close > K.ceiling(t0).\nStack selection (ifvg_stack_rule), using only gaps eligible for b:\n  'most_recent_stack_floor' (default, matches his examples): K = the stack containing the most recently detected eligible opposite-direction gap with c1_t >= t0.\n  'deepest_in_leg': the floor is min(bottom) over all eligible opposite gaps with c1_t >= t0.\nt0 by caller: step 2 (confirmation) uses S.leg_origin_t, the leg that ran into the swept level (see liquidity_sweep). Step 4 (trigger) uses S.range_low_bar.t (LONG: range_high_bar.t), the retrace leg.\nEvaluated only inside a setup with a registered sweep; never a standalone entry ('can't just be taking sell positions on inverse fair value gaps willy-nilly'). IFVG and BOS are interchangeable; whichever prints first counts. Each stack can fire at most once per setup.",
+      "parameters": [
+        {
+          "name": "ifvg_enabled",
+          "default": "true",
+          "range": "true|false",
+          "why": "'I use this confluence almost every single day, almost more than break of structure'. It fires earlier and gives a tighter stop."
+        },
+        {
+          "name": "ifvg_stack_rule",
+          "default": "most_recent_stack_floor",
+          "range": "most_recent_stack_floor | deepest_in_leg",
+          "why": "One rule must be chosen; the two differ whenever a leg holds more than one stack. The default matches his chart examples."
+        }
+      ],
+      "sources": [
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/4sRDnVmLcMk.md",
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/BdBxXKGWVjk.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step301_tjr_rules.md",
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "Which stack in the leg counts is our rule. In a third-party test the IFVG shrank stops by only 10-15% (not the ~2x he describes) and only helped when the inversion was fresh. Third-party transcript site (unverified, blocked from research): https://sozai.app/transcript/path-to-profitability-tjr-strategy/"
+    },
+    {
+      "name": "equilibrium",
+      "description": "50% of the most recent swing range of the new order flow. A continuation (pullback) zone, never an entry by itself.",
+      "algorithm": "SHORT setup after step-2 confirmation (LONG mirrors):\n  range_high = the latest confirm_tf swing high with anchor_t in [S.sweep_extreme_bar.t, S.range_low_bar.t) and detected_at <= T; if none, S.sweep_extreme\n  range_low  = S.range_low (lowest low since the sweep-extreme bar, extended on every new low)\n  EQ in integer ticks: SHORT touch level = ceil((range_high + range_low)/2); LONG touch level = floor(...). A touch must reach the true midpoint.\n  premium = price >= EQ (sell only from premium); LONG: discount = price <= EQ.\n  Re-anchor on every new range extreme. Once touched, EQ is frozen until a new extreme prints, which also resets the retrace flags.\n  Touch: SHORT if a 1m high >= EQ; LONG if a 1m low <= EQ (a wick poke counts, no close needed).\n  entry_premium_check (enforced at the entry gate): 'none' (default) | 'trigger_close_in_premium' (SHORT trigger close >= EQ) | 'retrace_high_in_premium' (equivalent to the touch).",
+      "parameters": [
+        {
+          "name": "eq_anchor",
+          "default": "most_recent_swing_range",
+          "range": "most_recent_swing_range | impulse_candle",
+          "why": "'from the most recent swing low up to the most recent swing high'. Anchoring to older swings is the #1 student error he names. The impulse-candle midpoint is an older third-party reading."
+        },
+        {
+          "name": "entry_premium_check",
+          "default": "none",
+          "range": "none | trigger_close_in_premium | retrace_high_in_premium",
+          "why": "He says to sell from premium but never states which price must be in premium; the touch already covers the retrace."
+        }
+      ],
+      "sources": [
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/joe_XTCn5Bs.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step432_tjr_spec_confluences.md"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "Tick rounding and the premium check are ours. Third-party interpretation, not TJR: https://quizlet.com/810912109/tjr-strategy-flash-cards/"
+    },
+    {
+      "name": "extension_79",
+      "description": "Optional '79% extension closure' confirmation, disabled by default. He says he rarely uses it, and it is absent from the 2026 re-teachings.",
+      "algorithm": "SHORT: A = S.leg_origin price, B = S.sweep_extreme; lvl79 = floor_ticks(B - 0.79*(B - A)). Confirmation if a completed confirm_tf bar (step 2) or trigger_tf bar (step 4) closes < lvl79.\nLONG: A = leg-origin high, B = sweep low; lvl79 = ceil_ticks(B + 0.79*(A - B)); confirm if close > lvl79.\nNever used as a stop or target.",
+      "parameters": [
+        {
+          "name": "enable_ext79",
+          "default": "false",
+          "range": "true|false",
+          "why": "'I rarely use this one, you guys can very well do without this'."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step456_newest_teaching_implemented.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step454_newest_corpus_delta.md",
+        "https://github.com/NikolaosTriantafillidis/Bachelor-Thesis-TJR-Strategy/blob/HEAD/TJR_Framework_EA.mq5"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "The anchoring (79% of the way back from the leg extreme toward its origin) is inferred from on-screen use and matches the MT5 thesis EA; he never states it as a formula."
+    },
+    {
+      "name": "smt",
+      "description": "ES vs NQ divergence at a swept draw. Evaluated once at a fixed time and then frozen. It strengthens bias and can select the index; it is not a trigger by itself (info-only by default).",
+      "algorithm": "When setup S (index X, dir) registers its first sweep of level L at t_s = sweep detected_at: Y = the other index, tf = S.ladder.confirm_tf.\nt_eval = close of the smt_after_bars-th tf bar closing after t_s (default: the first). SMT is unavailable before t_eval, is evaluated exactly once at t_eval, and is then FROZEN; a later Y sweep never unsets it. It never references confirm_time.\nWindow W = [t_s - smt_window_bars*tf, t_eval].\nref_X = L.price. ref_Y = Y's level of the same type (Y.LONDON_H for X.LONDON_H, Y.PDH for X.PDH, ...). If there is none (1H/4H swing): ref_Y = max(Y.high) over Y bars with anchor within +-smt_align_bars*tf of L.anchor_t (LONG: min low).\nBearish SMT (SHORT): max(X.high in W) > ref_X AND max(Y.high in W) <= ref_Y. Bullish (LONG): min(X.low in W) < ref_X AND min(Y.low in W) >= ref_Y.\nleading_index = Y (the one that failed to make the new extreme, 'already more bearish'); lagging_index = X.\nSMT completion target: the leg-origin low (bearish) / high (bullish) of the diverging swing.\nsmt_mode: 'info' (default, log only) | 'select_leading' | 'select_lagging' (trade only that index; needs cross_index_sweep when it is not the sweeping index) | 'required' | 'confirmation' (counts as a step-2 confirmation with confirmation time t_eval). Ignored when the sweep is not at a marked draw.",
+      "parameters": [
+        {
+          "name": "smt_mode",
+          "default": "info",
+          "range": "info | select_leading | select_lagging | required | confirmation",
+          "why": "'It doesn't tell me to take a trade ... it just helps strengthen my bias'. The UPDATED-2026 video trades whichever index produced the sweep."
+        },
+        {
+          "name": "smt_after_bars",
+          "default": "1",
+          "range": "1-3",
+          "why": "Our assumption. A fixed evaluation time keeps the test monotonic and lookahead-free."
+        },
+        {
+          "name": "smt_window_bars",
+          "default": "6",
+          "range": "2-12",
+          "why": "Our assumption; his swings must be simultaneous."
+        },
+        {
+          "name": "smt_align_bars",
+          "default": "1",
+          "range": "0-3",
+          "why": "Our assumption for 'same bar' pairing."
+        }
+      ],
+      "sources": [
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/7dTQA0t8SH0.md",
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/FJch02ucIO8.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step456_newest_teaching_implemented.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step454_newest_corpus_delta.md"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "Leading vs lagging is UNRESOLVED as of 2026. In 2025 he says to trade the leading index. The newest SMT video (FJch02ucIO8, 2026-01-27) frames NASDAQ as 'the lagging index ... is going to eventually follow suit', and one extraction reads that as trading the lagging index. The 2026-06-05 video simply trades the index that produced the sweep. 'Leading' is never formally defined. SMT only works for the ES/NQ pair."
+    },
+    {
+      "name": "daily_bias",
+      "description": "HTF bias from the 4H/1H swing sequence, HTF-FVG respect/disrespect and the side of stacked draws. By default it is a LEAN (TJR 2026), not a veto.",
+      "algorithm": "Computed at 09:25 ET and at every completed 1H bar until cutoff (bias may flip intraday). Results apply to new setups; S.ladder stays locked.\nfor X in (ES, NQ), tf in htf_stack (default 4H, 1H):\n    tr = HTF trend per structure_break.htf_trend_rule (RANGE -> NONE)\n    K = the most recent FVG stack in direction tr detected after the BOS that set tr, whether or not it is still alive\n    if K has a stack-level IFVG event against tr with detected_at <= T: tr = opposite(tr)   # 'we disrespect this gap ... no longer bearish'\n    trend[X][tf] = tr\nIndex combination (our assumption): t_tf = trend[ES][tf] if it equals trend[NQ][tf], else NONE.\nif t4 != NONE and t1 == t4: bias = t4; ladder = L_aligned\nelif t4 != NONE and t1 != NONE: bias = t4; ladder = L_conflict (2024 rule; NO_TRADE if htf_conflict_action == 'stand_down')\nelif exactly one of t4, t1 != NONE: bias = that one; ladder = L_aligned\nelse: bias = NEUTRAL\nhtf_stack 'D+4H+1H' (2023 Boot Camp variant): daily bars run 18:00-session_end and use the same swing/structure logic. If trend[D] is set and differs from t4 on both indexes -> NO_TRADE (variant: 0.5x risk).\nDRAWS: for each index X, up_X / dn_X = weighted count (key_levels.draw_weighting) of usable alive key levels and internal-liquidity zones above/below X's own last 1m close within draw_radius_pct. Bias UP survives only if up_ES > 0 AND up_NQ > 0, else NEUTRAL (DOWN mirrors). If NEUTRAL and |(up_ES + up_NQ) - (dn_ES + dn_NQ)| >= draw_imbalance_min, bias = the side with more draws. Record which levels were counted as bias-side draws.\nPHASE: if htf_phase.phase_mode == 'lean', a RETRACEMENT phase makes the counter-trend direction count as with-bias until its internal zone is touched.\nFILTER at trigger time (bias_eval = 'trigger' default | 'creation'):\n  'lean' (default, TJR 2026): with-bias or NEUTRAL -> allowed. Counter-bias is allowed iff (a) at least one level counted as a bias-side draw in the latest computation is among S.levels (the draw the bias pointed to has been delivered), (b) SMT was detected at the sweep (if lean_requires_smt), and (c) the other index Y has an orderflow event (BOS or IFVG) on S.ladder.confirm_tf in trade direction with detected_at in [S.sweep_time, T].\n  'filter' (third-party optimisation): SHORT iff bias in {DOWN, NEUTRAL}; LONG iff bias in {UP, NEUTRAL}.\n  'off': no filter.\nA bias failure keeps S ARMED (bias may flip at the 10:00 1H close) and requires a fresh trigger.",
+      "parameters": [
+        {
+          "name": "bias_mode",
+          "default": "lean",
+          "range": "lean | filter | off",
+          "why": "The 2026-06-05 strategy video never mentions a bias step. In the 2026-01-17 capstone he trades against his stated bias ('The market proved me wrong ... we can still make money'), and the 2026-01-14 lesson makes bias revisable. 'filter' raised net from -$4,222 to -$190 in a third-party replay; that is optimisation, not fidelity."
+        },
+        {
+          "name": "lean_requires_smt",
+          "default": "true",
+          "range": "true|false",
+          "why": "The 2026-01-17 capstone's counter-bias trade came with SMT at the swept bias-side draw."
+        },
+        {
+          "name": "bias_eval",
+          "default": "trigger",
+          "range": "trigger | creation",
+          "why": "Bias can flip intraday; state explicitly which snapshot is used."
+        },
+        {
+          "name": "htf_stack",
+          "default": "4H+1H",
+          "range": "4H+1H | D+4H+1H",
+          "why": "His 2026 material uses 4H as the top timeframe; the 2023 Boot Camp does a monthly/weekly/daily/4H top-down (Day 44: daily, 4H and 1H disagree -> no trade)."
+        },
+        {
+          "name": "htf_conflict_action",
+          "default": "escalate_15m",
+          "range": "escalate_15m | stand_down",
+          "why": "2024 rule from video 67vLAkcdPu4 (4H vs 1H conflict -> 15m confirmation), not restated in 2026. The Boot Camp stood down instead."
+        },
+        {
+          "name": "draw_radius_pct",
+          "default": "0.01",
+          "range": "0.005-0.02",
+          "why": "Our assumption: draws within about 1% of price are reachable intraday."
+        },
+        {
+          "name": "draw_imbalance_min",
+          "default": "2",
+          "range": "1-4",
+          "why": "Our assumption for 'the side where unswept draws are stacked'."
+        }
+      ],
+      "sources": [
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/ironJFzNBic.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step461_bias_is_a_lean_and_the_clock_is_gone.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step460_dated_index_and_january_course.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step434_tjr_spec_bias_and_strategy.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step438_results.md",
+        "https://github.com/hartnastics/finance-agent/tree/main/knowledge/videos/TJR-Traiding/Bootcamp-Days",
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt",
+        "https://github.com/D1349375/traders-debate-system/blob/main/.claude/skills/tjr-perspective/references/research/05-decisions.md"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "He gives no rule for combining trend, draws, HTF gaps and SMT. He says his 9:00 bias is often wrong and lets 5m order flow overrule it. Several rules are ours: requiring ES and NQ to agree on the 4H/1H trend, which HTF close flips bias, which gap 'holds the trend', and the draw counting. The HTF-gap flip was the only bias change that improved P&L in a third-party replay."
+    },
+    {
+      "name": "htf_phase",
+      "description": "Optional 4H phase state (extension / retracement / continuation / reversal) and the external -> internal -> external liquidity cycle as a bias input. Off by default; measure its marginal effect.",
+      "algorithm": "Per index on 4H, phase_mode = 'off' (default) | 'log' | 'lean':\n  EXTENSION: after a 4H close beyond the last external 4H swing in the trend direction.\n  RETRACEMENT: after a 1H BOS against the 4H trend while the nearest eligible untouched 4H FVG (or the 4H EQ of the last 4H swing range) on the pullback side is untouched. The intraday draw is that internal zone (counter-trend lean).\n  CONTINUATION: after that zone is touched and a 1H BOS prints in the 4H trend direction. The draw is the next external level in the trend direction.\n  REVERSAL: the daily_bias HTF-gap disrespect flip.\n'lean': in RETRACEMENT the counter-trend direction counts as with-bias for the lean filter until the zone is touched. 'log': record the phase only.",
+      "parameters": [
+        {
+          "name": "phase_mode",
+          "default": "off",
+          "range": "off | log | lean",
+          "why": "The concept is his: 'price is always either looking to take out external liquidity, which is highs and lows, or fill imbalances, which is internal liquidity' (Advanced Liquidity Concepts, 2026-01-05), and the 2026 tutorial's bias step 1 asks 'which phase are we in?'. The thresholds are ours, so it is off until tested."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step460_dated_index_and_january_course.md"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "He judges the phase by eye; the state transitions here are our deterministic proxy."
+    },
+    {
+      "name": "liquidity_sweep",
+      "description": "Detects a key level being traded through and opens a setup. The sweep is only an opportunity until the step-2 confirmation.",
+      "algorithm": "Active for 1m bars with t >= scan_start and close_time < cutoff. Iterate ES then NQ, and levels sorted by (side, price_ticks), for determinism.\nfor X in (ES, NQ): for L in usable alive levels of X (formed_at <= bar.t):\n    HIGH: if bar.high > L.price: L.alive = False; on_sweep(X, L, SHORT, bar)\n    LOW:  if bar.low  < L.price: L.alive = False; on_sweep(X, L, LONG, bar)\n(no close-back-inside requirement unless require_close_back_inside)\non_sweep(X, L, dir, bar):\n    if X has a setup in dir with state SWEPT: append L to it; return      # stacked levels in one push\n    if X has a setup in dir with state CONFIRMED/ARMED: log; return\n    create S{id, index: X, dir, levels: [L], ladder: current ladder (locked), created_at = sweep_time = bar.close_time, sweep_anchor_t = bar.t,\n             sweep_extreme = bar.high (SHORT) / bar.low (LONG), sweep_extreme_bar = bar, state: SWEPT}\n    LEG ORIGIN (SHORT; LONG mirrors): t0 = anchor_t of the most recent confirm_tf swing high with price >= L.price and detected_at <= S.sweep_time (the last time price was at the level), floored at S.sweep_anchor_t - leg_max_bars*confirm_tf. S.leg_origin = min 1m low in [t0, sweep bar]; S.leg_origin_t = start of the confirm_tf bar containing that low.\nwhile SWEPT: SHORT sweep_extreme = max(sweep_extreme, bar.high) (LONG: min low); sweep_extreme_bar follows the extreme.\nEXPIRY: SWEPT for longer than sweep_max_age -> EXPIRED_NO_REACTION ('takes out a low and keeps going ... is it a liquidity sweep? No').\nPRE-MARKET: premarket_sweep_policy 'accept_if_reacted' (default): a sweep in [08:30, 09:30) whose confirmation printed before 09:30 continues after the open. 'require_fresh': such setups are dropped at 09:30, today's 5m and 15m two-candle swings of [08:30, 09:30) are added as levels, and only sweeps at/after 09:30 count. premarket_unconfirmed: 'keep' (default, subject to sweep_max_age) | 'drop' for pre-market sweeps still SWEPT at 09:30.",
+      "parameters": [
+        {
+          "name": "require_close_back_inside",
+          "default": "false",
+          "range": "true|false",
+          "why": "TJR: a wick through is enough; validation comes from the later 5m BOS/IFVG. Most third-party scripts require the reclaim."
+        },
+        {
+          "name": "sweep_max_age",
+          "default": "12 confirm_tf bars (60 min on 5m, 180 min on the 15m conflict ladder)",
+          "range": "6-24",
+          "why": "Our assumption (a third-party 'OURS' value)."
+        },
+        {
+          "name": "leg_max_bars",
+          "default": "48 confirm_tf bars",
+          "range": "12-96",
+          "why": "Our cap on the leg into the level, used for IFVG stack selection and extension_79."
+        },
+        {
+          "name": "premarket_sweep_policy",
+          "default": "accept_if_reacted",
+          "range": "accept_if_reacted | require_fresh",
+          "why": "Newest statement: 'if liquidity has already been swept during pre-market and we're already reacting off of it ... this was the liquidity sweep for the day'. Oct/Nov 2025 'step 2B' required a new 5m manipulation."
+        },
+        {
+          "name": "premarket_unconfirmed",
+          "default": "keep",
+          "range": "keep | drop",
+          "why": "Our rule for the case the policy above leaves open."
+        },
+        {
+          "name": "cross_index_sweep",
+          "default": "false",
+          "range": "true|false",
+          "why": "'As long as one of the indexes is doing it for us'. If true, the non-sweeping index may open a setup at the other's sweep time with its own local extreme."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step431_tjr_spec_entries.md",
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/pKIo-aVic-c.md",
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "Leg-origin rule, expiry and pre-market edge cases are ours. Third-party / unverified, not TJR sources: https://www.scribd.com/document/746481404/SMC-by-Tjrtrades-TJR-Ebook-En-es (e-book of unknown provenance, possibly paid material), https://sozai.app/transcript/teaching-friend-day-trade/"
+    },
+    {
+      "name": "confirmation",
+      "description": "Step 2: change of order flow on confirm_tf (5m) against the sweep, by BOS or IFVG, whichever comes first.",
+      "algorithm": "When a confirm_tf bar c of S.ladder closes, for each setup S with state SWEPT and c.close_time > S.sweep_time (SHORT; LONG mirrors), reading state as of c's open:\n  msl  = most recent confirm_tf swing low with detected_at <= c.t and not broken (it may have formed after the sweep)\n  bos  = msl is not None and c.close < msl.price\n  K    = bullish confirm_tf stack per ifvg with t0 = S.leg_origin_t, using gaps eligible for c\n  ifvg = K is not None and c.close < K.floor\n  ext  = enable_ext79 and c.close < lvl79\n  smt  = smt_mode == 'confirmation' and S.smt_bearish and S.smt_t_eval <= c.close_time\n  if bos or ifvg or ext or smt:\n      S.state = CONFIRMED; S.confirm_kind = first true of (ifvg, bos, ext, smt); S.confirm_time = c.close_time\n      S.range_low = min 1m low from S.sweep_extreme_bar through c; S.range_low_bar = its bar\n      S.zone_touched = S.counter_bos = False\nNever enter on the confirmation bar ('As much as I would love to just enter straight off of that break of structure, I'm going to be patient').",
+      "parameters": [
+        {
+          "name": "confirmation_menu",
+          "default": "BOS, IFVG",
+          "range": "BOS, IFVG [+ EXT79] [+ SMT]",
+          "why": "2026 teaching: 'either via break of structure or an inverse fair value gap'. The Nov 2025 menu also listed 79% and SMT."
+        }
+      ],
+      "sources": [
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt",
+        "https://github.com/getofflabel/cryptobot/blob/main/step460_dated_index_and_january_course.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step301_tjr_rules.md"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "Third-party / unverified summaries, not TJR sources: https://sozai.app/transcript/path-to-profitability-tjr-strategy/, https://www.studocu.com/in/document/mit-school-of-distance-education/foundations-of-business-management-hr-marketing-finance-operations/tjr-trading-strategy-key-levels-session-timing-guide/144532962"
+    },
+    {
+      "name": "continuation",
+      "description": "Step 3: wait for the retrace, seen on the 1m as a BOS against the trade. By default it must also reach 5m equilibrium or a 5m FVG of the new leg. TJR's own sources conflict on whether the zone is required.",
+      "algorithm": "For each 1m bar b after S.confirm_time while S.state in {CONFIRMED, ARMED} (SHORT; LONG mirrors).\nPER-BAR ORDER: (1) entry trigger check on the PRE-BAR state (see entry), (2) cancel checks, (3) new-leg update, (4) zone / counter-BOS updates.\n(2) CANCEL: b.high > S.sweep_extreme (hard); or a confirm_tf bar closes > S.range_high (cancel_ref = 'range_high', default: the retrace fully reclaimed the premium leg); or T >= cutoff. Variant cancel_ref = 'latest_swing_high_frozen_at_confirmation'.\n(3) NEW LEG: if b.low < S.range_low and no entry happened on b: S.range_low = b.low; S.range_low_bar = b; S.state = CONFIRMED; zone_touched = counter_bos = False; unfreeze EQ.\n(4) EQ per equilibrium; cont_gaps = bearish confirm_tf FVGs eligible for b with anchor_t >= S.sweep_extreme_bar.t\n    if 'EQ' in continuation_zones and b.high >= EQ: zone_touched = True\n    if 'FVG' in continuation_zones and any(b.high >= g.bottom for g in cont_gaps): zone_touched = True\n    sh1 = most recent trigger_tf swing high with detected_at <= b.t and not broken; if b.t > S.range_low_bar.t and b is a completed trigger_tf bar with close > sh1.price: counter_bos = True; S.counter_bos_time = b.close_time   # 'I classify five-minute retraces as a break of structure to the upside on the one minute'\n    S.retrace_high = max trigger_tf high after S.range_low_bar   # the 'second high'\n    if counter_bos and (zone_touched or not require_zone_touch): S.state = ARMED; S.arm_time = b.close_time\nIf weekly strict_mode is enabled (off by default), the zone must be an FVG lying in premium (FVG AND EQ).\nIf price never retraces, the setup dies at cutoff (no chasing).",
+      "parameters": [
+        {
+          "name": "continuation_zones",
+          "default": "EQ, FVG",
+          "range": "EQ | FVG | EQ+FVG | legacy OB/BB",
+          "why": "'The only continuation confluences that I need ... are equilibrium and fair value gaps'. Order and breaker blocks were retired as continuation confluences (stated 2026-02-03)."
+        },
+        {
+          "name": "require_zone_touch",
+          "default": "true",
+          "range": "true | false (both TJR-sourced)",
+          "why": "Documented TJR-internal conflict. Path to Profitability / the Jan 2026 capstone require the EQ/FVG step. The 2026-06-05 video says 'we can even make this even simpler ... we can just say we want a one minute break of structure' and 'you guys can use either'. Run and report both. Third-party partition tests found the zone filter did not improve entries."
+        },
+        {
+          "name": "cancel_ref",
+          "default": "range_high",
+          "range": "range_high | latest_swing_high_frozen_at_confirmation",
+          "why": "With two-candle swings, a normal retrace into EQ often closes above a minor lower high. Cancelling on that kills exactly the pullbacks the setup waits for. Measure how many setups each rule cancels."
+        }
+      ],
+      "sources": [
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt",
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/wzq2AMsoJKY.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step434_tjr_spec_bias_and_strategy.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step460_dated_index_and_january_course.md"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "The reset on new leg extremes, the cancel rules and the per-bar order are our deterministic reading of 'we need to see some form of a retrace'. Third-party summary, not a TJR source: https://coconote.app/notes/12bb34cc-95bf-4878-a877-852abf81eb56"
+    },
+    {
+      "name": "entry",
+      "description": "Step 4: a 1m BOS or 1m IFVG event back in trade direction after the armed retrace. Signal at the trigger close; the fill comes via backtest_execution / live_execution.",
+      "algorithm": "While S.state == ARMED, on each completed trigger_tf bar b, using the PRE-BAR setup state (SHORT; LONG mirrors):\n  sl1 = most recent trigger_tf swing low with anchor_t > S.range_low_bar.t, detected_at <= b.t and not broken\n        (trigger_swing_rule 'after_range_extreme', default; variant 'after_counter_bos' additionally requires detected_at > S.counter_bos_time)\n  trig_bos  = sl1 exists and b.close < sl1.price  -> set sl1.broken (an EVENT that fires once per swing)\n  K1 = bullish trigger_tf stack per ifvg with t0 = S.range_low_bar.t, using gaps eligible for b\n  trig_ifvg = K1 exists and b.close < K1.floor   (fires once per stack)\n  if neither fires: continue. If no sl1 exists, only trig_ifvg can fire.\n  If b also prints a new range extreme: proceed if allow_trigger_on_new_extreme (default true), with stop = retrace_high + buffer; otherwise the NEW LEG reset applies.\n  GATES at T = b.close_time, in this order (the first failure is logged):\n    time: T < entry_start -> PRE_WINDOW_TRIGGER, stay ARMED | T >= cutoff or NO_TRADE day or DONE -> cancel | news block -> NEWS_WAIT, stay ARMED\n    bias (daily_bias) -> BIAS_WAIT, stay ARMED\n    index_alignment -> UNALIGNED, stay ARMED\n    entry_premium_check (equilibrium) -> PREMIUM, stay ARMED\n    stop gates (stop_loss) -> STOP_GATE, cancel | TP1 exists (take_profit) -> NO_TARGET, cancel | cost_R and contracts >= 1 (risk) -> COST / SIZE, cancel\n  A 'fresh' trigger is a trigger event whose T is later than the moment the blocking condition cleared.\n  ENTER: SIGNAL at T -> backtest: PENDING order filled at the next 1m open +/- slippage (backtest_execution); live: market order at the trigger close inside a bracket (live_execution).\n  On entry: trades_today += 1; cancel every other setup on both indexes.\nSame-T ties: iterate setups sorted by (created_at, index ES<NQ, dir, first level price_ticks), then pick in this order: with-bias direction, then the index chosen by smt_mode select_leading/select_lagging, then larger R(TP1), then earlier created_at, then ES.\nentry_type '5m_close' (variant): skip the 1m trigger and enter at the close of the first confirm_tf bar closing in trade direction after zone_touched.",
+      "parameters": [
+        {
+          "name": "entry_type",
+          "default": "tjr_1m",
+          "range": "tjr_1m | 5m_close | limit_fvg_edge | limit_ce (the last two are third-party)",
+          "why": "'liquidity sweep, 5-minute break of structure, one-minute break of structure to the upside and then one-minute break of structure to the downside - we're entering right there'."
+        },
+        {
+          "name": "trigger_swing_rule",
+          "default": "after_range_extreme",
+          "range": "after_range_extreme | after_counter_bos",
+          "why": "His moving reference ('This is the low that we're looking at. Nope.') is the most recent 1m higher low of the retrace. The stricter variant ignores lows formed before the counter-BOS."
+        },
+        {
+          "name": "allow_trigger_on_new_extreme",
+          "default": "true",
+          "range": "true|false",
+          "why": "Without it, a strong bar that breaks the retrace low and the range low together is reset to a new leg and never enters."
+        }
+      ],
+      "sources": [
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt",
+        "https://github.com/getofflabel/cryptobot/blob/main/step434_tjr_spec_bias_and_strategy.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step301_tjr_rules.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/RESEARCH_LOG.md"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "The event semantics, gate order and tie-breaks are ours. In a third-party test on SPY/QQQ 2016-2026, the 1m trigger carried a real gross signal and the same logic on 5m did not, so keep the trigger at 1m resolution. Third-party summary, not a TJR source: https://coconote.app/notes/525378ef-b881-47c2-9bd9-c3647adddb8e"
+    },
+    {
+      "name": "index_alignment",
+      "description": "Veto: no entry unless the other index agrees in 5m (confirm_tf) order flow, where order flow is updated by BOS and IFVG events.",
+      "algorithm": "At trigger time T for setup S on index X in direction d: Y = the other index, tf = S.ladder.confirm_tf.\n  require orderflow[Y][tf] == d (BOS or stack-level IFVG, so an IFVG-confirmed index counts as aligned)\n  X's own condition (align_self): 'setup_state' (default: S being ARMED already encodes X's order flow) | 'orderflow' (require orderflow[X][tf] == d)\n  if Y has no data at T: not aligned (never compare a symbol with itself)\nIf not aligned: do not enter. Keep S ARMED and require a fresh trigger after alignment appears ('they can still get aligned later').\nDay-level deadline: see schedule.alignment_deadline.\nReconciliation with SMT: divergence is allowed at the sweep; agreement is required at entry.",
+      "parameters": [
+        {
+          "name": "require_index_alignment",
+          "default": "true",
+          "range": "true|false",
+          "why": "'If ES is bullish on the five minute and NASDAQ is bearish, I don't want to take the trade'. Third-party tests found it hurt ES/SPY results; keep it for fidelity and test it off."
+        },
+        {
+          "name": "align_self",
+          "default": "setup_state",
+          "range": "setup_state | orderflow",
+          "why": "A BOS-only trend would leave an IFVG-confirmed index on the old trend and block his own first 2026 example, in which both indexes inverted a 5m gap with no BOS."
+        }
+      ],
+      "sources": [
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt",
+        "https://github.com/jrqcode/trading-view/blob/HEAD/docs/transcript.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step438_results.md"
+      ],
+      "fidelity": "tjr_direct",
+      "discretionary_notes": "Video 089 says 'it doesn't matter what index', and the gate is absent in some strategy videos. A 5m retrace on Y can print a minor bullish BOS and temporarily block alignment; log UNALIGNED reasons to measure this."
+    },
+    {
+      "name": "stop_loss",
+      "description": "Structural stop beyond the retrace swing (the 'second high/low') plus an instrument-scaled buffer, with gates for tiny or huge stops.",
+      "algorithm": "buffer_ticks = max(stop_buffer_ticks, ceil(stop_buffer_pct*price/tick)).\nSHORT: stop = S.retrace_high + buffer_ticks ('stop above the second high'); LONG: stop = S.retrace_low - buffer_ticks.\nstop_mode 'sweep_extreme' (2023): stop = S.sweep_extreme +- buffer. 'tiered' (video 096): the sweep extreme if it lies within max_stop, else the high/low inside the zone, else beyond the zone.\nrisk_ticks = |trigger_close - stop|, computed at the trigger close (known at decision time) and rechecked at the fill (backtest_execution FILL_GATE).\nGATES: risk < min_stop_pct*price -> cancel (STOP_GATE); risk > max_stop_pct*price -> cancel (STOP_GATE). The wide-stop 0.5x size multiplier lives ONLY in risk.mult.\nResting stop-market order. It is never widened or removed; the only move is to break-even after TP1 (trade_management). Fill mechanics: backtest_execution.",
+      "parameters": [
+        {
+          "name": "stop_mode",
+          "default": "retrace_swing",
+          "range": "retrace_swing | sweep_extreme | tiered",
+          "why": "2026: 'stop above the second high'. 2023 Boot Camp: 'I almost always put my stop above the liquidity sweep'. Video 096 describes the tiered order."
+        },
+        {
+          "name": "stop_buffer_ticks",
+          "default": "2",
+          "range": "1-4",
+          "why": "His buffer: 'at least 0.5 points ... or your spread' (= 2 ES ticks). The spread wording suggests a CFD origin."
+        },
+        {
+          "name": "stop_buffer_pct",
+          "default": "0.00007",
+          "range": "0-0.00015",
+          "why": "Our assumption. It scales the buffer to NQ (about 6-7 ticks at 23,000) while ES stays at 2 ticks around 6,500."
+        },
+        {
+          "name": "min_stop_pct",
+          "default": "0.0004",
+          "range": "0.0002-0.0006",
+          "why": "Our assumption: below about 0.04% of price, costs exceed about 0.3R."
+        },
+        {
+          "name": "wide_stop_pct",
+          "default": "0.0015",
+          "range": "0.0010-0.0020",
+          "why": "His ES stops are 16-35 ticks (about 0.06-0.15% of price). Beyond this, risk.mult halves size ('if the stop is drastically larger than usual, cut the contract size in half')."
+        },
+        {
+          "name": "max_stop_pct",
+          "default": "0.003",
+          "range": "0.002-0.005",
+          "why": "Our assumption: skip trades with stops more than 2x his typical maximum."
+        }
+      ],
+      "sources": [
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt",
+        "https://github.com/getofflabel/cryptobot/blob/main/step433_tjr_spec_management.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step301_tjr_rules.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step460_dated_index_and_january_course.md"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "He reads the 'second high' by eye; the highest high of the retrace leg since the latest range extreme is our mechanical proxy. The stop choice changes stop size by about 2x and therefore cost drag and win rate."
+    },
+    {
+      "name": "take_profit",
+      "description": "Targets at opposing unswept draws on liquidity, both external (highs/lows) and internal (imbalances), not R multiples. TP1 >= 1R by default.",
+      "algorithm": "At signal time (SHORT; LONG mirrors), candidates strictly below the trigger close:\n  external: usable alive key levels of the traded index with side LOW; alive two-candle swing lows of trading day D on S.ladder.tp_ref_tf; the SMT completion low (if SMT was detected)\n  internal (if tp_include_internal): the near edge (upper boundary) of FVGs that are eligible, untouched and lie entirely below the trigger close, on tp_ref_tf and higher (15m/1H/4H); NDOG/NWOG near edges if include_opening_gaps; 1H/4H EQ of the current HTF swing range if 'EQ' in tp_internal_kinds\n  drop candidates within 1 tick of the trigger close; dedupe by price_ticks; sort by distance ascending, then tf_rank descending, then cluster strength descending\n  R(p) = (trigger_close - p) / risk_ticks\n  TP1 = first p with R(p) >= tp1_min_R\n  TP2 = next p with R(p) >= R(TP1) + tp_min_gap_R; TP3 likewise; at most max_targets\n  if TP1 is None: cancel (NO_TARGET) if fallback_R is None ('no draw, no trade'), else TP1 = trigger_close - fallback_R*risk_ticks\nLog each target's kind (external/internal/fallback) and which ones were hit. Resting limit orders; fill rules in backtest_execution.",
+      "parameters": [
+        {
+          "name": "tp1_min_R",
+          "default": "1.0",
+          "range": "0-1.5 (0 = the nearest opposing draw whatever its R)",
+          "why": "'Most of the time my first take profit is going to be minimum one to one' is a preference. The step301 extraction finds 'no minimum-R rule': he reports R afterwards and accepts 1:1 when the stop is wide."
+        },
+        {
+          "name": "tp_ref_tf",
+          "default": "15m",
+          "range": "15m (1H on the conflict ladder)",
+          "why": "Boot Camp: TP1 = the first draw on the timeframe one above execution."
+        },
+        {
+          "name": "tp_include_internal",
+          "default": "true",
+          "range": "true|false",
+          "why": "2026-06-05 names 'this big gap that we could get filled' as a target, and 2026-01-05 frames targets as external (highs/lows) vs internal (imbalances). false = external-only draft behaviour; test both."
+        },
+        {
+          "name": "tp_internal_kinds",
+          "default": "FVG",
+          "range": "FVG | FVG+EQ",
+          "why": "FVG targets are directly attested. HTF EQ as a target is our extension."
+        },
+        {
+          "name": "max_targets",
+          "default": "3",
+          "range": "2-5",
+          "why": "He sets 3-4 (up to 5) targets."
+        },
+        {
+          "name": "tp_min_gap_R",
+          "default": "0.25",
+          "range": "0-0.5",
+          "why": "Our assumption, to avoid near-duplicate targets."
+        },
+        {
+          "name": "fallback_R",
+          "default": "none",
+          "range": "none | 0.5-3.0",
+          "why": "TJR targets levels only; fixed-R fallbacks are third-party."
+        },
+        {
+          "name": "tp_fill_through_ticks",
+          "default": "1",
+          "range": "0-2",
+          "why": "Touch fills overstate results (third-party execution test)."
+        }
+      ],
+      "sources": [
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt",
+        "https://github.com/getofflabel/cryptobot/blob/main/step433_tjr_spec_management.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step460_dated_index_and_january_course.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step301_tjr_rules.md",
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/TEp3a-7GUds.md",
+        "https://github.com/clipscentral872-ctrl/aitrader-tjr-demo/blob/main/RESULTS.md"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "He picks draws by eye; nearest-first ranking with tf_rank and cluster tie-breaks is ours. Third-party tests found that level-to-level targets give about 35-45% WR and that smaller fixed targets often did better; report both."
+    },
+    {
+      "name": "trade_management",
+      "description": "Partial exits, the break-even move and progress/time exits, with no discretionary overrides.",
+      "algorithm": "q = contracts. q1 = ceil(q*tp1_close_frac); if q1 == q, exit in one piece at TP1. q2 = ceil((q - q1)*tp2_close_frac_of_remaining); q3 = q - q1 - q2.\nTP1 fill: close q1; move the stop to entry -+ be_offset_ticks (active from the bar AFTER the TP1 fill).\nTP2 fill: close q2; the stop stays at break-even. If TP3 is missing, q3 also closes at TP2.\nIf TP2 is missing: the remainder exits only via BE, stall_exit, max_hold, flat_time or pre-event flatten (no target).\nRunner q3: exits at TP3, the BE stop, stall_exit, max_hold, flat_time or pre-event flatten.\nSTALL_EXIT: close the remainder if no new favourable extreme has printed for stall_minutes; max_hold_minutes is the backstop. Time exits fill at the open of the first bar at/after the deadline.\nNever widen, remove or re-widen the stop; never add; no 'let it run' override (skipping this ladder preceded his largest losses).\nAfter the position is flat: if trades_today == max_trades_per_day -> day DONE. Second-trade variant (max_trades_per_day = 2): a second setup may only come from a NEW sweep created after the first trade reached BE or closed in profit; never after a stop-out; both trades at 0.5x risk.\nReport the distribution of q and the share of trades with a real runner (with 1-3 contracts q3 is often 0).",
+      "parameters": [
+        {
+          "name": "tp1_close_frac",
+          "default": "0.5",
+          "range": "0.33-0.5",
+          "why": "Our choice, anchored on one 2023 quote (Boot Camp Day 54: 'After take profit one got hit I took off 50 of the position, my stop's at break even'). 2026-06-05 says only 'I took my first profit and then I moved my stop loss to break even'."
+        },
+        {
+          "name": "tp2_close_frac_of_remaining",
+          "default": "0.5",
+          "range": "0.5-1.0",
+          "why": "Boot Camp 2.0: 50% of the remainder (25% of the original) at TP2. Our choice otherwise."
+        },
+        {
+          "name": "be_offset_ticks",
+          "default": "1",
+          "range": "0-2",
+          "why": "'Slightly beyond entry to cover fees'. Break-even after TP1 is well attested, including in 2026."
+        },
+        {
+          "name": "stall_minutes",
+          "default": "120",
+          "range": "90-150 | off",
+          "why": "His stated reason for manual exits is lack of progress ('price has been consolidating for literally 2 hours, 2 and 1/2 hours now, so I'm done', 2023-07-17). The threshold is ours."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step433_tjr_spec_management.md",
+        "https://github.com/getofflabel/cryptobot/blob/e2e8b01a6424c74d7bb753397df94cb8f903e96d/step452_bootcamp2_spec.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step454_newest_corpus_delta.md",
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt",
+        "https://github.com/D1349375/traders-debate-system/blob/main/.claude/skills/tjr-perspective/references/research/_raw_batch_02.md"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "The 50%/25% split is attested only once (2023). Other recaps say only 'take partial profits'. The 'SMC by TJRTrades' e-book (scribd/studylib) that also states the split has unverifiable provenance and may be leaked paid material, so it is not used as a source. The one-trade/day limit is his 2023 beginner recommendation; his 2025 live sessions run 2-4 trades."
+    },
+    {
+      "name": "risk",
+      "description": "Position sizing, cost gate, de-risk tiers, trade limits and live kill switches.",
+      "algorithm": "SIZING: sizing_mode 'calculated' (default; our safety choice / his older student rule): base_risk = equity_at_session_start * risk_pct. sizing_mode 'fixed_contracts' (his 2026-01-16 practice): a fixed contract count sized so a ~35-tick worst-case stop stays within 1-3% ('sweet spot'; he tolerates 3-4%).\nmult = 0.5 if any(news_halve_day, day_before_us_holiday, risk_ticks > wide_stop_pct*price, day_after_big_win (previous day >= big_win_R), second_trade, chop 'halve', orange 'halve', low_volume_day if enabled) else 1.0. Tiers do not compound; the 2x 'confident' tier is never used.\nrisk_dollars = base_risk * mult\nper_contract = risk_ticks*tick_value + commission_rt + (slippage_ticks + stop_slippage_ticks)*tick_value\ncontracts = min(floor(risk_dollars / per_contract), max_contracts)\nif contracts == 0 and allow_micros: switch to MES/MNQ with their own tick value and fee and recompute; still 0 -> cancel (SIZE)\ncost_R = (commission_rt + (slippage_ticks + stop_slippage_ticks)*tick_value) / (risk_ticks*tick_value); cancel (COST) if cost_R > max_cost_R\nmax_trades_per_day = 1 (his beginner recommendation). 2 = second-trade variant (trade_management).\nweekly strict_mode: OFF by default (2023 Boot Camp Day 41, contradicted 2026-06-05). If enabled: after 2 consecutive losing weeks the continuation zone must be FVG AND EQ, until a winning week.\nLIVE KILL SWITCHES (ours): a broker-side daily loss limit of daily_loss_limit_mult x planned risk auto-flattens and disables the bot for the day. Rolling breaker: sum of R over the last 10 trades <= -4R, or live stats outside the backtest's 95% band -> switch to paper pending human review. derisk_after_loss (off): 0.5x after a losing week until a winning day.\nFunded / prop accounts: see prop_rules.",
+      "parameters": [
+        {
+          "name": "risk_pct",
+          "default": "0.01",
+          "range": "0.0025-0.03",
+          "why": "Our safety default (his older student rule). On 2026-01-16 he says 'I used to do the whole thing of like calculate 1% ... but I moved away ... I'm going to risk this amount of contracts per trade', and calls 1-3% per trade the 'sweet spot'."
+        },
+        {
+          "name": "sizing_mode",
+          "default": "calculated",
+          "range": "calculated | fixed_contracts",
+          "why": "fixed_contracts is his 2026 practice; calculated is safer for a bot and for small accounts."
+        },
+        {
+          "name": "derisk_mult",
+          "default": "0.5",
+          "range": "0.5",
+          "why": "His de-risk tier is 0.5x (news, bank holiday, chop, wide stop)."
+        },
+        {
+          "name": "big_win_R",
+          "default": "3.0",
+          "range": "2-5 or off",
+          "why": "Our threshold for 'I'll purposely de-risk the following day after a really big day'."
+        },
+        {
+          "name": "max_trades_per_day",
+          "default": "1",
+          "range": "1-2",
+          "why": "His beginner recommendation (Boot Camp Day 29, 2023): 'I recommend one trade a day ... sometimes I'll take two'. Video 068 (2025) says 'one or two trades in a day', and Boot Camp 2.0 has a 'Second Trade' lesson."
+        },
+        {
+          "name": "commission_rt",
+          "default": "ES/NQ 4.50 USD, MES/MNQ 1.25 USD per round trip (commission + exchange + NFA)",
+          "range": "broker-specific",
+          "why": "Our assumption. Slippage is charged in the fills only, never a second time here."
+        },
+        {
+          "name": "max_cost_R",
+          "default": "0.15",
+          "range": "0.05-0.3",
+          "why": "Our assumption. Micros cost roughly 2-4x more in R."
+        },
+        {
+          "name": "max_contracts",
+          "default": "account/prop limit",
+          "range": ">= 1",
+          "why": "Clamp for prop accounts and liquidity."
+        },
+        {
+          "name": "allow_micros",
+          "default": "true",
+          "range": "true|false",
+          "why": "Small accounts cannot size ES/NQ at 1% on 16-35 tick stops."
+        },
+        {
+          "name": "weekly_strict_mode",
+          "default": "false",
+          "range": "true|false",
+          "why": "2023 Boot Camp Day 41 rule. Contradicted on 2026-06-05: 'I've had two losing weeks in a row ... does that mean I need to change anything? No.'"
+        },
+        {
+          "name": "daily_loss_limit_mult",
+          "default": "1.5",
+          "range": "1.0-2.0",
+          "why": "Our live safety rule; gaps, halts and disconnects can exceed one trade's planned risk."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step460_dated_index_and_january_course.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step433_tjr_spec_management.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step436_spec_conflicts_resolved.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step454_newest_corpus_delta.md",
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt",
+        "https://github.com/D1349375/traders-debate-system/blob/main/.claude/skills/tjr-perspective/references/research/05-decisions.md"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "Whether 1-3% is per trade or per day conflicts (2023: per day; 2026: per trade), and 'drastically larger' stop has no number. His live behaviour contradicts these rules: full-port size, 2x size, removed stops, and a -$151,780 day on 2025-11-20 after which he said 'I need to size down'. The bot follows the taught rules, not the live behaviour. Kill-switch numbers are ours."
+    },
+    {
+      "name": "prop_rules",
+      "description": "Optional funded-account module: drawdown type, contract cap, consistency rule and minimum days.",
+      "algorithm": "Inputs: dd_type (intraday_trailing | eod_trailing | static), max_dd, max_contracts, consistency_pct, min_days, firm daily_loss_limit.\nTrack the high-water mark (intraday or end-of-day per dd_type) and remaining_buffer = max_dd - (HWM - equity); static: equity - (start_equity - max_dd).\nrisk_dollars = min(risk_pct*equity, buffer_frac*remaining_buffer, 0.5*daily_loss_limit).\nConsistency guard: if today's realised P&L plus TP1 profit would exceed consistency_pct of total profit -> exit in one piece at TP1; skip the day if it is already exceeded.\nStop trading when remaining_buffer < 1R at minimum size. Clamp contracts to max_contracts. Count trading days toward min_days.",
+      "parameters": [
+        {
+          "name": "enabled",
+          "default": "false",
+          "range": "true|false",
+          "why": "Only for funded accounts."
+        },
+        {
+          "name": "buffer_frac",
+          "default": "0.25",
+          "range": "0.1-0.5",
+          "why": "Our assumption."
+        },
+        {
+          "name": "daily_risk_cap",
+          "default": "0.5 x firm daily drawdown limit",
+          "range": "0.25-0.5",
+          "why": "Carried over from the draft's funded-account rule."
+        }
+      ],
+      "sources": [
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/52nxvJKM57U.md"
+      ],
+      "fidelity": "our_assumption",
+      "discretionary_notes": "His funded-accounts lesson lists trailing vs static drawdown, contract caps and consistency rules (e.g. Alpha Futures 100K: $3,500 trailing, max 10 contracts, 50% consistency; Tradeify Lightning: 20%). That content is sponsored (discount codes TJR40/TJR), a conflict of interest. In Oct 2025 (video 109) he said 'I currently do not trade on fundeds'."
+    },
+    {
+      "name": "filters",
+      "description": "Calendar, news, chop and discipline gates.",
+      "algorithm": "CALENDAR: USD events with impact (red / orange / holiday). Backtests use an archived, dated snapshot (impact labels get revised). Live, the calendar is fetched every morning before 08:30. All times are normalised to America/New_York (Forex Factory exports use the user's configured timezone). If the fetch or parse fails -> NO_TRADE_DAY (fail closed).\nEXCHANGE CALENDAR: full holiday = no session; early close -> NO_TRADE_DAY (ours); day before a US bank holiday -> risk 0.5x.\nNEWS (news_mode 'tiered', default):\n  FOMC decision day -> NO_TRADE_DAY (he still skipped FOMC days in Oct 2025)\n  CPI/Core CPI or Non-Farm Payrolls day -> NO_TRADE_DAY (labelled 2023 Boot Camp rule; variant 'halve')\n  PPI and every other red USD event at time e:\n    e < 09:30: at e + post_release_wait compute spike = max 5m range in [e, e+wait) / median 5m range of that clock window over the prior 20 trading days. spike > news_spike_mult -> NO_TRADE_DAY, else risk 0.5x ('I'm just going to cut my contract size in half', 2026-01-16)\n    09:30 <= e < cutoff: news block, no entries in [e - 2 min, e + post_release_wait); at e + wait apply the spike test (NO_TRADE_DAY or 0.5x). If e + wait >= cutoff, no entries today ('I will not trade until 10 a.m. hits ... until like 10:30')\n  orange USD event (orange_mode 'wait', default): no entries in [e - 2 min, e + post_release_wait); variant 'halve'\n  fed_speech_skip (default false; 2023-only remark): NO_TRADE_DAY on a Fed Chair speech today or yesterday\n  weekly density (off): if red_events_this_week >= 4 -> cap at 2 trades/week\nEVENTS WHILE IN A POSITION (ours): at entry, look up red USD events in (entry, min(entry + max_hold, flat_time)). pre_event_action 'flatten' (default) closes the position 2 min before the release -> NEWS_EXIT; variants 'move_to_BE', 'cap_hold'.\nCHOP PROXY (ours; chop_mode 'log' default | 'block' | 'halve'): per index, count 5m orderflow flips in [08:30, T). The index is CHOP if flips >= chop_flip_max, OR (from 09:50) the 5m high-low range of [09:30, T) < chop_range_frac x its 20-day median at the same clock time. 'block' = no new setups on a CHOP index; 'halve' = 0.5x.\nLOW VOLUME (off): at entry time T, the volume of [09:30, T) is below the 20th percentile of the same window over the prior 20 days and there is no red/orange event today -> 0.5x.\nDISCIPLINE: no entry after a stop-out the same day; no averaging; no day-of-week filter (none found in TJR material; the Mon-Thu gating in the corpus belongs to a different trader). A day without a valid setup is a normal outcome ('the strategy tells you what trades not to take').",
+      "parameters": [
+        {
+          "name": "news_mode",
+          "default": "tiered",
+          "range": "tiered | skip_all_red | halve | fomc_post_release",
+          "why": "Boot Camp 2023: 'CPI PPI FOMC and NFP those four ... I do not trade whatsoever' (framed as beginner advice). The 2026-01-16 risk lesson halves size on a PPI day. 2025 sessions trade around releases but skip FOMC days. A third-party replay found the FOMC gate blocked a day he traded and won (2024-03-20)."
+        },
+        {
+          "name": "post_release_wait_min",
+          "default": "20",
+          "range": "15-30",
+          "why": "'Wait until the news comes out, then another 15 to 20 minutes'."
+        },
+        {
+          "name": "news_spike_mult",
+          "default": "3.0",
+          "range": "2-5",
+          "why": "Our number for 'if news messes up the market I'm done for the day' (he gives none)."
+        },
+        {
+          "name": "orange_mode",
+          "default": "wait",
+          "range": "ignore | wait | halve",
+          "why": "Boot Camp news lesson: orange means 'caution'."
+        },
+        {
+          "name": "fed_speech_skip",
+          "default": "false",
+          "range": "true|false",
+          "why": "One 2023 remark; not restated since."
+        },
+        {
+          "name": "pre_event_action",
+          "default": "flatten (2 min before)",
+          "range": "flatten | move_to_BE | cap_hold",
+          "why": "Our rule, following his 'wait until the news comes out' logic for positions still open after the cutoff (14:00 FOMC minutes, Fed speakers)."
+        },
+        {
+          "name": "chop_mode",
+          "default": "log",
+          "range": "log | block | halve",
+          "why": "Day 44 rule: 'break of structure up, sweep, break of structure, sweep, endless up and down = price garbage, no trade'. The proxy is ours, so it only logs until its marginal effect is measured."
+        },
+        {
+          "name": "chop_flip_max",
+          "default": "3",
+          "range": "2-5",
+          "why": "Our assumption."
+        },
+        {
+          "name": "chop_range_frac",
+          "default": "0.4",
+          "range": "0.3-0.6",
+          "why": "Our assumption."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/step434_tjr_spec_bias_and_strategy.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step460_dated_index_and_january_course.md",
+        "https://github.com/hartnastics/finance-agent/tree/main/knowledge/videos/TJR-Traiding/Bootcamp-Days",
+        "https://github.com/getofflabel/cryptobot/blob/main/step433_tjr_spec_management.md",
+        "https://x.com/_TJRTrades/status/1968378891279687802"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "Sickness, emotional state and 'no news Monday' low-volume feel are also stand-down or de-risk reasons for him; only low volume has a (disabled) proxy. The early-close stand-down and in-position event flatten are ours."
+    },
+    {
+      "name": "backtest_execution",
+      "description": "Order and position state machine for bar-based backtests: pending fills, gaps, intrabar ambiguity, partials and costs.",
+      "algorithm": "STATES: SIGNAL -> PENDING -> FILLED -> PARTIAL_TP1 -> BE -> CLOSED. Terminal cancels: GAP_SKIP, FILL_GATE.\n(a) A signal at trigger close T creates a PENDING market order that fills at the open of the next 1m bar, with slippage_ticks against us.\n(b) If the fill is at/beyond the stop or at/beyond TP1 -> cancel with GAP_SKIP.\n(c) Recheck at the fill: risk_fill = |fill - stop|. If R_fill(TP1) < tp1_min_R - tp_recheck_tol -> cancel with FILL_GATE. Log R at the trigger and at the fill. Size stays as computed at the trigger.\n(d) The fill bar is evaluated fully with its high/low.\n(e) Any bar whose range contains the current stop: by intrabar_priority (default stop_first) the stop takes the whole remaining position, even if a TP is also inside the bar.\n(f) Stop fills at the worse of the stop and bar.open (gap), plus stop_slippage_ticks. TP limits fill only if price trades through by tp_fill_through_ticks, and fill at the limit price (no gap price improvement).\n(g) Several TPs may fill in one bar if the bar does not contain the current stop. The BE stop becomes active from the bar AFTER the TP1 fill.\n(h) Time exits (stall, max_hold, flat_time, pre-event flatten) fill at the open of the first bar with t >= deadline.\nP&L: fills already include slippage; the deducted cost is commission + fees only (per instrument). Slippage is never charged twice.\nAMBIGUITY REPORT: share of trades touching a bar that contains both the stop and a TP. Re-resolve those bars with 1s/tick data or run a stop_first vs target_first sensitivity.",
+      "parameters": [
+        {
+          "name": "slippage_ticks",
+          "default": "1",
+          "range": "0-3",
+          "why": "Our assumption for market fills."
+        },
+        {
+          "name": "stop_slippage_ticks",
+          "default": "1",
+          "range": "0-3",
+          "why": "Our assumption."
+        },
+        {
+          "name": "intrabar_priority",
+          "default": "stop_first",
+          "range": "stop_first | target_first",
+          "why": "Conservative resolution when stop and target sit inside the same 1m bar; common with 16-35 tick stops on 1m NQ."
+        },
+        {
+          "name": "tp_recheck_tol",
+          "default": "0.1 R",
+          "range": "0-0.25",
+          "why": "Our assumption; the decision uses the trigger close, the fill uses the next open."
+        }
+      ],
+      "sources": [
+        "https://github.com/clipscentral872-ctrl/aitrader-tjr-demo/blob/main/RESULTS.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step437_replay_results.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/RESEARCH_LOG.md"
+      ],
+      "fidelity": "our_assumption",
+      "discretionary_notes": "He trades by hand with market orders and brackets. These rules only make bar-based simulation deterministic and conservative."
+    },
+    {
+      "name": "daily_orchestration",
+      "description": "Per-day and per-bar control loop tying all components together, with deterministic ordering.",
+      "algorithm": "for each trading day D (exchange calendar):\n  data checks (label convention, missing minutes, roll, ES/NQ alignment) -> SKIP_DATA\n  cal = filters.calendar(D); if NO_TRADE: journal the reason; continue\n  warm up state from D - warmup_days on the contract traded on D\n  08:30: levels[X] = key_levels(X, D) for X in (ES, NQ); setups = []; trades_today = 0; DONE = False\n  for each 1m close T in [08:30, flat_time]:\n    1. update the 1m bar, then every tf whose bar closed at T: swings, BOS, FVG lifecycle (touched/inverted/expired), stack IFVG events, orderflow\n    2. if T == 09:25 or a 1H bar closed: bias, ladder = daily_bias(T) (new setups only; existing setups keep S.ladder)\n    3. SMT evaluations whose t_eval == T\n    4. if not DONE and trades_today < max_trades_per_day and T < cutoff:\n         iterate setups sorted by (created_at, index ES<NQ, dir, first level price_ticks):\n         a. ARMED setups: entry trigger check on the pre-bar state -> collect trigger events\n         b. CONFIRMED/ARMED setups: cancel checks, new-leg update, zone / counter-BOS updates (continuation)\n         c. liquidity_sweep: update alive flags, create/extend setups (new ids)\n         d. if a confirm_tf bar of a setup's ladder closed: confirmation for SWEPT setups; expire stale ones\n         e. triggers passing all gates -> tie-break -> SIGNAL one -> trades_today += 1 -> cancel all other setups\n    5. at the first T >= alignment_deadline: schedule.alignment_deadline check (may set DONE)\n    6. T >= cutoff: cancel un-entered setups\n    7. backtest_execution / trade_management on the open position (live: live_execution)\n  journal every setup's terminal state: EXPIRED_NO_REACTION, CANCELLED_INVALIDATION, NO_RETRACE, PRE_WINDOW_TRIGGER, UNALIGNED, BIAS_WAIT, PREMIUM, NEWS_WAIT, STOP_GATE, NO_TARGET, COST, SIZE, CUTOFF, GAP_SKIP, FILL_GATE, ENTERED, plus the day's result.",
+      "parameters": [
+        {
+          "name": "setup_states",
+          "default": "SWEPT -> CONFIRMED -> ARMED -> IN_TRADE -> DONE",
+          "range": "fixed",
+          "why": "TJR's 'potential to fill orders, confirmation, continuation, exit where orders are liquidated'."
+        }
+      ],
+      "sources": [
+        "https://github.com/getofflabel/cryptobot/blob/main/tjr_bot.py",
+        "https://github.com/jrqcode/trading-view/blob/HEAD/src/tjr_liquidity_strategy.pine",
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/TEp3a-7GUds.md"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "He says he does not trade a rigid step list ('instead of waiting for this confirmation, I wait for another confirmation'). The state machine is our codification of his five-step summary."
+    },
+    {
+      "name": "journal",
+      "description": "Per-setup and per-day journal rows for review, agreement scoring against his recaps, and debugging.",
+      "algorithm": "Per setup, one row: id, index, dir, ladder, bias and its inputs (trend per tf, HTF-gap flip, draws up/down), phase, swept levels (types, prices, cluster strength), sweep_time, smt flag, confirm_kind/time, EQ, zone kind, arm_time, trigger kind/time, every gate value and the first failing gate, trigger close, fill, stop, TPs (external/internal/fallback), R at trigger and at fill, cost_R, contracts and instrument, exit reasons (TP1/TP2/TP3/BE/STOP/STALL_EXIT/MAX_HOLD/FLAT/NEWS_EXIT/GAP_SKIP/FILL_GATE), realised R, plan_followed (manual overrides flagged), and a PNG snapshot of ES and NQ 5m/1m.\nPer day, one row: calendar events, news decisions, chop state, alignment-deadline result, no-trade reason codes.\nExport as CSV importable into a journaling tool.",
+      "parameters": [
+        {
+          "name": "snapshot_png",
+          "default": "true",
+          "range": "true|false",
+          "why": "His journaling lesson requires a screenshot per trade."
+        }
+      ],
+      "sources": [
+        "https://github.com/ablanchard-dev/dexterio/blob/main/backend/knowledge/brain/true_extraction/vlnNPFu4rEQ.md"
+      ],
+      "fidelity": "consensus_interpretation",
+      "discretionary_notes": "Boot Camp Day 46 and rule 2 of his '6 Rules' ask for bias, confluences, entry/SL/TP, R, whether the plan was followed, and a screenshot. The field list is ours."
+    },
+    {
+      "name": "backtest_hygiene",
+      "description": "Validation, determinism tests, metric definitions and data rules that third-party TJR/ICT replications showed are necessary.",
+      "algorithm": "1. Truncation test: re-decide every entry with all later bars deleted; decisions must be identical. Poisoned-future test: replace all bars after T with NaN or extreme values and assert identical decisions at T.\n2. Unit tests: IFVG on the bar that inverts the gap (fvg); DST 4H closes include 10:00 ET every day; no swing/FVG spans a contract change; open-time bar labels (08:30 spike); a warm-up-doubled convergence test.\n3. Never use centred-window pivots or shift(-1) FVG code (e.g. the smartmoneyconcepts library); one report showed PF inflated from 1.82 to 7.32.\n4. Fills and costs per backtest_execution. Report costs in R per trade, not as % of notional.\n5. Data: CME 1m ES/NQ futures including overnight, per contract, >= 2 years, licensed (Databento/IBKR). Cross-check with a second vendor. Avoid yfinance (60-day cap) and IEX-only equity feeds (wicks under-reported, which swung results by about 0.2R).\n6. Metrics: R_trade = net_pnl / (initial_risk_ticks*tick_value*q). Win = net > 0 after costs; scratch = |R| < 0.1. Report win rate three ways (scratch as win, scratch as non-win, BE as loss, since he says 'sometimes break even trades end up being a loss'), both per trade and per day. Report realised R after partials next to R-to-TP1, and the share of ambiguous bars.\n7. Golden test days: hand-label the dated examples in his public 2026 videos (e.g. the ES/NQ examples in 'My UPDATED Day Trading Strategy (2026)') with the expected sweep time, confirm kind, arm time, trigger time, stop and TP1, and keep them as regression tests. Agreement with his recaps and profitability are separate metrics.\n8. Validation: chronological train/validation/sealed test, walk-forward, a penalty for every tested variant (multiple testing), a TJR-faithful configuration reported separately from any optimised one, then >= 3 months of paper trading.\n9. Sanity: WR far above 64% or RR far above 1.4 -> suspect lookahead. Trading most days -> a stand-down gate was dropped. Median stop far above 0.15% of price -> swing or stop code drifted.",
+      "parameters": [
+        {
+          "name": "min_history_years",
+          "default": "2",
+          "range": ">= 2",
+          "why": "70-day samples 'prove nothing' (third-party)."
+        }
+      ],
+      "sources": [
+        "https://github.com/joshyattridge/smart-money-concepts/issues/101",
+        "https://github.com/clipscentral872-ctrl/aitrader-tjr-demo/blob/main/RESULTS.md",
+        "https://github.com/clipscentral872-ctrl/aitrader-tjr-demo/blob/main/ROADMAP.md",
+        "https://github.com/getofflabel/cryptobot/blob/main/step437_replay_results.md",
+        "https://github.com/AaroNLaU0307/quant-backtest-framework",
+        "https://github.com/ArunTelegramBot/Trading-BOT/blob/main/trading/My%20UPDATED%20Day%20Trading%20Strategy%20(2026).srt"
+      ],
+      "fidelity": "our_assumption"
+    },
+    {
+      "name": "live_execution",
+      "description": "Live/paper execution layer: brackets, reconciliation, clock, bar-builder parity and paper-first gating.",
+      "algorithm": "Default mode = paper/sim. Live trading requires an explicit flag, set only after >= 3 months of paper trading with stats inside the backtest band.\nOrders: entry + stop-market + TP limits are submitted as a server-side OCO bracket with idempotent client order IDs. The stop is never modified except for the BE move.\nOn start and on reconnect: reconcile broker positions and orders against internal state before any new decision. On a mismatch: flatten, disable for the day, notify.\nClock: NTP-synced. Decisions run at the 1m close; log decision and order latency.\nLive bar builder: build 1m bars from ticks with the same boundaries as the backtest vendor (open-time labels, 18:00 ET wall-clock higher-TF bins). Run a daily parity check of live vs vendor OHLC and flag deviations.\nMarket state: if the market is halted or limit-locked, freeze new entries and flag open positions. Risk kill switches per risk (broker-side daily loss limit, rolling breaker).\nThe real-time CME data licence and any broker or regulatory obligations are the user's responsibility. Signals are for the user only.",
+      "parameters": [
+        {
+          "name": "mode",
+          "default": "paper",
+          "range": "paper | live",
+          "why": "Independent replications were break-even to negative after costs."
+        },
+        {
+          "name": "min_paper_months",
+          "default": "3",
+          "range": ">= 3",
+          "why": "Carried over from the validation plan."
+        }
+      ],
+      "sources": [
+        "https://github.com/clipscentral872-ctrl/aitrader-tjr-demo/blob/main/ROADMAP.md",
+        "https://databento.com/docs/schemas-and-data-formats/ohlcv"
+      ],
+      "fidelity": "our_assumption"
+    },
+    {
+      "name": "notifier",
+      "description": "Trade-signal and daily-status messages to the user, in a neutral bot voice with a fixed 'unofficial, not TJR' header. Never speaks as TJR.",
+      "algorithm": "On every setup state change and at the end of the day, emit a message:\n  header (fixed): 'Unofficial TJR-inspired model - not TJR, not affiliated with or endorsed by him'\n  body schema: {ts_ET, instrument, setup_id, state (SWEPT | CONFIRMED | ARMED | ENTERED | EXITED | NO_TRADE | DONE), swept_level (type, price), confirm_kind, zone (EQ/FVG/none), entry, stop, TP1-TP3, R, cost_R, contracts, reason_codes, mode (paper | live)}\n  voice: neutral third person or plain data ('Model: ES short setup armed ...'). Never TJR's first person, never his name as the sender, never his catchphrases.\nChannels: Telegram, Discord or email. Paper-only by default. The daily summary includes no-trade reasons.\nOUTPUT VALIDATOR (shared with content_monitor): reject any message that lacks the header, is written in the first person as TJR, is signed as him, or quotes him without attribution and a link.",
+      "parameters": [
+        {
+          "name": "channel",
+          "default": "telegram",
+          "range": "telegram | discord | email",
+          "why": "The user wants to be told directly what the model sees."
+        },
+        {
+          "name": "voice",
+          "default": "neutral_bot",
+          "range": "fixed",
+          "why": "Impersonating a real, identifiable person is not allowed; 31+ fake TJR accounts already exist on X."
+        }
+      ],
+      "sources": [
+        "https://raw.githubusercontent.com/EverybodyGetsHurt/Public/main/TwitterData/TXT-ImpersonatorAccounts/_TJRTrades(1392880739419447297).txt"
+      ],
+      "fidelity": "our_assumption",
+      "discretionary_notes": "This replaces the user's request for a bot that presents itself as TJR. The model's signals are its own rule-based output and are never presented as his calls."
+    },
+    {
+      "name": "content_monitor",
+      "description": "Watches TJR's public YouTube channel for new uploads and produces clearly attributed third-person summaries and rule-change notes. Never speaks as TJR.",
+      "algorithm": "every poll_interval_min: fetch https://www.youtube.com/feeds/videos.xml?channel_id=UCGHBUXjDCeiIXNdKR0HUZnA (or YouTube Data API playlistItems on UUGHBUXjDCeiIXNdKR0HUZnA)\n  keep only entries with channelId == UCGHBUXjDCeiIXNdKR0HUZnA (many clip channels are also named 'TJR'); dedupe by videoId\n  SOURCE CHAIN: (1) metadata (title, description, date, link) from RSS/API; (2) a transcript ONLY if the user pastes it or a licensed service provides it. The captions.download endpoint works only for the video owner, and scraping timedtext violates YouTube's terms, so neither is used. (3) Otherwise summarise from title and description only, labelled 'based on title/description only'.\n  classify: lesson | live-trade recap | vlog/lifestyle | promo/trailer | crypto (persona_style markers may be used here for recognition only)\n  lesson or recap with a transcript: extract statements about sessions, levels, confluences, stop, targets, risk and news -> diff against this spec's parameters -> emit 'possible rule change' notes with timestamps. Never change live parameters without human review and a backtest.\n  OUTPUT (checked by the notifier validator): header 'Unofficial summary - not written or endorsed by TJR'; third person ('In his video <title> (<date>), TJR says ...'); link; short, attributed quotes only. persona_style text is never placed into a generation prompt.\nExclude paid/private material (Whop community, Discord, Mastermind, leaked course files). X monitoring needs a paid API tier; whitelist the numeric id 1392880739419447297.",
+      "parameters": [
+        {
+          "name": "poll_interval_min",
+          "default": "10",
+          "range": "5-60",
+          "why": "The RSS feed returns the ~15 newest uploads."
+        },
+        {
+          "name": "channel_id",
+          "default": "UCGHBUXjDCeiIXNdKR0HUZnA",
+          "range": "fixed",
+          "why": "Confirmed by independent public datasets."
+        },
+        {
+          "name": "voice",
+          "default": "third_person_attributed",
+          "range": "fixed",
+          "why": "Impersonating a real person is not allowed."
+        },
+        {
+          "name": "transcript_source",
+          "default": "user_pasted",
+          "range": "user_pasted | licensed_service | none (title/description only)",
+          "why": "The captions API will not serve third-party videos."
+        }
+      ],
+      "sources": [
+        "https://github.com/sheb1lmsp/youtube-trending-analytics/blob/main/data/videos/country=US/year=2026/month=02/trending_US_2026-02-26.csv",
+        "https://raw.githubusercontent.com/studioamr/northpoint-capital/main/data/canales.json",
+        "https://raw.githubusercontent.com/D1349375/traders-debate-system/main/.claude/skills/tjr-perspective/references/research/06-timeline.md",
+        "https://raw.githubusercontent.com/EverybodyGetsHurt/Public/main/TwitterData/TXT-ImpersonatorAccounts/_TJRTrades(1392880739419447297).txt"
+      ],
+      "fidelity": "our_assumption",
+      "discretionary_notes": "YouTube was blocked in the research sandbox; verify the feed from an unrestricted host. Kick live detection is blocked server-side by Cloudflare, and Instagram stories cannot be captured reliably. Uploads after 2026-07-21 have not been checked yet; run the rule-change diff on them first."
+    }
+  ],
+  "variants": [
+    "bias_mode='filter' (a third-party optimisation, not TJR's 2026 teaching): hard veto on counter-bias trades. It raised net from -$4,222 to -$190 in one third-party replay. Also test bias_mode='off'.",
+    "require_zone_touch=false, from TJR on 2026-06-05 ('we can even make this even simpler ... we can just say we want a one minute break of structure'): the 1m counter-BOS alone arms the setup. It is as TJR-sourced as the default (Jan 2026 Path to Profitability). Report both.",
+    "htf_trend_rule='single_break' for 4H/1H (draft behaviour), against the default 'hh_hl_sequence' (2026-01-14 bias lesson).",
+    "htf_stack='D+4H+1H' (2023 Boot Camp top-down; Day 44 says daily, 4H and 1H disagreeing -> no trade), with a softer 0.5x-risk version. PWH/PWL and daily swing levels enabled.",
+    "phase_mode='lean': the HTF extension/retracement/reversal phase and the external -> internal -> external liquidity cycle (2026-01-05) set a counter-trend intraday draw into an untouched 4H FVG/EQ.",
+    "Previous-session profile bias (video e_FV0Q14k8E, 2025-06-30): London consolidation -> NY manipulates then reverses; London manipulation without reversal -> NY reverses; London manipulation + reversal -> NY continues (still needs a fresh 5m/15m sweep). Superseded in 2026.",
+    "stop_mode='sweep_extreme' (2023): stop beyond the swept high/low + >= 0.5 pt, giving about 2x wider stops and lower cost drag. 'tiered' (video 096): sweep, else the high/low inside the zone, else beyond the zone.",
+    "Confirmation superset (video 112, Nov 2025): BOS | IFVG | 79% extension close | SMT on 5m, with the same menu (including 1m SMT) on 1m.",
+    "entry_type='5m_close': enter on the next 5m candle closing in trade direction out of the zone (slower, worse fill). Aggressive 1m-only entry on strong-bias days at half risk.",
+    "Third-party limit entries at the FVG edge or at 50% CE after sweep -> MSS (TJR v4 by DoriannNQ, spilled9, LynchDyl). Not TJR's method.",
+    "News: news_mode='halve' for CPI/NFP as well; 'skip_all_red' (strict 2023); 'fomc_post_release' (skip the open, trade the HTF sweep after the 14:00 release). orange_mode='halve'; fed_speech_skip=true (2023-only remark); a weekly red-folder density cap.",
+    "premarket_sweep_policy='require_fresh' (step 2B, Oct/Nov 2025); premarket_unconfirmed='drop'.",
+    "Cutoff 11:00 ET (2023 Boot Camp: first 1.5h), 11:30 or none (2026-06-05: an 11:05-11:20 entry is 'technically when you would want to enter using our strategy'). PM module: 13:30-15:00 ET with a 13:50-14:10 macro, 15m/5m acting as 4H/1H, 1m execution, single TP.",
+    "smt_mode 'select_leading' (2025 teaching), 'select_lagging' (one reading of FJch02ucIO8, 2026-01-27) or 'required'. The leading/lagging choice is unresolved in 2026.",
+    "htf_conflict_action='stand_down' instead of escalating to 15m confirmation / 5m trigger (the escalation is a 2024 rule).",
+    "Legacy 2023 Boot Camp / SMC e-book model: continuation via order block (the sweep leg before the BOS), breaker block, FVG or EQ, with four entry types from sweep+BOS immediate (riskiest) to sweep+BOS+FVG/OB in discount/premium (safest). OB/BB were retired as continuation confluences on 2026-02-03.",
+    "London fakeout / Asia-sweep model (his original forex edge): London 03:00-04:00 ET breaks the Asia high/low, a 5m close-based BOS back, enter immediately, stop beyond the fakeout extreme, target the opposite Asia extreme. Forex NY entries 08:00-10:00 ET. Out of the default scope.",
+    "Third-party filter switches: sweep must close back inside; BOS impulse body >= 50% of range; fractal pivots N=2-5; 1H moving-average bias (TJR uses no moving averages).",
+    "sizing_mode='fixed_contracts' (his 2026-01-16 practice: fixed contracts sized against a ~35-tick worst case) instead of calculated 1%.",
+    "Second-trade variant: max_trades_per_day=2 (video 068 'one or two trades in a day'; Boot Camp 2.0 'Second Trade' lesson). The second trade needs a new sweep with a full confluence stack, only after the first trade reached BE or closed in profit, never after a stop-out, and each trade uses 0.5x risk.",
+    "weekly strict_mode=true (2023 Boot Camp Day 41: after 2 losing weeks require FVG AND EQ). Contradicted on 2026-06-05; off by default.",
+    "Smaller fixed targets (0.5-1.0R) instead of level targets. Third-party tests showed higher WR and often better expectancy; not TJR's rule.",
+    "tp_include_internal=false (external-only targets); tp_internal_kinds='FVG+EQ'; tp1_min_R=0 ('no minimum-R rule' reading of step301).",
+    "venue='cfd' (probably his actual venue): spread + overnight swap cost model and MT5 4H alignment (closes at 09:00/13:00 ET) instead of CME futures costs and 18:00-aligned 4H bars.",
+    "chop_mode='block' or 'halve' (Day 44 'price garbage' rule, our proxy); low_volume_day de-risk at 0.5x.",
+    "Extra levels: include_opening_gaps (NDOG/NWOG as internal targets), include_news_candle=true, include_weekly=true, draw_weighting='resistance' (low-resistance clusters / LRL runs), BPR (overlap of opposing FVGs; our thresholds, off by default).",
+    "Sensitivity switches for codified choices: intrabar_priority='target_first', cancel_ref='latest_swing_high_frozen_at_confirmation', trigger_swing_rule='after_counter_bos', ifvg_stack_rule='deepest_in_leg', align_self='orderflow', alignment_deadline_mode='strict', bias_eval='creation', entry_premium_check='trigger_close_in_premium', allow_trigger_on_new_extreme=false, london_anchor='london_local_0800', ny_rth_end=16:00, stall_exit off.",
+    "prop_rules enabled for funded accounts (trailing/static drawdown, consistency rule, contract cap)."
+  ],
+  "backtest_expectations": [
+    "Calibration target (TJR self-report, unaudited and publicly disputed): Jan-Jun 2026 daily win rate 64.29%. Reward:risk figures conflict: 1:1.23-1:1.33 (transcript ambiguous); about 1.375 implied by his quoted average win of ~$22,000 against an average loss of ~$16,000; and older recaps claim roughly '1 to 2 point something' realised after partials. He says break-even trades 'sometimes' count as losses in his stats. Numbers clearly better than these indicate a lookahead bug, not success.",
+    "Frequency: a faithful build (10:30 cutoff, ES/NQ alignment) traded about 2-4 times a month in third-party replays (2.2-3.1/month, run with a hard bias filter). The default 'lean' bias here is looser, so expect somewhat more trades. Loosening bias and removing the cutoff raised it to ~13.5 trade days a month. The often-cited '7-15 trade days a month' is a third-party inference, not a TJR statement; the 2023 comparisons counted days across four markets (GBPUSD, GBPJPY, gold, S&P). Trading most days means a stand-down gate was dropped.",
+    "Win rate: independent mechanical replications landed between 23% and 52%. A SPY/QQQ 2026 replay gave 23% strict and 50% after spec fixes; a full year from 2025-07 to 2026-07 gave 46.3% over 244 trades. The MT5 bachelor thesis (43.6% WR, PF 1.18 backtest) ran on NVIDIA, not ES/NQ, and used a fixed ET_UTC_OffsetHours=-5 (the DST bug). Its 'forward PF 0.68' covers only 6 trades and is not evidence either way.",
+    "Costs dominate. On SPY/QQQ 2016-2026 the 1m trigger had a real gross edge (+0.065% of price per entry, t about 9.8), but net R was -0.24 at a 0.04% round trip, because the median stop is only about 0.08% of price. On ES/NQ futures expect about 0.04-0.06R cost per trade, and 2-4x that on micros. Always report cost_R.",
+    "Stop sanity: the median stop should be about 0.06-0.15% of price (ES about 16-35 ticks). Much wider means the swing or stop code drifted to fractals or to the sweep extreme.",
+    "The 1m trigger is load-bearing: collapsing it to 5m removed the gross edge in a third-party test (+0.0055% vs +0.0654% per entry).",
+    "Level-to-level targets typically give about 35-45% WR, and smaller fixed targets raise WR. Report the TJR-faithful configuration separately from any optimised one. With internal (FVG) targets enabled, expect closer TP1s and a slightly higher WR.",
+    "Third-party partition tests found that EQ/FVG continuation and daily-bias agreement did not reliably select better entries; the HTF-gap bias flip was the only bias change that improved P&L. Measure each gate's marginal effect, including require_zone_touch true vs false and bias lean vs filter.",
+    "Metric definitions: R_trade = net_pnl / (initial_risk_ticks*tick_value*q). Win = net > 0 after costs; scratch = |R| < 0.1. Report WR three ways (scratch as win, scratch as non-win, BE as loss), both per trade and per day. Report realised R after partials alongside R-to-TP1.",
+    "Report the share of trades touching an ambiguous bar (stop and TP inside one 1m bar) and the stop_first vs target_first sensitivity. With 1-3 contracts a runner (q3) often does not exist; report the distribution of q.",
+    "Agreement with his published trade recaps (day + direction) and profitability are separate metrics: one bot reached 54% agreement on 73 recap days and still lost money.",
+    "Validation: >= 2 years of per-contract 1m ES/NQ futures, a sealed hold-out, walk-forward, a penalty for every variant tested, a second data vendor, golden test days, then >= 3 months of paper trading before real money."
+  ],
+  "limitations": [
+    "The user asked for a bot that presents itself as TJR and relays his videos as if it were him. That is impersonation of a real, identifiable person and is excluded. The trading bot, the signal notifier and the video monitor are labelled as an unofficial, TJR-inspired tool, not affiliated with or endorsed by him. They write in a neutral or third-person voice. Video relays are attributed summaries with a link and short quotes. persona_style is used only to recognise content, never to generate text in his voice.",
+    "Every TJR quote comes from third-party auto-caption transcripts and extractions on GitHub (getofflabel/cryptobot, ablanchard-dev/dexterio, D1349375/traders-debate-system, hartnastics/finance-agent, the ArunTelegramBot SRT). The only primary transcript read in full was 'My UPDATED Day Trading Strategy (2026)' (2026-06-05). The 2026-01-17 capstone, the 2026-05-07 full tutorial and the 2026-07-21 'ONLY Liquidity Guide' were available only as third-party summaries. YouTube, TradingView, Scribd and most blogs were blocked. Spot-check key quotes (videos 8PYgFVB0GHE, TEp3a-7GUds, L4xz2o23aPQ, hBnD6T1M4w8, ironJFzNBic, 4sRDnVmLcMk, joe_XTCn5Bs, wzq2AMsoJKY, FJch02ucIO8, PlsHO33j6B8) before production.",
+    "Staleness: uploads after 2026-07-21 (Aug-Sep 2026) have not been checked for rule changes, so the spec may be out of date as of 2026-09-28. Run content_monitor's rule-change diff on them first.",
+    "Core parts of his method are discretionary: which draw is 'the' draw, the exact 'second high' stop, chop detection, news-reaction size, bias overrides, trend phase and manual exits. The deterministic proxies are labelled. He himself says an automated version would not make everyone rich.",
+    "His rules changed over time: order blocks dropped (2026-02-03), leading vs lagging SMT (unresolved in 2026), 1% sizing replaced by fixed contracts, news skip vs halve, 10:30 vs 11:00 cutoff, stop at the sweep vs at the retrace swing, one vs two trades a day, zone required vs optional. The newest material is the default where it is clear; older or conflicting rules are exposed as parameters or variants.",
+    "Execution venue: there is no public evidence that he executes on CME ES/NQ futures. 2023 recap titles use CFD symbols, Boot Camp 2.0 documents AirFX on MT5, and his 2026 figures are 'before fees and swap'. On the other hand, in 2026 he talks about contracts and ES ticks. CME futures are used here as a data proxy. CFD costs (spread, swap) and 4H bar alignment differ.",
+    "His performance figures are self-reported and unaudited, and a widely viewed expose alleges some live trades were chart drawings. His live behaviour (full-port size, moved or removed stops, re-entries, a -$151,780 day on 2025-11-20) contradicts his teaching, so copying his live calls is not the same as running his rules.",
+    "Independent faithful replications did not reproduce his results and were break-even to negative after costs. Expect far fewer trades and lower win rates than he reports.",
+    "Many numbers were never given by him and are our assumptions: level lookbacks, sweep expiry, leg cap, equal-high tolerance, FVG minimum/expiry/stacking, stop buffer (incl. NQ scaling) and min/max stop, news spike threshold, chop thresholds, stall and max-hold minutes, draw radius, cost_R cap, kill-switch levels, NDOG/NWOG handling and the phase state machine.",
+    "Exchange facts (tick values, roll dates, price limits) come from general knowledge because cmegroup.com was blocked; verify them against CME contract specs. The local corpus also contained transcripts of other traders (Craig Percoco, Alex Gonzalez); these were not attributed to TJR.",
+    "Data requirements: synchronised per-contract 1m ES and NQ futures including overnight sessions, plus an archived economic calendar. SPY/QQQ lack Asia/London data, and free feeds cap history at about 60 days or under-report wicks.",
+    "Paid or private material (Whop community, Discord, Mastermind, Blueprint, leaked course files) was not and must not be used. The 'SMC by TJRTrades' e-book on scribd/studylib has unverifiable provenance and is not relied on. His prop-firm lessons are sponsored (discount codes), a conflict of interest.",
+    "This is an educational specification only, not financial advice. Futures are leveraged. Run on paper/demo first. Real-time CME data licences are the user's responsibility, and sharing live signals with other people may carry regulatory obligations."
+  ],
+  "channels": {
+    "youtube_channel_id": "UCGHBUXjDCeiIXNdKR0HUZnA",
+    "youtube_handle": "@TJRTrades",
+    "others": [
+      "YouTube RSS: https://www.youtube.com/feeds/videos.xml?channel_id=UCGHBUXjDCeiIXNdKR0HUZnA (derived; verify from an unrestricted host). Uploads playlist UUGHBUXjDCeiIXNdKR0HUZnA.",
+      "Kick live streams: https://kick.com/tjr (weekday mornings around 08:30 ET; server-side checks are blocked by Cloudflare).",
+      "X/Twitter: @_TJRTrades (numeric user id 1392880739419447297; whitelist the id because 31+ impersonator handles exist; API monitoring needs a paid tier).",
+      "TikTok: @tjrtrades (official status unverified; many unofficial clip accounts; a third-party note points to @tjristhebest for one reply).",
+      "Instagram: handle unverified (candidate instagram.com/tjr). He posts daily P&L to stories, which cannot be captured reliably.",
+      "Website: tjrtrades.com appears in Trustpilot references. jointjrtrades.com and the lp.tjrtrades.com booking funnel are unverified.",
+      "Whop community / Mastermind / Discord: paid or private, do not scrape."
+    ]
+  },
+  "persona_style": "Use this for recognising and classifying content only. Never put this text into a generation prompt and never imitate it. Summaries are written in a neutral third person with attribution ('In his video <title> (<date>), TJR explains ...'), plus a link and timestamp. They are never in his first person and never signed as him.\n\nMarkers that help classify his uploads:\n- blunt, casual, sometimes profane speech ('freaking')\n- heavy repetition and rhetorical Q&A ('Is it a liquidity sweep? No. Because it's not reacting to it.')\n- numbered step frameworks (draws -> sweep -> confirmation -> continuation -> entry -> exit at opposing draws)\n- 'Boom'/'Awesome' when confluences line up\n- ES and NQ charts side by side\n- P&L in titles, including large losses\n- constant stress on simplicity, patience and filtering\n\nMantras that may be quoted briefly with attribution: 'higher time frames hold higher power'; 'a day out of the market is better than a day in the market'; 'stop marrying your bias'; 'our strategy is less about what trade to take and more about what trades it stops us from taking'; 'keep it simple stupid'; 'you suck, your strategy doesn't'; 'seek and destroy' (the market stopping out the obvious AM entries before the real move); 'full port' (max size, which he tells students never to use).\n\nContent types: structured lessons (Path to Profitability, Boot Camp, Advanced Liquidity/Imbalance Concepts), live-trade recaps, lifestyle vlogs, promos/trailers and crypto guides. Only lessons and recaps carry rule information, and newer videos override older ones ('the boot camp is dated ... I do not trade the same way')."
+}

@@ -7,6 +7,7 @@ Aufruf:
     python -m tjrbot.monitor              # neue Videos verarbeiten
     python -m tjrbot.monitor --dry-run    # nur anzeigen, nichts senden/speichern
     python -m tjrbot.monitor --init       # aktuelle Videos als "gesehen" markieren, ohne zu melden
+    python -m tjrbot.monitor --video ID --transcript-file t.txt   # selbst kopiertes Transkript
 
 Umgebungsvariablen: ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TJR_CHANNEL_ID (optional).
 """
@@ -58,17 +59,18 @@ class Video:
     description: str
 
 
-def channel_id() -> str:
-    cid = os.environ.get("TJR_CHANNEL_ID")
-    if cid:
-        return cid
+def monitor_cfg() -> dict:
     if CONFIG_FILE.exists():
         import yaml
 
-        cfg = yaml.safe_load(CONFIG_FILE.read_text()) or {}
-        cid = (cfg.get("monitor") or {}).get("youtube_channel_id")
-        if cid:
-            return cid
+        return (yaml.safe_load(CONFIG_FILE.read_text()) or {}).get("monitor") or {}
+    return {}
+
+
+def channel_id() -> str:
+    cid = os.environ.get("TJR_CHANNEL_ID") or monitor_cfg().get("youtube_channel_id")
+    if cid:
+        return cid
     raise SystemExit("Kein YouTube-Kanal konfiguriert (config.yaml monitor.youtube_channel_id oder TJR_CHANNEL_ID)")
 
 
@@ -78,6 +80,8 @@ def fetch_feed(cid: str) -> list[Video]:
         raise RuntimeError(f"RSS-Feed nicht lesbar: {feed.bozo_exception}")
     videos = []
     for e in feed.entries:
+        if e.get("yt_channelid") and e.get("yt_channelid") != cid:
+            continue  # nur Originalkanal, keine Clip-Kanäle
         vid = e.get("yt_videoid") or e.get("id", "").split(":")[-1]
         videos.append(Video(
             video_id=vid,
@@ -161,7 +165,8 @@ def save_knowledge(video: Video, summary: str, transcript: str | None) -> Path:
 
 
 def format_message(video: Video, summary: str) -> str:
-    return f"📢 Neues TJR-Video: {video.title}\n{video.url}\n\n{summary}\n\n— TJR-Strategie-Bot (Zusammenfassung, nicht TJR selbst)"
+    return (f"📢 Neues TJR-Video: {video.title}\n{video.url}\n"
+            f"(Inoffizielle Zusammenfassung – nicht von TJR geschrieben)\n\n{summary}")
 
 
 def run(dry_run: bool = False, init: bool = False, limit: int = 5) -> int:
@@ -179,8 +184,9 @@ def run(dry_run: bool = False, init: bool = False, limit: int = 5) -> int:
         skipped, new = new[:-limit], new[-limit:]
         if not dry_run:
             state["seen"].extend(v.video_id for v in skipped)
+    use_transcripts = monitor_cfg().get("fetch_transcripts", True)
     for v in new:
-        transcript = fetch_transcript(v.video_id)
+        transcript = fetch_transcript(v.video_id) if use_transcripts else None
         summary = summarize(v, transcript)
         msg = format_message(v, summary)
         if dry_run:
@@ -195,12 +201,33 @@ def run(dry_run: bool = False, init: bool = False, limit: int = 5) -> int:
     return len(new)
 
 
+def summarize_manual(video_id: str, transcript_file: str, dry_run: bool = False) -> None:
+    """Selbst kopiertes Transkript (z. B. aus YouTube "Transkript anzeigen") zusammenfassen und melden."""
+    v = Video(video_id, f"Video {video_id}", f"https://www.youtube.com/watch?v={video_id}", "", "")
+    for x in fetch_feed(channel_id()) if not dry_run else []:
+        if x.video_id == video_id:
+            v = x
+    transcript = Path(transcript_file).read_text(encoding="utf-8")
+    summary = summarize(v, transcript)
+    msg = format_message(v, summary)
+    if dry_run:
+        print(msg)
+        return
+    notify.send(msg)
+    save_knowledge(v, summary, transcript)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--init", action="store_true")
     p.add_argument("--limit", type=int, default=5)
+    p.add_argument("--video", help="Video-ID für manuelles Transkript")
+    p.add_argument("--transcript-file", help="Textdatei mit Transkript (zusammen mit --video)")
     a = p.parse_args()
+    if a.video and a.transcript_file:
+        summarize_manual(a.video, a.transcript_file, a.dry_run)
+        return
     run(dry_run=a.dry_run, init=a.init, limit=a.limit)
 
 
