@@ -48,6 +48,11 @@ def to_bars(df: pd.DataFrame, tick: float) -> list[Bar]:
         if m >= a + SESSION_LEN:
             continue
         hi, lo = max(h[i], o[i], c[i]), min(l[i], o[i], c[i])
+        if bars and m <= bars[-1].t:
+            if m == bars[-1].t:          # zwei Zeilen in derselben Minute (Sekunden-Zeitstempel) -> zusammenführen
+                p = bars[-1]
+                p.h, p.l, p.c = max(p.h, int(hi)), min(p.l, int(lo)), int(c[i])
+            continue                     # unsortiert -> verwerfen
         bars.append(Bar(m, m + 1, int(o[i]), int(hi), int(lo), int(c[i]), a))
     return bars
 

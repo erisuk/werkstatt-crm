@@ -80,6 +80,7 @@ class Setup:
     counter_bos_time: int | None = None
     smt: bool | None = None
     smt_t_eval: int | None = None
+    pending_leg: tuple | None = None    # neues Range-Extrem innerhalb einer noch offenen Trigger-Kerze
     fired_swings: set = field(default_factory=set)
     fired_stacks: set = field(default_factory=set)
     log: list = field(default_factory=list)
@@ -124,6 +125,9 @@ class IndexState:
         self.levels: list[Level] = []
         self.pos = -1          # Index der zuletzt verarbeiteten 1m-Bar
         self.next = 0          # nächste unverarbeitete 1m-Bar
+        self.carry: list = []  # HTF-Closes aus Minuten ohne eigene 1m-Bar (für die Setup-Logik nachholen)
+        self.setup_closed: list = []
+        assert len(self.t) < 2 or bool(np.all(np.diff(self.t) > 0)), f"{name}: Zeitstempel nicht streng steigend"
 
     @property
     def last(self) -> Bar | None:
@@ -153,6 +157,8 @@ class IndexState:
         """Uhr steht auf Minute m (Entscheidung bei T = m + 1): eigene 1m-Bar (falls vorhanden) und alle
         HTF-Bars mit Close <= T verarbeiten. Fehlt die Minute bei diesem Index -> keine Aktualisierung."""
         b = None
+        while self.next < len(self.bars) and self.bars[self.next].t < m:
+            self.next += 1
         if self.next < len(self.bars) and self.bars[self.next].t == m:
             b = self.bars[self.next]
             self.pos = self.next
@@ -169,6 +175,11 @@ class IndexState:
         if b is not None:
             for st in self.tfs.values():
                 st.wick_expire(b)
+            self.setup_closed = sorted(set(self.carry + closed))
+            self.carry = []
+        else:
+            self.carry.extend(closed)
+            self.setup_closed = []
         return b, closed
 
 
@@ -196,7 +207,7 @@ class Engine:
         self.prev_day_R = 0.0
         self._complete_days = 0
         self._prev_complete = False
-        self._first_t = min(int(xs.t[0]) for xs in self.X.values() if len(xs.t))
+        self._first_t = max(int(xs.t[0]) for xs in self.X.values() if len(xs.t))  # Aufwärmen ab dem späteren Index
 
     # ----------------------------------------------------------------- Hauptschleife
     def run(self) -> "Engine":
@@ -288,13 +299,14 @@ class Engine:
                 if bx is None:
                     continue
                 tr = ""
+                sc = xs.setup_closed
                 if s.state == "ARMED":
-                    tr = self._trigger(s, xs, bx, closed[s.index])
+                    tr = self._trigger(s, xs, bx, sc)
                     if tr:
                         triggers.append((s, tr))
                 if s.state in ("CONFIRMED", "ARMED"):
                     hold = bool(tr) and cfg["allow_trigger_on_new_extreme"]
-                    if self._continuation(s, xs, bx, closed[s.index], hold_new_leg=hold) == "DEFER":
+                    if self._continuation(s, xs, bx, sc, hold_new_leg=hold) == "DEFER":
                         deferred.append(s)
                 elif s.state == "SWEPT" and bx.t > s.sweep_bar_t:
                     if s.dir == DOWN and bx.h > s.sweep_extreme:
@@ -565,8 +577,21 @@ class Engine:
         return s.sweep_extreme
 
     def _new_leg(self, s: Setup, b: Bar):
-        s.range_ext, s.range_ext_t = (b.l if s.dir == DOWN else b.h), b.t
+        short = s.dir == DOWN
+        cand = [s.pending_leg] if s.pending_leg else []
+        if (short and b.l < s.range_ext) or (not short and b.h > s.range_ext):
+            cand.append((b.l if short else b.h, b.t))
+        if cand:
+            s.range_ext, s.range_ext_t = min(cand) if short else max(cand, key=lambda x: (x[0], -x[1]))
+        s.pending_leg = None
         s.state, s.zone_touched, s.counter_bos, s.retrace_ext = "CONFIRMED", False, False, None
+
+    @staticmethod
+    def _note_pending(s: Setup, b: Bar):
+        px = b.l if s.dir == DOWN else b.h
+        p = s.pending_leg
+        if p is None or (px < p[0] if s.dir == DOWN else px > p[0]):
+            s.pending_leg = (px, b.t)
 
     def _continuation(self, s: Setup, xs: IndexState, b: Bar, closed: list, hold_new_leg: bool = False):
         T = b.ct
@@ -581,8 +606,17 @@ class Engine:
             if (short and c5.c > ro) or (not short and c5.c < ro):
                 return self._close_setup(s, "CANCELLED_INVALIDATION (Range zurückerobert)")
         # (3) neuer Lauf
-        if (short and b.l < s.range_ext) or (not short and b.h > s.range_ext):
+        newx = (short and b.l < s.range_ext) or (not short and b.h > s.range_ext)
+        forming = ttf != 1 and ttf not in closed
+        if (s.state == "ARMED" and forming and self.cfg["allow_trigger_on_new_extreme"]
+                and (newx or s.pending_leg is not None)):
+            if newx:
+                self._note_pending(s, b)   # Trigger-Kerze läuft noch: erst an ihrem Close entscheiden
+            return None
+        if newx or s.pending_leg is not None:
             if hold_new_leg:
+                if newx:
+                    self._note_pending(s, b)
                 return "DEFER"          # Trigger auf dieser Bar -> erst Gates prüfen
             self._new_leg(s, b)
             return None
@@ -671,12 +705,13 @@ class Engine:
                     s.log.append(f"{_ts(T)} Trigger {kind}: {other.name} nicht ausgerichtet -> warten (UNALIGNED)")
                     continue
             price = bar.c
+            tb = bar if s.ladder[1] == 1 else xs.tfs[s.ladder[1]].bars[-1]   # ganze Trigger-Kerze
             buf = max(cfg["stop_buffer_ticks"], math.ceil(cfg["stop_buffer_pct"] * price))
             if s.dir == DOWN:
-                stop = max(v for v in (s.retrace_ext, bar.h) if v is not None) + buf
+                stop = max(v for v in (s.retrace_ext, tb.h, bar.h) if v is not None) + buf
                 risk = stop - price
             else:
-                stop = min(v for v in (s.retrace_ext, bar.l) if v is not None) - buf
+                stop = min(v for v in (s.retrace_ext, tb.l, bar.l) if v is not None) - buf
                 risk = price - stop
             if risk < cfg["min_stop_pct"] * price or risk > cfg["max_stop_pct"] * price:
                 self._close_setup(s, f"STOP_GATE (Risiko {risk} Ticks)")

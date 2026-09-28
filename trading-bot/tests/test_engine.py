@@ -120,3 +120,31 @@ def test_stop_first_when_bar_contains_stop_and_target():
     bars = [Bar(0, 1, 100, 101, 99, 100, 0), Bar(1, 2, 100, 111, 85, 100, 0)]
     tr = simulate_signal(bars, 0, Sig, config.load(), flat_t=10_000)
     assert tr.exit_reason == "STOP" and tr.r_multiple < -1.0
+
+
+def test_5m_trigger_ladder_new_low_mid_candle_still_enters():
+    from scenario import ladder_frames
+    fr = ladder_frames([("2026-03-03 10:42", 19985), ("2026-03-03 10:45", 19995)])
+    kw = dict(bias_mode="off", require_index_alignment=False, cutoff="12:00", confirm_tf=15, trigger_tf=5, tp_ref_tf=60)
+    on = run(fr, **kw)
+    off = run(fr, allow_trigger_on_new_extreme=False, **kw)
+    assert [(engine.minute_to_ts(s.T).strftime("%H:%M"), s.trigger_kind) for s in on.signals] == [("10:45", "5m-BOS")]
+    assert not off.signals
+
+
+def test_sub_minute_row_does_not_freeze_index():
+    frames = short_day()
+    nq = frames["NQ"]
+    extra = nq.iloc[[500]].copy()
+    extra.index = extra.index + pd.Timedelta(seconds=30)
+    fr = {"NQ": pd.concat([nq, extra]).sort_index(), "ES": frames["ES"]}
+    eng = run(fr, bias_mode="off")
+    assert eng.X["NQ"].pos == len(eng.X["NQ"].bars) - 1
+    assert [s.T for s in eng.signals] == [s.T for s in run(frames, bias_mode="off").signals]
+
+
+def test_warmup_counts_from_later_starting_index():
+    frames = short_day()
+    es_late = frames["ES"][frames["ES"].index >= pd.Timestamp("2026-03-02 18:00", tz="America/New_York")]
+    eng = run({"NQ": frames["NQ"], "ES": es_late}, bias_mode="off")
+    assert not eng.signals
