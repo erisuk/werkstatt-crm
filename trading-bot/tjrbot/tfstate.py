@@ -10,6 +10,7 @@ Zeiten sind ganze Minuten NY-Wanduhr (siehe timeline.py). Preise sind ganze Tick
 """
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, field
 
 UP, DOWN, NONE = 1, -1, 0
@@ -100,6 +101,15 @@ class TFState:
         self.events: list[Event] = []
         self.orderflow = NONE
         self.last_bos: Event | None = None
+        # Zeitindizes für "as of"-Abfragen (Struktur wird einmal vorberechnet, Entscheidungen fragen zum Zeitpunkt T)
+        self.pre_hist: list[tuple] = []
+        self.ev_t: list[int] = []
+        self.bos_ev: list[Event] = []
+        self.bos_t: list[int] = []
+        self.hi_det: list[int] = []
+        self.lo_det: list[int] = []
+        self.sw_det: list[int] = []
+        self.gap_det: dict[int, list[int]] = {UP: [], DOWN: []}
 
     # ------------------------------------------------------------------ Update
     def update(self, b: Bar) -> list[Event]:
@@ -109,6 +119,7 @@ class TFState:
         sh = self.sh if self.sh and self.sh.broken_at is None else None
         sl = self.sl if self.sl and self.sl.broken_at is None else None
         self.pre = (sh, sl)
+        self.pre_hist.append(self.pre)
 
         # 1) BOS gegen den jüngsten Swing (Stand bei Bar-Open)
         if sl is not None and b.c < sl.price:
@@ -160,17 +171,22 @@ class TFState:
                     top = max(seg, key=lambda x: x.h)
                     s = Swing(UP, top.h, top.t, b.ct)
                     self.swings.append(s); self.highs.append(s); self.sh = s
+                    self.hi_det.append(s.detected_at); self.sw_det.append(s.detected_at)
                 elif p.color == DOWN and b.color == UP:
                     bot = min(seg, key=lambda x: x.l)
                     s = Swing(DOWN, bot.l, bot.t, b.ct)
                     self.swings.append(s); self.lows.append(s); self.sl = s
+                    self.lo_det.append(s.detected_at); self.sw_det.append(s.detected_at)
             self._prev_nd = i
 
         for e in new:
             self.events.append(e)
+            self.ev_t.append(e.t)
             self.orderflow = e.dir
             if e.kind == "BOS":
                 self.last_bos = e
+                self.bos_ev.append(e)
+                self.bos_t.append(e.t)
         return new
 
     def _add_gap(self, d, bottom, top, c1, c2, c3, mid_idx):
@@ -186,6 +202,7 @@ class TFState:
         g = Gap(d, bottom, top, c1.t, c2.t, c3.ct, stack)
         stack.members.append(g)
         self.gaps[d].append(g)
+        self.gap_det[d].append(g.detected_at)
         self._live[d].append(g)
         self._last_gap_mid[d] = mid_idx
 
@@ -212,9 +229,15 @@ class TFState:
             self._live[d] = keep
 
     # ------------------------------------------------------------------ Abfragen
+    def _gaps_upto(self, d: int, t: int):
+        """Lücken mit detected_at <= t, jüngste zuerst."""
+        gs = self.gaps[d]
+        for k in range(bisect.bisect_right(self.gap_det[d], t) - 1, -1, -1):
+            yield gs[k]
+
     def latest_gap(self, d: int, b: Bar, t0: int | None = None, min_anchor: int | None = None) -> Gap | None:
         """Jüngste für Bar b wählbare Lücke in Richtung d (optional c1_t >= t0 / anchor_t >= min_anchor)."""
-        for g in reversed(self.gaps[d]):
+        for g in self._gaps_upto(d, b.t):
             if b.t - g.detected_at > self.fvg_max_age:
                 break
             if t0 is not None and g.c1_t < t0:
@@ -227,7 +250,7 @@ class TFState:
 
     def eligible_gaps(self, d: int, b: Bar, min_anchor: int | None = None) -> list[Gap]:
         out = []
-        for g in reversed(self.gaps[d]):
+        for g in self._gaps_upto(d, b.t):
             if b.t - g.detected_at > self.fvg_max_age:
                 break
             if (min_anchor is None or g.anchor_t >= min_anchor) and g.eligible(b.t, b.ct):
@@ -246,36 +269,62 @@ class TFState:
             return g.stack
         return None
 
+    def last_bos_at(self, T: int) -> Event | None:
+        k = bisect.bisect_right(self.bos_t, T)
+        return self.bos_ev[k - 1] if k else None
+
+    def orderflow_at(self, T: int) -> int:
+        k = bisect.bisect_right(self.ev_t, T)
+        return self.events[k - 1].dir if k else NONE
+
+    def swings_upto(self, kind: int, T: int, since_det: int | None = None) -> list:
+        """Swings (UP=Highs, DOWN=Lows) mit since_det <= detected_at <= T, in Erkennungsreihenfolge."""
+        seq, det = (self.highs, self.hi_det) if kind == UP else (self.lows, self.lo_det)
+        lo = bisect.bisect_left(det, since_det) if since_det is not None else 0
+        return seq[lo:bisect.bisect_right(det, T)]
+
+    def swings_upto_rev(self, kind: int, T: int):
+        """Swings mit detected_at <= T, jüngste zuerst (ohne Kopie der Liste)."""
+        seq, det = (self.highs, self.hi_det) if kind == UP else (self.lows, self.lo_det)
+        for k in range(bisect.bisect_right(det, T) - 1, -1, -1):
+            yield seq[k]
+
+    def swings_between(self, t_from_excl: int, t_to: int) -> list:
+        return self.swings[bisect.bisect_right(self.sw_det, t_from_excl):bisect.bisect_right(self.sw_det, t_to)]
+
     def trend_hh_hl(self, as_of: int) -> int:
         """HTF-Trend: letzter BOS UP + höheres Hoch + höheres Tief -> UP (DOWN spiegelbildlich), sonst NONE (Range)."""
-        if self.last_bos is None:
+        lb = self.last_bos_at(as_of)
+        if lb is None:
             return NONE
-        hs = [s for s in self.highs[-4:] if s.detected_at <= as_of][-2:]
-        ls = [s for s in self.lows[-4:] if s.detected_at <= as_of][-2:]
+        hs = self.highs[max(0, bisect.bisect_right(self.hi_det, as_of) - 2):bisect.bisect_right(self.hi_det, as_of)]
+        ls = self.lows[max(0, bisect.bisect_right(self.lo_det, as_of) - 2):bisect.bisect_right(self.lo_det, as_of)]
         if len(hs) < 2 or len(ls) < 2:
             return NONE
-        if self.last_bos.dir == UP and hs[1].price > hs[0].price and ls[1].price > ls[0].price:
+        if lb.dir == UP and hs[1].price > hs[0].price and ls[1].price > ls[0].price:
             return UP
-        if self.last_bos.dir == DOWN and hs[1].price < hs[0].price and ls[1].price < ls[0].price:
+        if lb.dir == DOWN and hs[1].price < hs[0].price and ls[1].price < ls[0].price:
             return DOWN
         return NONE
 
     def trend_with_gap_flip(self, as_of: int) -> int:
         """Trend, der kippt, wenn der jüngste Stack in Trendrichtung (nach dem trendsetzenden BOS) invertiert wurde."""
         tr = self.trend_hh_hl(as_of)
-        if tr == NONE or self.last_bos is None:
+        lb = self.last_bos_at(as_of)
+        if tr == NONE or lb is None:
             return tr
-        cand = [g for g in self.gaps[tr] if g.detected_at > self.last_bos.t and g.detected_at <= as_of]
-        if cand:
-            st = cand[-1].stack
+        k = bisect.bisect_right(self.gap_det[tr], as_of) - 1
+        if k >= 0 and self.gaps[tr][k].detected_at > lb.t:
+            st = self.gaps[tr][k].stack
             if st.ifvg_at is not None and st.ifvg_at <= as_of:
                 return -tr
         return tr
 
     def orderflow_events_since(self, d: int, t_from: int, t_to: int) -> bool:
-        for e in reversed(self.events):
+        for k in range(bisect.bisect_right(self.ev_t, t_to) - 1, -1, -1):
+            e = self.events[k]
             if e.t < t_from:
                 break
-            if e.t <= t_to and e.dir == d:
+            if e.dir == d:
                 return True
         return False

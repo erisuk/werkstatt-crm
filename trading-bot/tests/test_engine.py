@@ -139,7 +139,7 @@ def test_sub_minute_row_does_not_freeze_index():
     extra.index = extra.index + pd.Timedelta(seconds=30)
     fr = {"NQ": pd.concat([nq, extra]).sort_index(), "ES": frames["ES"]}
     eng = run(fr, bias_mode="off")
-    assert eng.X["NQ"].pos == len(eng.X["NQ"].bars) - 1
+    assert len(eng.X["NQ"].bars) == len(nq)          # Sekunden-Zeile wurde in ihre Minute gemergt
     assert [s.T for s in eng.signals] == [s.T for s in run(frames, bias_mode="off").signals]
 
 

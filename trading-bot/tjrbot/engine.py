@@ -21,6 +21,7 @@ import csv
 import math
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -108,6 +109,10 @@ class Signal:
 
 # ---------------------------------------------------------------------------- Index-Zustand
 class IndexState:
+    """Daten + vorberechnete Marktstruktur eines Index. Die Struktur (Swings, BOS, FVG, IFVG) hängt nicht von den
+    Strategie-Parametern ab und wird einmal berechnet; der Entscheidungslauf fragt sie "zum Zeitpunkt T" ab.
+    Dadurch können viele Parameter-Varianten dieselbe Struktur wiederverwenden (Optimierer)."""
+
     def __init__(self, name: str, df: pd.DataFrame, cfg: dict):
         self.name = name
         self.inst = INSTRUMENTS[name]
@@ -116,22 +121,46 @@ class IndexState:
         self.t = np.array([b.t for b in self.bars], dtype=np.int64)
         self.h = np.array([b.h for b in self.bars], dtype=np.int64)
         self.l = np.array([b.l for b in self.bars], dtype=np.int64)
-        self.tfs = {1: TFState(1, cfg["fvg_max_age_min"][1], cfg["min_fvg_ticks"])}
-        self.htf_bars, self.ptr = {}, {}
-        for tf in HTFS:
-            self.tfs[tf] = TFState(tf, cfg["fvg_max_age_min"][tf], cfg["min_fvg_ticks"])
-            self.htf_bars[tf] = aggregate(self.bars, tf)
-            self.ptr[tf] = 0
+        assert len(self.t) < 2 or bool(np.all(np.diff(self.t) > 0)), f"{name}: Zeitstempel nicht streng steigend"
+        self.struct_key = (cfg["min_fvg_ticks"], tuple(sorted(cfg["fvg_max_age_min"].items())))
+        self.tfs = {tf: TFState(tf, cfg["fvg_max_age_min"][tf], cfg["min_fvg_ticks"]) for tf in (1,) + HTFS}
+        self.htf_bars = {tf: aggregate(self.bars, tf) for tf in HTFS}
+        self._build_structure()
+        self.reset()
+
+    def _build_structure(self):
+        ptr = {tf: 0 for tf in HTFS}
+        for b in self.bars:
+            self.tfs[1].update(b)
+            for tf in HTFS:
+                hb = self.htf_bars[tf]
+                while ptr[tf] < len(hb) and hb[ptr[tf]].ct <= b.ct:
+                    self.tfs[tf].update(hb[ptr[tf]])
+                    ptr[tf] += 1
+            for st in self.tfs.values():
+                st.wick_expire(b)
+
+    def reset(self):
+        """Zeiger für einen neuen Entscheidungslauf zurücksetzen (Struktur bleibt)."""
+        self.ptr = {tf: 0 for tf in HTFS}
         self.levels: list[Level] = []
-        self.pos = -1          # Index der zuletzt verarbeiteten 1m-Bar
-        self.next = 0          # nächste unverarbeitete 1m-Bar
+        self.levels_sorted: list[Level] | None = None
+        self.pos = -1          # Index der zuletzt erreichten 1m-Bar
+        self.next = 0
         self.carry: list = []  # HTF-Closes aus Minuten ohne eigene 1m-Bar (für die Setup-Logik nachholen)
         self.setup_closed: list = []
-        assert len(self.t) < 2 or bool(np.all(np.diff(self.t) > 0)), f"{name}: Zeitstempel nicht streng steigend"
 
     @property
     def last(self) -> Bar | None:
         return self.bars[self.pos] if self.pos >= 0 else None
+
+    def hbar(self, tf: int) -> Bar:
+        """Zuletzt geschlossene Bar des Timeframes."""
+        return self.bars[self.pos] if tf == 1 else self.htf_bars[tf][self.ptr[tf] - 1]
+
+    def pre(self, tf: int) -> tuple:
+        """(Swing-High, Swing-Low) ungebrochen, Stand bei Open der zuletzt geschlossenen tf-Bar."""
+        return self.tfs[tf].pre_hist[self.pos if tf == 1 else self.ptr[tf] - 1]
 
     def rng(self, t_from: int, t_to: int) -> slice:
         """1m-Bars mit Open-Zeit in [t_from, t_to)."""
@@ -153,29 +182,33 @@ class IndexState:
         k = int(arr.argmax() if want_high else arr.argmin())
         return int(arr[k]), int(self.t[s.start + k])
 
-    def step(self, m: int) -> tuple[Bar | None, list]:
+    def step(self, m: int, skipped_upto: int | None = None) -> tuple[Bar | None, list]:
         """Uhr steht auf Minute m (Entscheidung bei T = m + 1): eigene 1m-Bar (falls vorhanden) und alle
-        HTF-Bars mit Close <= T verarbeiten. Fehlt die Minute bei diesem Index -> keine Aktualisierung."""
+        HTF-Bars mit Close <= T gelten als bekannt. Fehlt die Minute bei diesem Index -> keine Aktualisierung.
+        `skipped_upto`: letzte übersprungene Minute (außerhalb des Handelsfensters) – deren Closes sind "alt"."""
         b = None
+        if skipped_upto is not None:
+            for tf in HTFS:
+                hb = self.htf_bars[tf]
+                while self.ptr[tf] < len(hb) and hb[self.ptr[tf]].ct <= skipped_upto + 1:
+                    self.ptr[tf] += 1
+            self.carry = []
         while self.next < len(self.bars) and self.bars[self.next].t < m:
+            self.pos = self.next
             self.next += 1
         if self.next < len(self.bars) and self.bars[self.next].t == m:
             b = self.bars[self.next]
             self.pos = self.next
             self.next += 1
-            self.tfs[1].update(b)
         T = m + 1
         closed = []
         for tf in HTFS:
             hb = self.htf_bars[tf]
             while self.ptr[tf] < len(hb) and hb[self.ptr[tf]].ct <= T:
-                self.tfs[tf].update(hb[self.ptr[tf]])
                 closed.append(tf)
                 self.ptr[tf] += 1
         if b is not None:
-            for st in self.tfs.values():
-                st.wick_expire(b)
-            self.setup_closed = sorted(set(self.carry + closed))
+            self.setup_closed = self.carry + closed if self.carry else closed
             self.carry = []
         else:
             self.carry.extend(closed)
@@ -185,12 +218,19 @@ class IndexState:
 
 # ---------------------------------------------------------------------------- Engine
 class Engine:
-    def __init__(self, frames: dict[str, pd.DataFrame], cfg: dict, calendar: dict | None = None):
-        frames = {k: v for k, v in frames.items() if v is not None and len(v)}
-        if not frames:
-            raise ValueError("keine Daten")
+    def __init__(self, frames: dict[str, pd.DataFrame] | None, cfg: dict, calendar: dict | None = None,
+                 structure: dict[str, IndexState] | None = None):
         self.cfg = cfg
-        self.X = {name: IndexState(name, df, cfg) for name, df in sorted(frames.items())}
+        if structure is not None:
+            self.X = structure
+            for xs in self.X.values():
+                assert xs.struct_key == (cfg["min_fvg_ticks"], tuple(sorted(cfg["fvg_max_age_min"].items())))
+                xs.reset()
+        else:
+            frames = {k: v for k, v in (frames or {}).items() if v is not None and len(v)}
+            if not frames:
+                raise ValueError("keine Daten")
+            self.X = {name: IndexState(name, df, cfg) for name, df in sorted(frames.items())}
         self.names = list(self.X)
         self.pair = len(self.names) == 2
         self.calendar = calendar if calendar is not None else load_calendar(cfg)
@@ -211,21 +251,35 @@ class Engine:
 
     # ----------------------------------------------------------------- Hauptschleife
     def run(self) -> "Engine":
-        minutes = sorted(set().union(*(xs.t.tolist() for xs in self.X.values())))
-        day = None
-        for m in minutes:
-            b, closed = {}, {}
-            for name, xs in self.X.items():
-                b[name], closed[name] = xs.step(m)
-            a = day_anchor(m)
-            if a != day:
-                if day is not None:
-                    self._end_day()
-                day = a
-                self._start_day(a)
-            self._step(m, m + 1, b, closed)
-            self._prev_T = m + 1
-        if day is not None:
+        first = next(iter(self.X.values()))
+        key = tuple(id(x) for x in self.X.values())
+        if getattr(first, "_union", (None,))[0] != key:
+            first._union = (key, np.unique(np.concatenate([xs.t for xs in self.X.values()])))
+        mins = first._union[1]
+        anchors = ((mins - 1080) // 1440) * 1440 + 1080
+        off_scan = (self.m["scan_start"] - 1080) % 1440
+        off_flat = (self.m["flat_time"] - 1080) % 1440
+        # Nach Cutoff/Abgleich-Deadline fällt keine Entscheidung mehr (Trade-Management läuft separat in backtest.py)
+        off_end = min(off_flat, max((self.m["cutoff"] - 1080) % 1440, (self.m["alignment_deadline"] - 1080) % 1440) + 1)
+        inwin = (mins >= anchors + off_scan) & (mins < anchors + off_end)
+        # Nur Minuten im Handelsfenster durchlaufen; Struktur ist vorberechnet, Zeiger springen.
+        day_starts = np.flatnonzero(np.r_[True, anchors[1:] != anchors[:-1]])
+        day_ends = np.r_[day_starts[1:], len(mins)]
+        for s0, s1 in zip(day_starts, day_ends):
+            self._start_day(int(anchors[s0]))
+            for k in np.flatnonzero(inwin[s0:s1]) + s0:
+                m = int(mins[k])
+                prev = int(mins[k - 1]) if k > 0 else None
+                fresh = prev if (k > 0 and not inwin[k - 1]) else None
+                b, closed = {}, {}
+                for name, xs in self.X.items():
+                    b[name], closed[name] = xs.step(m, fresh)
+                self._prev_T = prev + 1 if prev is not None else -1
+                self._step(m, m + 1, b, closed)
+                d = self.d
+                if d["done"] and d["aligned_checked"] and not any(x.state in ("SWEPT", "CONFIRMED", "ARMED")
+                                                                   for x in d["setups"]):
+                    break                       # Tag erledigt -> Rest überspringen
             self._end_day()
         return self
 
@@ -234,12 +288,16 @@ class Engine:
         if self._prev_complete:
             self._complete_days += 1
         self.prev_day_R, self._day_R = self._day_R, 0.0
-        date = str(minute_to_ts(a + 1440).date())
+        date = _date_of(a)
         self.d = d = {
             "anchor": a, "date": date, "levels_built": False, "pre_added": False, "pending": [],
             "setups": [], "trades": 0, "done": False, "done_reason": "", "bias": NONE, "bias_draws": set(),
             "bias_info": {}, "aligned_checked": False, "busy_until": None, "last_R": None,
             "ladder": self.base_ladder, "news": self.calendar.get(date, {}),
+            "tm": {k: at(a, v) for k, v in (("scan", self.m["scan_start"]), ("flat", self.m["flat_time"]),
+                                             ("cutoff", self.m["cutoff"]), ("entry", self.m["entry_start"]),
+                                             ("deadline", self.m["alignment_deadline"]),
+                                             ("t0925", "09:25"), ("t0930", "09:30"))},
         }
         self._prev_complete = self._first_t <= a + cfg["session_start_tol_min"]
         if d["news"].get("no_trade"):
@@ -259,10 +317,11 @@ class Engine:
 
     def _step(self, t: int, T: int, b: dict, closed: dict):
         d, a, cfg = self.d, self.d["anchor"], self.cfg
-        scan, flat = at(a, self.m["scan_start"]), at(a, self.m["flat_time"])
+        tm = d["tm"]
+        scan, flat = tm["scan"], tm["flat"]
         if t < scan or t >= flat:
             return
-        cutoff = at(a, self.m["cutoff"])
+        cutoff = tm["cutoff"]
         any_closed = set().union(*closed.values())
         if not d["levels_built"]:
             for xs in self.X.values():
@@ -274,18 +333,17 @@ class Engine:
                 for xs in self.X.values():
                     self._session_level(xs, typ, t0, t1, t1, rank, T)
                 d["pending"].remove(item)
-        if not d["pre_added"] and T >= at(a, "09:30") and cfg["include_premarket"]:
+        if not d["pre_added"] and T >= tm["t0930"] and cfg["include_premarket"]:
             for xs in self.X.values():
                 self._add_premarket(xs, a)
             d["pre_added"] = True
         for xs in self.X.values():                 # späte 1H/4H-Swings als Levels
             for tf in (60, 240):
                 if tf in closed[xs.name]:
-                    for s in xs.tfs[tf].swings[-3:]:
-                        if self._prev_T < s.detected_at <= T:
-                            self._add_level(xs, f"{tf // 60}H_SWING", s.kind, s.price, 3 if tf == 60 else 4,
-                                            s.anchor_t, T)
-        if (T >= at(a, "09:25") and not d["bias_info"]) or (60 in any_closed and T > at(a, "09:25")):
+                    for s in xs.tfs[tf].swings_between(self._prev_T, T):
+                        self._add_level(xs, f"{tf // 60}H_SWING", s.kind, s.price, 3 if tf == 60 else 4,
+                                        s.anchor_t, T)
+        if (T >= tm["t0925"] and not d["bias_info"]) or (60 in any_closed and T > tm["t0925"]):
             self._compute_bias(T)
         for s in d["setups"]:
             if s.smt is None and s.smt_t_eval is not None and T >= s.smt_t_eval:
@@ -328,10 +386,10 @@ class Engine:
                 if s.state in ("CONFIRMED", "ARMED"):
                     self._new_leg(s, b[s.index])
 
-        if not d["aligned_checked"] and T >= at(a, self.m["alignment_deadline"]):
+        if not d["aligned_checked"] and T >= tm["deadline"]:
             d["aligned_checked"] = True
             if cfg["require_index_alignment"] and not d["done"] and d["trades"] == 0:
-                of = [self.X[n].tfs[d["ladder"][0]].orderflow for n in self.names]
+                of = [self.X[n].tfs[d["ladder"][0]].orderflow_at(T) for n in self.names]
                 if not self.pair or of[0] != of[1] or NONE in of:
                     d["done"], d["done_reason"] = True, "ALIGNMENT_DEADLINE (ES/NQ uneinig)"
         if T >= cutoff:
@@ -350,6 +408,7 @@ class Engine:
                 return L
         L = Level(f"{xs.name}:{typ}:{price}", {typ}, side, price, rank, anchor_t, formed_at, alive)
         xs.levels.append(L)
+        xs.levels_sorted = None
         return L
 
     def _session_level(self, xs, typ, t_from, t_to, formed_at, rank, now):
@@ -378,6 +437,7 @@ class Engine:
 
     def _build_levels(self, xs: IndexState, a: int, scan: int):
         xs.levels = []
+        xs.levels_sorted = None
         pa = self._prev_session_anchor(xs, a)
         # Globex-Feiertagssession zählt zum Folgetag -> Vortag = reguläre Session davor
         if pa is not None and cme_calendar.is_half_day(str(minute_to_ts(pa + 1440).date())):
@@ -390,8 +450,8 @@ class Engine:
         self._session(xs, "LONDON", at(a, self.cfg["london_start"]), at(a, self.cfg["london_end"]), 2, scan)
         for tf, days, rank in ((60, self.cfg["lookback_1h_days"], 3), (240, self.cfg["lookback_4h_days"], 4)):
             since = self._n_days_back(xs, a, days)
-            for s in xs.tfs[tf].swings:
-                if s.detected_at <= scan and s.anchor_t >= since:
+            for s in xs.tfs[tf].swings_between(since - 1, scan):
+                if s.anchor_t >= since:
                     if s.kind == UP:
                         after = xs.max_high(s.detected_at, scan)
                         alive = after is None or after <= s.price
@@ -463,17 +523,22 @@ class Engine:
 
     # ----------------------------------------------------------------- Sweep / Setup
     def _sweeps(self, xs: IndexState, b: Bar, T: int, create: bool = True):
-        for L in sorted(xs.levels, key=lambda L: (L.side, L.price)):
-            if not L.alive or L.formed_at > b.t:
-                continue
-            if L.side == UP and b.h > L.price:
-                L.alive, L.swept_at = False, T
-                if create:
-                    self._on_sweep(xs, L, DOWN, b, T)
-            elif L.side == DOWN and b.l < L.price:
+        if xs.levels_sorted is None:
+            ups = sorted((L for L in xs.levels if L.side == UP), key=lambda L: L.price)
+            dns = sorted((L for L in xs.levels if L.side == DOWN), key=lambda L: L.price)
+            xs.levels_sorted = (dns, [L.price for L in dns], ups, [L.price for L in ups])
+        dns, dp, ups, up = xs.levels_sorted
+        # Reihenfolge wie Spec: erst Lows, dann Highs, jeweils aufsteigender Preis
+        for L in dns[bisect.bisect_right(dp, b.l):]:
+            if L.alive and L.formed_at <= b.t:
                 L.alive, L.swept_at = False, T
                 if create:
                     self._on_sweep(xs, L, UP, b, T)
+        for L in ups[:bisect.bisect_left(up, b.h)]:
+            if L.alive and L.formed_at <= b.t:
+                L.alive, L.swept_at = False, T
+                if create:
+                    self._on_sweep(xs, L, DOWN, b, T)
 
     def _on_sweep(self, xs: IndexState, L: Level, dirn: int, b: Bar, T: int):
         d = self.d
@@ -488,10 +553,9 @@ class Engine:
         ladder = d["ladder"]
         ctf = ladder[0]
         floor_t = b.t - self.cfg["leg_max_bars"] * ctf
-        sw = xs.tfs[ctf].highs if dirn == DOWN else xs.tfs[ctf].lows
         t0 = floor_t
-        for s in reversed(sw):
-            if s.detected_at <= T and ((dirn == DOWN and s.price >= L.price) or (dirn == UP and s.price <= L.price)):
+        for s in xs.tfs[ctf].swings_upto_rev(UP if dirn == DOWN else DOWN, T):
+            if ((dirn == DOWN and s.price >= L.price) or (dirn == UP and s.price <= L.price)):
                 t0 = max(s.anchor_t, floor_t)
                 break
         p, pt = xs.argext(t0, b.t + 1, want_high=(dirn == UP))
@@ -542,10 +606,10 @@ class Engine:
     def _confirm(self, s: Setup, xs: IndexState, T: int):
         ctf = s.ladder[0]
         st = xs.tfs[ctf]
-        c = st.bars[-1]
+        c = xs.hbar(ctf)
         if c.ct <= s.created_at:
             return
-        sh, sl = st.pre
+        sh, sl = xs.pre(ctf)
         kind = ""
         if s.dir == DOWN:
             if self.cfg["ifvg_enabled"] and st.ifvg_against(UP, c, s.leg_origin_t) is not None:
@@ -569,10 +633,9 @@ class Engine:
 
     def _range_other(self, s: Setup, xs: IndexState, T: int) -> int:
         """SHORT: Range-High = jüngster confirm_tf-Swing-High zwischen Sweep-Extrem und Range-Low, sonst Sweep-Extrem."""
-        st = xs.tfs[s.ladder[0]]
-        seq = st.highs if s.dir == DOWN else st.lows
+        seq = xs.tfs[s.ladder[0]].swings_upto(UP if s.dir == DOWN else DOWN, T, since_det=s.sweep_extreme_t)
         for sw in reversed(seq):
-            if sw.detected_at <= T and s.sweep_extreme_t <= sw.anchor_t < s.range_ext_t:
+            if s.sweep_extreme_t <= sw.anchor_t < s.range_ext_t:
                 return sw.price
         return s.sweep_extreme
 
@@ -601,7 +664,7 @@ class Engine:
         if (short and b.h > s.sweep_extreme) or (not short and b.l < s.sweep_extreme):
             return self._close_setup(s, "CANCELLED_INVALIDATION (Sweep-Extrem überschritten)")
         if ctf in closed:
-            c5 = xs.tfs[ctf].bars[-1]
+            c5 = xs.hbar(ctf)
             ro = self._range_other(s, xs, T)
             if (short and c5.c > ro) or (not short and c5.c < ro):
                 return self._close_setup(s, "CANCELLED_INVALIDATION (Range zurückerobert)")
@@ -641,8 +704,8 @@ class Engine:
             if "FVG" in zones and any(b.l <= g.top for g in xs.tfs[ctf].eligible_gaps(UP, b, s.sweep_extreme_t)):
                 s.zone_touched = True
         if ttf == 1 or ttf in closed:
-            tb = b if ttf == 1 else xs.tfs[ttf].bars[-1]
-            sh1, sl1 = xs.tfs[ttf].pre
+            tb = b if ttf == 1 else xs.hbar(ttf)
+            sh1, sl1 = xs.pre(ttf)
             if tb.t > s.range_ext_t:
                 if short and sh1 is not None and tb.c > sh1.price:
                     s.counter_bos, s.counter_bos_time = True, T
@@ -658,8 +721,8 @@ class Engine:
         if ttf != 1 and ttf not in closed:
             return ""
         st = xs.tfs[ttf]
-        tb = b if ttf == 1 else st.bars[-1]
-        sh1, sl1 = st.pre
+        tb = b if ttf == 1 else xs.hbar(ttf)
+        sh1, sl1 = xs.pre(ttf)
         kind = ""
         if s.dir == DOWN:
             sw = sl1 if (sl1 is not None and sl1.anchor_t > s.range_ext_t and id(sl1) not in s.fired_swings) else None
@@ -687,7 +750,7 @@ class Engine:
             if s.state != "ARMED":
                 continue
             xs, bar = self.X[s.index], b[s.index]
-            if T < at(a, self.m["entry_start"]):
+            if T < d["tm"]["entry"]:
                 s.log.append(f"{_ts(T)} Trigger {kind} vor {cfg['entry_start']} -> warten (PRE_WINDOW)")
                 continue
             if self._news_block(T):
@@ -701,11 +764,11 @@ class Engine:
                 if other is None or other.last is None or other.last.ct != T:
                     s.log.append(f"{_ts(T)} Trigger {kind}: zweiter Index fehlt -> warten (UNALIGNED)")
                     continue
-                if other.tfs[s.ladder[0]].orderflow != s.dir:
+                if other.tfs[s.ladder[0]].orderflow_at(T) != s.dir:
                     s.log.append(f"{_ts(T)} Trigger {kind}: {other.name} nicht ausgerichtet -> warten (UNALIGNED)")
                     continue
             price = bar.c
-            tb = bar if s.ladder[1] == 1 else xs.tfs[s.ladder[1]].bars[-1]   # ganze Trigger-Kerze
+            tb = bar if s.ladder[1] == 1 else xs.hbar(s.ladder[1])   # ganze Trigger-Kerze
             buf = max(cfg["stop_buffer_ticks"], math.ceil(cfg["stop_buffer_pct"] * price))
             if s.dir == DOWN:
                 stop = max(v for v in (s.retrace_ext, tb.h, bar.h) if v is not None) + buf
@@ -794,8 +857,8 @@ class Engine:
                 add(L.price, "/".join(sorted(L.types)))
         a = self.d["anchor"]
         tp_tf = s.ladder[2]
-        for sw in (xs.tfs[tp_tf].lows if short else xs.tfs[tp_tf].highs):
-            if sw.anchor_t >= a and sw.detected_at <= T:
+        for sw in xs.tfs[tp_tf].swings_upto(DOWN if short else UP, T, since_det=a):
+            if sw.anchor_t >= a:
                 ext = xs.min_low(sw.detected_at, T) if short else xs.max_high(sw.detected_at, T)
                 if ext is None or (short and ext >= sw.price) or (not short and ext <= sw.price):
                     add(sw.price, f"{tp_tf}m_SWING")
@@ -806,7 +869,7 @@ class Engine:
                     continue
                 for dirg in (UP, DOWN):
                     for g in xs.tfs[tf].eligible_gaps(dirg, bar):
-                        if g.touched_at is not None:
+                        if g.touched_at is not None and g.touched_at <= T:
                             continue
                         if short and g.top < price:
                             add(g.top, f"{tf}m_FVG")
@@ -874,6 +937,11 @@ class Engine:
                 "usd": round(t.pnl_usd, 2) if t and t.pnl_usd is not None else None,
             })
         return pd.DataFrame(rows)
+
+
+@lru_cache(maxsize=None)
+def _date_of(anchor: int) -> str:
+    return str(minute_to_ts(anchor + 1440).date())
 
 
 def _ts(m: int | None) -> str:
