@@ -5,3 +5,4 @@ data/*.csv
 !data/.gitkeep
 reports/
 !data/news_calendar.csv
+state/leaderboard.csv
