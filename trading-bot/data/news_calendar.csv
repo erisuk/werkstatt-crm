@@ -1,0 +1,16 @@
+# Wirtschaftskalender (USD) – Zeiten in New-York-Zeit. impact: red | orange
+# Jeden Monat aktualisieren, z. B. von forexfactory.com (Zeitzone auf New York stellen!).
+# FOMC / CPI / NFP (red) -> kein Trade an diesem Tag. Andere rote News -> halbe Größe,
+# ab 09:30 zusätzlich Sperre 2 Min vorher bis 20 Min nachher. Orange -> nur Sperrfenster.
+date,time,event,impact
+2026-01-28,14:00,FOMC Rate Decision,red
+2026-03-18,14:00,FOMC Rate Decision,red
+2026-04-29,14:00,FOMC Rate Decision,red
+2026-06-17,14:00,FOMC Rate Decision,red
+2026-07-29,14:00,FOMC Rate Decision,red
+2026-09-16,14:00,FOMC Rate Decision,red
+2026-10-14,08:30,CPI (Sep),red
+2026-10-28,14:00,FOMC Rate Decision,red
+2026-12-09,14:00,FOMC Rate Decision,red
+2026-12-10,08:30,CPI (Nov),red
+# TODO: NFP-Termine (Employment Situation) und restliche CPI/PPI-Termine von bls.gov ergänzen
