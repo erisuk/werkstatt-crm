@@ -75,7 +75,10 @@ def test_news_regex_does_not_block_adp_or_minutes(tmp_path):
     p.write_text("date,time,event,impact\n2026-01-07,08:15,ADP Non-Farm Employment Change,red\n"
                  "2026-01-07,14:00,FOMC Meeting Minutes,red\n2026-01-09,08:30,Non-Farm Employment Change,red\n"
                  "2026-01-13,08:30,Core CPI m/m,red\n")
-    cal = engine.load_calendar(config.load(), p)
+    rules_2023 = [r"^FOMC (Statement|Rate Decision|Press Conference|Economic Projections)", r"^Federal Funds Rate",
+                  r"^(Core )?CPI\b", r"^(Non-?Farm (Employment Change|Payrolls)|NFP)\b"]
+    cal = engine.load_calendar(config.load(no_trade_events=rules_2023), p)
+    assert "no_trade" not in engine.load_calendar(config.load(), p)["2026-01-13"]   # TJR 2026: nur halbieren
     assert "no_trade" not in cal["2026-01-07"] and cal["2026-01-07"]["halve"]
     assert cal["2026-01-09"]["no_trade"] and cal["2026-01-13"]["no_trade"]
 

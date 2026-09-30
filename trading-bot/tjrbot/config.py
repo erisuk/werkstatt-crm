@@ -50,9 +50,9 @@ DEFAULTS: dict = {
     "allow_trigger_on_new_extreme": True,
     # --- Filter / Gates ---
     "require_index_alignment": True,
-    "bias_mode": "lean",            # lean | filter | off
+    "bias_mode": "off",             # TJR 06/2026: kein Bias-Schritt mehr (5m-Orderflow entscheidet) | lean | filter
     "lean_requires_smt": True,
-    "htf_conflict_action": "escalate_15m",  # escalate_15m (hier: geloggt, wie aligned behandelt) | stand_down
+    "htf_conflict_action": "ignore",  # TJR 2026: immer 5m/1m | escalate_15m (2024: 15m/5m) | stand_down (2023)
     "draw_radius_pct": 0.01,
     "draw_imbalance_min": 2,
     "smt_window_bars": 6, "smt_align_bars": 1,
@@ -71,8 +71,11 @@ DEFAULTS: dict = {
     "news_calendar": "data/news_calendar.csv",
     "post_release_wait_min": 20,
     # Regex (Anfang des Event-Namens): FOMC-Entscheid, CPI, NFP -> kein Trade. NICHT: ADP, FOMC-Minutes, PPI.
-    "no_trade_events": [r"^FOMC (Statement|Rate Decision|Press Conference|Economic Projections)",
-                        r"^Federal Funds Rate", r"^(Core )?CPI\b", r"^(Non-?Farm (Employment Change|Payrolls)|NFP)\b"],
+    # TJR 01/2026: an CPI/FOMC-Tagen nur halbe Größe (+ Wartezeit), kein Aussetzen mehr. 2023-Regel (ganzer Tag frei):
+    # [r"^FOMC (Statement|Rate Decision|Press Conference|Economic Projections)", r"^Federal Funds Rate",
+    #  r"^(Core )?CPI\b", r"^(Non-?Farm (Employment Change|Payrolls)|NFP)\b"]
+    "no_trade_events": [],
+    "include_news_candle": True,    # TJR 01/2026: Hoch/Tief der roten News-Kerze ist ein Draw on Liquidity
     # --- Daten / Historie ---
     "warmup_days": 20,              # vollständige Sessions vor dem ersten Trade (Spec: lookback_4h_days + 10)
     "session_start_tol_min": 5,

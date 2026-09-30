@@ -337,6 +337,15 @@ class Engine:
             for xs in self.X.values():
                 self._add_premarket(xs, a)
             d["pre_added"] = True
+        if cfg["include_news_candle"]:            # Hoch/Tief der 1m-Kerze einer roten News (heute) als Level
+            for nt in d["news"].get("red_times", []):
+                if self._prev_T < nt + 1 <= T:        # News-Kerze (Minute nt) ist gerade geschlossen
+                    for xs in self.X.values():
+                        k = bisect.bisect_left(xs.t, nt)
+                        if k < len(xs.t) and xs.t[k] == nt:
+                            nb = xs.bars[k]
+                            self._add_level(xs, "NEWS_H", UP, nb.h, 2, nb.t, nb.ct)
+                            self._add_level(xs, "NEWS_L", DOWN, nb.l, 2, nb.t, nb.ct)
         for xs in self.X.values():                 # späte 1H/4H-Swings als Levels
             for tf in (60, 240):
                 if tf in closed[xs.name]:
