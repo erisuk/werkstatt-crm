@@ -38,6 +38,7 @@ function setup() {
   let macConfigFile = null;
   const taskChats = new Map(); // laufende Aufgaben-Chats → Name der Aufgabe
   const notified = new Set();
+  const liveNotifications = new Set(); // Referenz halten, sonst geht der Klick auf die Mitteilung verloren
   // Anfragen aus der Oberfläche warten, bis die Suche nach Claude abgeschlossen ist.
   let markClaudeReady;
   const claudeReady = new Promise((r) => { markClaudeReady = r; });
@@ -53,7 +54,8 @@ function setup() {
 
   function chatInfo() {
     if (!chat) return null;
-    return { gen: chatGen, cwd: chat.cwd, name: path.basename(chat.cwd), sessionId: chat.sessionId, status: chat.status, title: chat.title };
+    return { gen: chatGen, cwd: chat.cwd, name: path.basename(chat.cwd) || chat.cwd, sessionId: chat.sessionId, status: chat.status,
+      title: chat.title, careful: chat.permissionMode !== 'acceptEdits' };
   }
 
   function approvals() {
@@ -89,7 +91,10 @@ function setup() {
       if (process.platform === 'darwin' && app.dock) app.dock.bounce('informational');
       if (Notification.isSupported()) {
         const n = new Notification({ title: 'Claude braucht deine Freigabe', body: `${a.title} · ${a.source}` });
-        n.on('click', () => { if (!win) createWindow(); win.show(); win.focus(); });
+        liveNotifications.add(n);
+        const drop = () => liveNotifications.delete(n);
+        n.on('click', () => { drop(); if (!win) createWindow(); win.show(); win.focus(); });
+        n.on('close', drop);
         n.show();
       }
     }
@@ -256,18 +261,21 @@ function setup() {
   ipcMain.handle('tasks-remove', (_e, id) => { if (typeof id === 'string') scheduler.remove(id); });
   ipcMain.handle('tasks-run', (_e, id) => { if (typeof id === 'string') scheduler.run(id); });
 
-  // Einstellungen ändern. Neue Verbindungen gelten sofort, wenn Claude gerade nicht arbeitet.
+  // Einstellungen ändern. Ausgeschaltete Verbindungen gelten sofort (Claude wird dafür neu gestartet,
+  // auch wenn er gerade arbeitet); neu eingeschaltete gelten sofort, wenn Claude nicht arbeitet.
   ipcMain.handle('settings-update', async (_e, patch) => {
-    const before = JSON.stringify(settings.get().connections);
+    const before = settings.get().connections;
     const next = settings.update(patch);
     nativeTheme.themeSource = next.theme;
     let applied = true;
-    if (JSON.stringify(next.connections) !== before && chat) {
-      if (chat.status === 'busy') applied = false;
-      else { await chat.stop(); if (chat) chat.start(); }
+    const changed = Object.keys(next.connections).some((k) => next.connections[k] !== before[k]);
+    const turnedOff = Object.keys(next.connections).some((k) => before[k] && !next.connections[k]);
+    if (changed && chat) {
+      if (chat.status === 'busy' && !turnedOff) applied = false;
+      else { const c = chat; await c.stop(); if (c === chat) c.start(); }
     }
     pushState();
-    return { settings: next, applied };
+    return { settings: next, applied, interrupted: turnedOff && applied };
   });
 
   ipcMain.handle('connections-list', async () => {

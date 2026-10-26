@@ -108,44 +108,96 @@ function explainExit(stderr) {
   return 'Claude wurde unerwartet beendet.';
 }
 
-const clip = (s, n = 2000) => { const t = String(s == null ? '' : s); return t.length > n ? `${t.slice(0, n)} …` : t; };
+const MAX_DETAIL = 50000;
+
+// Alles, was oben noch nicht gezeigt wurde, kommt vollständig darunter – nichts wird verschwiegen.
+function moreFields(i, shown) {
+  const rest = {};
+  for (const [k, v] of Object.entries(i)) if (!shown.includes(k) && k !== 'description') rest[k] = v;
+  return Object.keys(rest).length ? `\n\nWeitere Angaben:\n${JSON.stringify(rest, null, 2)}` : '';
+}
+
+const asText = (v) => (Array.isArray(v) ? v.join(', ') : typeof v === 'string' ? v : JSON.stringify(v));
 
 // Beschreibt eine Freigabe-Anfrage in einfachen Worten: was will Claude tun, und womit?
+// canAlways: ob "Immer erlauben" angeboten wird (nie bei Senden, Löschen oder Chrome).
 function describeApproval(toolName, input, description) {
   const i = input && typeof input === 'object' ? input : {};
   const name = String(toolName || '');
-  const json = () => clip(JSON.stringify(i, null, 2));
-  if (name === 'Bash') return { title: 'Einen Befehl im Terminal ausführen', detail: clip(i.command) };
-  if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(name)) return { title: 'Eine Datei außerhalb des Projekts ändern', detail: clip(i.file_path || i.notebook_path) };
-  if (name === 'WebFetch') return { title: 'Eine Webseite abrufen', detail: clip(i.url) };
-  if (name === 'WebSearch') return { title: 'Im Internet suchen', detail: clip(i.query) };
-  if (name === 'mcp__mac__run_applescript') return { title: 'Den Mac per Skript steuern', detail: clip(i.script) };
-  if (name === 'mcp__mac__open') return { title: 'Etwas auf dem Mac öffnen', detail: clip(i.target) };
-  if (name === 'mcp__mac__reminders_add') return { title: 'Eine Erinnerung anlegen', detail: clip(`${i.title || ''}${i.due ? ` · fällig ${i.due}` : ''}`) };
-  if (name === 'mcp__mac__notes_create') return { title: 'Eine Notiz anlegen', detail: clip(`${i.title || ''}\n\n${i.body || ''}`) };
-  if (/chrome/i.test(name)) return { title: 'Chrome bedienen', detail: json() };
-  if (/mail|outlook|gmail/i.test(name) && /send|reply|forward/i.test(name)) {
-    const to = [].concat(i.to || i.recipient || i.recipients || []).join(', ');
-    return { title: 'Eine E-Mail senden', detail: clip(`${to ? `An: ${to}\n` : ''}${i.subject ? `Betreff: ${i.subject}\n\n` : ''}${i.body || i.content || i.text || ''}`) || json() };
+  let title;
+  let summary = '';
+  let shown = [];
+  let canAlways = true;
+  const field = (k) => (i[k] == null || i[k] === '' ? '' : asText(i[k]));
+  if (name === 'Bash') {
+    title = 'Einen Befehl im Terminal ausführen'; summary = field('command'); shown = ['command'];
+  } else if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(name)) {
+    title = 'Eine Datei ändern'; summary = field('file_path') || field('notebook_path'); shown = ['file_path', 'notebook_path'];
+  } else if (name === 'WebFetch') {
+    title = 'Eine Webseite abrufen'; summary = field('url'); shown = ['url'];
+  } else if (name === 'WebSearch') {
+    title = 'Im Internet suchen'; summary = field('query'); shown = ['query'];
+  } else if (name === 'mcp__mac__run_applescript') {
+    title = 'Den Mac per Skript steuern'; summary = field('script'); shown = ['script'];
+  } else if (name === 'mcp__mac__open') {
+    title = 'Etwas auf dem Mac öffnen'; summary = field('target'); shown = ['target'];
+  } else if (name === 'mcp__mac__reminders_add') {
+    title = 'Eine Erinnerung anlegen'; summary = `${field('title')}${i.due ? ` · fällig ${field('due')}` : ''}`; shown = ['title', 'due'];
+  } else if (name === 'mcp__mac__notes_create') {
+    title = 'Eine Notiz anlegen'; summary = `${field('title')}\n\n${field('body')}`.trim(); shown = ['title', 'body'];
+  } else if (/chrome/i.test(name)) {
+    title = 'Chrome bedienen'; canAlways = false;
+  } else if (/mail|outlook|gmail/i.test(name) && /send|reply|forward/i.test(name)) {
+    title = 'Eine E-Mail senden'; canAlways = false;
+    const labels = [['to', 'An'], ['recipient', 'An'], ['recipients', 'An'], ['cc', 'Kopie'], ['bcc', 'Blindkopie'],
+      ['subject', 'Betreff'], ['attachments', 'Anhänge']];
+    summary = labels.filter(([k]) => field(k)).map(([k, l]) => `${l}: ${field(k)}`).join('\n');
+    const body = field('body') || field('content') || field('text');
+    if (body) summary += `${summary ? '\n\n' : ''}${body}`;
+    shown = [...labels.map(([k]) => k), 'body', 'content', 'text'];
+  } else if (/delete|trash|remove/i.test(name)) {
+    title = 'Etwas löschen'; canAlways = false;
+  } else if (/draft/i.test(name)) {
+    title = 'Einen Mail-Entwurf anlegen';
+  } else {
+    const label = name.startsWith('mcp__') ? name.split('__').slice(1).join(' · ') : name;
+    title = description ? String(description).slice(0, 140) : `Werkzeug „${label}“ benutzen`;
   }
-  if (/draft/i.test(name)) return { title: 'Einen Mail-Entwurf anlegen', detail: json() };
-  if (/delete|trash|remove/i.test(name)) return { title: 'Etwas löschen', detail: json() };
-  const label = name.startsWith('mcp__') ? name.split('__').slice(1).join(' · ') : name;
-  return { title: description ? clip(description, 140) : `Werkzeug „${label}“ benutzen`, detail: json() };
+  let detail = summary ? `${summary}${moreFields(i, shown)}` : (Object.keys(i).length ? JSON.stringify(i, null, 2) : '');
+  const truncated = detail.length > MAX_DETAIL;
+  if (truncated) detail = `${detail.slice(0, MAX_DETAIL)}\n\n… zu lang, um alles anzuzeigen. Deshalb kann das nur abgelehnt werden.`;
+  return { title, detail, canAlways: canAlways && !truncated, truncated };
 }
 
-// Für Befehle und Skripte gilt "immer erlauben" nur für genau diesen Inhalt, sonst für das ganze Werkzeug.
+// Schlüssel mit sortierten Feldern, damit dieselbe Aktion immer gleich aussieht.
+function stableJson(v) {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson(v[k])}`).join(',')}}`;
+  return JSON.stringify(v);
+}
+
+// "Immer erlauben" gilt nur für genau diese Aktion mit genau diesen Angaben.
 function approvalKey(toolName, input) {
-  const i = input || {};
-  if (toolName === 'Bash') return `Bash:${i.command}`;
-  if (toolName === 'mcp__mac__run_applescript') return `script:${i.script}`;
-  return toolName;
+  return `${toolName}:${stableJson(input || {})}`;
+}
+
+// Dateien ohne Rückfrage ändern darf Claude nur in einem echten Projektordner – nie im Benutzerordner,
+// darüber, in ~/Library oder in Systemordnern. Dort fragt die Zentrale vor jeder Änderung.
+function permissionModeFor(cwd, home = os.homedir()) {
+  const dir = path.resolve(String(cwd || '/'));
+  const h = path.resolve(home);
+  const unsafe = dir === path.parse(dir).root
+    || dir === h
+    || h.startsWith(dir + path.sep)
+    || dir === path.join(h, 'Library') || dir.startsWith(path.join(h, 'Library') + path.sep)
+    || /^\/(System|Library|Applications|usr|bin|sbin|etc|private|var|opt|Volumes)(\/|$)/.test(dir) && !dir.startsWith(h + path.sep);
+  return unsafe ? 'default' : 'acceptEdits';
 }
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 class ClaudeChat extends EventEmitter {
-  constructor({ bin, env, cwd, resume = null, permissionMode = 'acceptEdits', title = null,
+  constructor({ bin, env, cwd, resume = null, permissionMode = null, title = null,
     projectsRoot = PROJECTS_ROOT, extraArgs = () => [] }) {
     super();
     this.bin = bin;
@@ -155,7 +207,7 @@ class ClaudeChat extends EventEmitter {
     this.sessionId = resume || crypto.randomUUID();
     this.resumed = !!resume;
     this.projectsRoot = projectsRoot;
-    this.permissionMode = permissionMode;
+    this.permissionMode = permissionMode || permissionModeFor(cwd);
     this.extraArgs = extraArgs;
     this.title = title;
     this.status = 'stopped';
@@ -189,7 +241,8 @@ class ClaudeChat extends EventEmitter {
   }
 
   pendingApprovals() {
-    return [...this.approvals.values()].map(({ id, tool, title, detail, createdAt }) => ({ id, tool, title, detail, createdAt }));
+    return [...this.approvals.values()].map(({ id, tool, title, detail, canAlways, truncated, createdAt }) =>
+      ({ id, tool, title, detail, canAlways, truncated, createdAt }));
   }
 
   clearApprovals() {
@@ -217,18 +270,19 @@ class ClaudeChat extends EventEmitter {
         response: { behavior: 'allow', updatedInput: req.input || {} } } });
       return;
     }
-    const { title, detail } = describeApproval(req.tool_name, req.input, req.description);
-    this.approvals.set(ev.request_id, { id: ev.request_id, tool: req.tool_name, title, detail, key, input: req.input || {}, createdAt: Date.now() });
+    const { title, detail, canAlways, truncated } = describeApproval(req.tool_name, req.input, req.description);
+    this.approvals.set(ev.request_id, { id: ev.request_id, tool: req.tool_name, title, detail, canAlways, truncated, key,
+      input: req.input || {}, createdAt: Date.now() });
     this.emit('approvals');
   }
 
-  // decision: 'allow' | 'always' | 'deny'
+  // decision: 'allow' | 'always' | 'deny'. Was nicht vollständig angezeigt werden konnte, lässt sich nur ablehnen.
   respond(id, decision) {
     const a = this.approvals.get(id);
     if (!a) return false;
     this.approvals.delete(id);
-    const allow = decision === 'allow' || decision === 'always';
-    if (decision === 'always') this.alwaysAllow.add(a.key);
+    const allow = (decision === 'allow' || decision === 'always') && !a.truncated;
+    if (decision === 'always' && allow && a.canAlways) this.alwaysAllow.add(a.key);
     this.write({ type: 'control_response', response: { subtype: 'success', request_id: id,
       response: allow ? { behavior: 'allow', updatedInput: a.input }
         : { behavior: 'deny', message: 'Der Nutzer hat das in der Zentrale abgelehnt.' } } });
@@ -265,6 +319,11 @@ class ClaudeChat extends EventEmitter {
       let ev;
       try { ev = JSON.parse(line); } catch { return; }
       if (ev.type === 'control_request') { this.handleControl(ev); return; }
+      // Claude kann eine offene Rückfrage selbst zurückziehen.
+      if (ev.type === 'control_cancel_request') {
+        if (this.approvals.delete(ev.request_id)) this.emit('approvals');
+        return;
+      }
       if (ev.session_id) this.sessionId = ev.session_id;
       for (const item of simplify(ev)) this.emit('event', item);
       // Erst "bereit", wenn alle gesendeten Nachrichten beantwortet sind.
@@ -333,9 +392,9 @@ const TASK_TIMEOUT_MS = 30 * 60 * 1000;
 
 // Führt einen einzelnen Auftrag aus (für tägliche Aufgaben). Läuft wie ein Chat, damit
 // Freigaben genauso in der Zentrale landen. onApproval(chat) meldet neue Rückfragen.
-function runTask({ bin, env, cwd, prompt, extraArgs, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot }) {
+function runTask({ bin, env, cwd, prompt, extraArgs, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot, permissionMode }) {
   return new Promise((resolve) => {
-    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, projectsRoot });
+    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, projectsRoot, permissionMode: permissionMode || permissionModeFor(cwd) });
     const texts = [];
     let error = null;
     let sent = false;
@@ -349,7 +408,9 @@ function runTask({ bin, env, cwd, prompt, extraArgs, onApproval, timeoutMs = TAS
       chat.dispose();
       resolve(res);
     };
-    const timer = setTimeout(() => finish({ ok: false, text: 'Abgebrochen: Die Aufgabe lief länger als 30 Minuten.' }), timeoutMs);
+    const timer = setTimeout(() => finish({ ok: false, text: chat.approvals.size
+      ? 'Abgebrochen: Claude hat auf deine Freigabe gewartet, aber keine bekommen.'
+      : 'Abgebrochen: Die Aufgabe lief länger als 30 Minuten.' }), timeoutMs);
     chat.on('event', (ev) => {
       if (ev.kind === 'text') texts.push(ev.text);
       else if (ev.kind === 'error') error = ev;
@@ -399,6 +460,6 @@ async function listMcpServers({ bin, env, cwd }) {
 }
 
 module.exports = {
-  resolveClaude, cleanEnv, ClaudeChat, simplify, describeTool, describeApproval, approvalKey,
+  resolveClaude, cleanEnv, ClaudeChat, simplify, describeTool, describeApproval, approvalKey, permissionModeFor,
   runTask, stopAllTasks, terminate, parseMcpList, listMcpServers,
 };

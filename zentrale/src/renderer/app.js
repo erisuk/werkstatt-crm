@@ -184,11 +184,12 @@ function approvalCard(a, compact) {
       h('div', { class: 'grow' },
         h('div', { class: 'name', text: a.title }),
         h('div', { class: 'where', text: a.source }))),
-    a.detail ? h('pre', { class: 'approval-detail', text: a.detail }) : null,
+    a.detail ? h('pre', { class: 'approval-detail', tabindex: '0', text: a.detail }) : null,
     h('div', { class: 'approval-actions' },
       h('button', { class: 'btn ghost', 'data-focus': `deny:${a.id}`, onClick: () => decide('deny') }, 'Ablehnen'),
-      h('button', { class: 'btn ghost always', 'data-focus': `always:${a.id}`, title: 'Gilt nur für dieses Gespräch bzw. diesen Lauf', onClick: () => decide('always') }, 'Immer erlauben'),
-      h('button', { class: 'btn', 'data-focus': `allow:${a.id}`, onClick: () => decide('allow') }, 'Erlauben')));
+      a.canAlways ? h('button', { class: 'btn ghost always', 'data-focus': `always:${a.id}`,
+        title: 'Erlaubt genau diese Aktion mit genau diesen Angaben für den Rest des Gesprächs', onClick: () => decide('always') }, 'Immer erlauben') : null,
+      a.truncated ? null : h('button', { class: 'btn', 'data-focus': `allow:${a.id}`, onClick: () => decide('allow') }, 'Erlauben')));
 }
 
 // Rechts stehen alle offenen Freigaben – außer denen, die im offenen Chat ohnehin zu sehen sind.
@@ -458,7 +459,7 @@ function updateChatHead() {
   keepFocus(() => fill(head,
     h('span', { class: 'avatar', style: { background: colorFor(c.name) }, text: c.name.charAt(0).toUpperCase() }),
     h('div', { class: 'grow' },
-      h('div', { class: 'date', text: c.name, title: c.cwd }),
+      h('div', { class: 'date', text: c.careful ? `${c.name} · kein Projektordner: Claude fragt vor jeder Dateiänderung` : c.name, title: c.cwd }),
       h('h1', { text: c.title || 'Neues Gespräch' })),
     h('span', { class: `pill ${st.pill || ''}`, text: st.short || st.text }),
     c.status === 'busy' ? h('button', { class: 'btn ghost', 'data-focus': 'stop', onClick: () => api.stopChat() }, 'Stoppen') : null,
@@ -652,7 +653,7 @@ function renderTaskForm() {
         if (dir) { t.cwd = dir; folderLabel.textContent = dir; dirty(); }
       } }, 'Ordner wählen'))),
   h('div', { class: 'field full' }, h('label', { for: 'task-prompt', text: 'Auftrag an Claude' }), prompt,
-    h('span', { class: 'hint', text: 'Claude darf dabei Dateien im Projektordner bearbeiten. Für alles andere fragt die Zentrale dich vorher.' })),
+    h('span', { class: 'hint', text: 'Claude darf Dateien im gewählten Projektordner ohne Rückfrage bearbeiten. Ohne Projektordner und für alles andere fragt die Zentrale dich vorher.' })),
   h('div', { class: 'actions full' },
     t.id ? h('button', { type: 'button', class: 'btn danger', onClick: async () => {
       if (!confirm(`„${t.name || 'Aufgabe'}“ löschen?`)) return;
@@ -686,9 +687,9 @@ async function loadConnections() {
 
 async function setConnection(key, value) {
   const res = await api.updateSettings({ connections: { [key]: value } });
-  ui.notice = res && res.applied === false
-    ? 'Gespeichert. Claude arbeitet gerade – die Änderung gilt ab dem nächsten Gespräch.'
-    : null;
+  if (res && res.applied === false) ui.notice = 'Gespeichert. Claude arbeitet gerade – die neue Verbindung gilt, sobald er fertig ist und du die nächste Nachricht schickst.';
+  else if (res && res.interrupted) ui.notice = 'Verbindung getrennt. Claude wurde dafür neu gestartet; eine laufende Antwort wurde abgebrochen.';
+  else ui.notice = null;
   ui.todayAt = 0;
   renderConnections();
 }
@@ -843,7 +844,11 @@ function applyState(s) {
   // Neuer Chat (auch der beim Start): ab jetzt gehören seine Ereignisse zu uns,
   // egal welche Ansicht gerade offen ist.
   const newChat = !!s.chat && ui.chatGen !== s.chat.gen;
-  if (newChat) resetChat(s.chat.gen, []);
+  if (newChat) {
+    // Hat erst unsere Nachricht den Chat gestartet, bleibt sie stehen.
+    const onlyOurs = ui.chatGen === null && ui.messages.length && ui.messages.every((m) => m.kind === 'user' || m.kind === 'error');
+    if (onlyOurs) { ui.chatGen = s.chat.gen; ui.shown = 0; } else resetChat(s.chat.gen, []);
+  }
   renderStatus();
   renderTheme();
   renderAside();

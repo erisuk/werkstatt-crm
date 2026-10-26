@@ -40,6 +40,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     out({ type: 'assistant', session_id: sid, message: { content: [{ type: 'text', text: reply }] } });
     out({ type: 'result', session_id: sid, is_error: false, result: 'ok' });
   };
+  if (text.startsWith('ZURUECK:')) {
+    const id = `req-cancel-${Date.now()}`;
+    out({ type: 'control_request', request_id: id, request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' } } });
+    setTimeout(() => { out({ type: 'control_cancel_request', request_id: id }); answer('zurückgezogen'); }, 200);
+    return;
+  }
   if (text.startsWith('FREIGABE:')) {
     const command = text.slice('FREIGABE:'.length);
     const id = `req-${process.pid}-${Date.now()}`;

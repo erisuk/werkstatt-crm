@@ -63,7 +63,9 @@ Alles unter **Verbindungen** in der Seitenleiste:
 ## Gut zu wissen
 
 - Das rote X schließt nur das Fenster, Claude arbeitet weiter. Ganz beenden mit **⌘Q**.
-- Claude darf Dateien im Projektordner ohne Rückfrage bearbeiten. Alles andere läuft über die Freigaben. „Immer erlauben“ gilt nur für das aktuelle Gespräch – und bei Befehlen nur für genau diesen Befehl.
+- Claude darf Dateien in einem echten Projektordner ohne Rückfrage bearbeiten. Ohne Projektordner (Benutzerordner, `~/Library`, Systemordner) fragt die Zentrale vor jeder Dateiänderung. Alles andere läuft immer über die Freigaben.
+- Eine Freigabe zeigt immer alles, was passieren soll – bei Mails auch Kopie, Blindkopie und Anhänge. Ist es zu lang zum Anzeigen, lässt es sich nur ablehnen.
+- „Immer erlauben“ gilt nur im aktuellen Gespräch und nur für genau dieselbe Aktion mit denselben Angaben. Für Senden, Löschen und Chrome gibt es diesen Knopf nicht.
 - Tägliche Aufgaben laufen, solange die Zentrale geöffnet ist. War sie zur Uhrzeit geschlossen, läuft die Aufgabe, sobald du die Zentrale am selben Tag öffnest.
 - Es kann immer nur eine Zentrale gleichzeitig laufen.
 - Terminserien (z. B. „jeden Montag“) rechnet die Zentrale selbst aus, weil der Mac-Kalender per Skript nur den ersten Termin einer Serie liefert. Einzeln verschobene Termine einer Serie können dabei an der alten Stelle erscheinen.
