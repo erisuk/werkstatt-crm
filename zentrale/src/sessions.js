@@ -63,18 +63,30 @@ function shortTitle(text, max = 80) {
   return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()} …`;
 }
 
+// Fortsetzungs-Chats beginnen alle gleich („Wir setzen eine Arbeit fort …“). Der Name steht
+// in der ersten Überschrift der Übergabe, z. B. „## Übergabe: Trading-Bot `~/trading-agent`“.
+const CONTINUATION = /^(wir setzen eine arbeit fort|unten steht der verlauf)/i;
+
+function continuationTitle(text) {
+  if (!CONTINUATION.test(String(text || '').trim())) return null;
+  const m = /^#{1,4}\s*(?:Übergabe|Uebergabe|Handover)?\s*[:–-]?\s*(.+)$/m.exec(text);
+  const name = m ? m[1].replace(/[`*_]/g, '').trim() : '';
+  return name ? `↪ ${shortTitle(name, 70)}` : null;
+}
+
 function parseSession(file) {
   const stat = fs.statSync(file);
   let cwd = null;
   let title = null;
   let customTitle = null;
+  let snippet = '';
   for (const o of parseLines(readHead(file))) {
     if (!cwd && o.cwd) cwd = o.cwd;
     if (o.type === 'custom-title' && o.customTitle) customTitle = o.customTitle;
     if (o.type === 'summary' && o.summary && !customTitle) customTitle = o.summary;
     if (!title && o.type === 'user' && !o.isSidechain && o.message) {
       const t = textOf(o.message.content);
-      if (isRealPrompt(t)) title = shortTitle(t);
+      if (isRealPrompt(t)) { title = continuationTitle(t) || shortTitle(t); snippet = t.trim().slice(0, 1500); }
     }
   }
   customTitle = lastCustomTitle(file) || customTitle;
@@ -84,6 +96,7 @@ function parseSession(file) {
     cwd,
     title: customTitle || title || 'Ohne Titel',
     firstPrompt: title,
+    snippet,
     updatedAt: stat.mtimeMs,
   };
 }
@@ -202,4 +215,4 @@ function watchSessions(root = DEFAULT_ROOT) {
   return emitter;
 }
 
-module.exports = { DEFAULT_ROOT, listProjects, parseSession, readMessages, watchSessions, isRealPrompt, shortTitle };
+module.exports = { DEFAULT_ROOT, listProjects, parseSession, readMessages, watchSessions, isRealPrompt, shortTitle, continuationTitle };

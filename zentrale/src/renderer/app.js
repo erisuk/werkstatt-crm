@@ -24,6 +24,9 @@ const ui = {
   connectionsLoading: false,
   macTest: null,
   notice: null,
+  groupMode: 'topic',
+  showArchived: false,
+  prefill: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -289,35 +292,112 @@ function renderToday() {
         'Öffne Mail oder Outlook, um ungelesene Mails zu sehen. Gmail fragst du über „Mails zusammenfassen“ ab.')));
 }
 
+// Gruppen für die Übersicht: nach Thema (Standard) oder nach Projektordner.
+// In der Claude-App archivierte Gespräche sind standardmäßig ausgeblendet.
+function visibleSessions(list) {
+  return ui.showArchived ? list : list.filter((x) => !x.archived);
+}
+
+function overviewGroups() {
+  if (ui.groupMode === 'folder') {
+    return projects().map((p) => {
+      const sessions = visibleSessions(p.sessions);
+      return { key: `f:${projectKey(p)}`, name: p.name, emoji: null, path: p.path, sessions, updatedAt: sessions.length ? sessions[0].updatedAt : 0 };
+    }).filter((g) => g.sessions.length);
+  }
+  const all = visibleSessions(projects().flatMap((p) => p.sessions));
+  return ((ui.state && ui.state.topics) || []).map((t) => {
+    const sessions = all.filter((x) => x.topic === t.id).sort((a, b) => b.updatedAt - a.updatedAt);
+    return { key: `t:${t.id}`, topicId: t.id, name: t.label, emoji: t.emoji, path: null, sessions, updatedAt: sessions.length ? sessions[0].updatedAt : 0 };
+  }).filter((g) => g.sessions.length);
+}
+
+function folderName(cwd) {
+  return cwd ? cwd.split('/').filter(Boolean).pop() || cwd : '';
+}
+
+async function trashSessions(list, label) {
+  if (!list.length) return;
+  const what = list.length === 1 ? `„${list[0].title}“` : `${list.length} Gespräche${label ? ` aus „${label}“` : ''}`;
+  if (!confirm(`${what} in den Papierkorb legen?\n\nSolange du den Papierkorb nicht leerst, kannst du sie dort zurückholen.`)) return false;
+  const res = await api.trashSessions(list.map((x) => x.id));
+  if (res && res.skipped && res.skipped.length) {
+    alert(`${plural(res.trashed, 'Gespräch', 'Gespräche')} gelöscht. Nicht gelöscht:\n\n${res.skipped.map((x) => `• ${x.title}: ${x.reason}`).join('\n')}`);
+  }
+  return true;
+}
+
+// Projekt löschen: erst die Gespräche, auf Wunsch danach auch den Ordner selbst.
+async function trashGroup(g) {
+  const done = await trashSessions(g.sessions, g.name);
+  if (!done || !g.path) return;
+  if (!confirm(`Soll auch der Projektordner selbst in den Papierkorb?\n\n${g.path}\n\nAbbrechen = Ordner bleibt, nur die Gespräche sind weg.`)) return;
+  const res = await api.trashProjectFolder(g.path);
+  if (res && !res.ok) alert(res.error);
+}
+
+function topicSelect(x) {
+  const sel = h('select', { class: 'topic-select', 'aria-label': `Thema von ${x.title}`, 'data-focus': `topic:${x.id}`,
+    title: x.topicManual ? 'Von dir gewählt' : 'Automatisch einsortiert' });
+  sel.append(h('option', { value: '' }, 'Automatisch'));
+  for (const t of (ui.state.topics || [])) {
+    const o = h('option', { value: t.id }, `${t.emoji} ${t.label}`);
+    if (x.topicManual && x.topic === t.id) o.selected = true;
+    sel.append(o);
+  }
+  if (!x.topicManual) sel.value = '';
+  sel.addEventListener('change', () => api.setTopic([x.id], sel.value || null));
+  return sel;
+}
+
+function sessionRow(x, s, showFolder) {
+  const isChat = !!s.chat && s.chat.sessionId === x.id;
+  const busy = isChat && s.chat.status === 'busy';
+  const sub = isChat ? (busy ? 'Claude arbeitet gerade daran' : 'Im Chat geöffnet')
+    : [x.archived ? 'archiviert' : null, showFolder ? folderName(x.cwd) : null].filter(Boolean).join(' · ') || null;
+  return h('div', { class: 'row' },
+    h('span', { class: `dot ${busy ? 'amber pulse' : isChat ? 'green' : ''}` }),
+    h('div', { class: 'grow' },
+      h('div', { class: 'title', text: x.title }),
+      sub ? h('div', { class: 'sub', text: sub }) : null),
+    h('span', { class: 'when', text: formatWhen(x.updatedAt) }),
+    topicSelect(x),
+    h('button', { class: 'link', 'data-focus': `open:${x.id}`, onClick: () => openSession(x) }, 'Öffnen'),
+    h('button', { class: 'icon-btn', 'aria-label': `„${x.title}“ löschen`, title: 'In den Papierkorb', 'data-focus': `trash:${x.id}`,
+      disabled: busy, onClick: () => trashSessions([x]) }, '🗑'));
+}
+
 function renderOverview(force) {
   const s = ui.state;
   const list = projects();
-  const visible = list.filter((p) => matches(p.name) || p.sessions.some((x) => matches(x.title)));
-  // Ist das gewählte Projekt durch die Suche ausgeblendet, nehmen wir das erste sichtbare.
-  const sel = visible.find((p) => projectKey(p) === ui.selected) || visible[0] || null;
+  const groups = overviewGroups();
+  const visible = groups.filter((g) => matches(g.name) || g.sessions.some((x) => matches(x.title)));
+  // Ist die gewählte Gruppe durch die Suche ausgeblendet, nehmen wir die erste sichtbare (nicht die Automatik).
+  const sel = visible.find((g) => g.key === ui.selected) || visible.find((g) => g.topicId !== 'auto') || visible[0] || null;
   const chat = s.chat ? { id: s.chat.sessionId, status: s.chat.status } : null;
   const enabledTasks = s.tasks.filter((t) => t.enabled).length;
   const minute = Math.floor(Date.now() / 60000);
-  if (!changed('main', ['overview', list, chat, enabledTasks, s.claude, ui.search, sel && projectKey(sel), minute, settings().connections]) && !force) return;
+  if (!changed('main', ['overview', list, chat, enabledTasks, s.claude, ui.search, sel && sel.key, ui.groupMode, ui.showArchived, minute, settings().connections]) && !force) return;
   loadToday(false);
 
   const totalSessions = list.reduce((n, p) => n + p.sessions.length, 0);
-  const projectCards = visible.map((p) => {
-    const key = projectKey(p);
-    const isSel = !!sel && key === projectKey(sel);
+  const archivedCount = list.reduce((n, p) => n + p.sessions.filter((x) => x.archived).length, 0);
+  const groupCards = visible.map((g) => {
+    const isSel = !!sel && g.key === sel.key;
     return h('button', {
       class: `project${isSel ? ' selected' : ''}`,
       'aria-pressed': String(isSel),
-      'data-focus': `project:${key}`,
-      title: p.path || p.name,
-      onClick: () => { ui.selected = key; renderOverview(); },
+      'data-focus': `group:${g.key}`,
+      title: g.path || g.name,
+      onClick: () => { ui.selected = g.key; renderOverview(); },
     },
-    h('span', { class: 'avatar', style: { background: colorFor(p.name) }, text: p.name.charAt(0).toUpperCase() }),
+    g.emoji ? h('span', { class: 'avatar emoji', 'aria-hidden': 'true', text: g.emoji })
+      : h('span', { class: 'avatar', style: { background: colorFor(g.name) }, text: g.name.charAt(0).toUpperCase() }),
     h('span', { class: 'text' },
-      h('span', { class: 'name', text: p.name }),
-      h('span', { class: 'meta', text: `${plural(p.sessions.length, 'Gespräch', 'Gespräche')} · ${formatWhen(p.updatedAt)}` })));
+      h('span', { class: 'name', text: g.name }),
+      h('span', { class: 'meta', text: `${plural(g.sessions.length, 'Gespräch', 'Gespräche')} · ${formatWhen(g.updatedAt)}` })));
   });
-  projectCards.push(h('button', { class: 'project add', 'data-focus': 'add-project', onClick: addProject }, '+ Neues Projekt'));
+  groupCards.push(h('button', { class: 'project add', 'data-focus': 'add-project', onClick: addProject }, '+ Neues Projekt'));
 
   let sessionsBox;
   if (!list.length) {
@@ -325,19 +405,12 @@ function renderOverview(force) {
   } else if (!sel) {
     sessionsBox = h('div', { class: 'card empty', text: `Nichts gefunden für „${ui.search}“.` });
   } else {
-    const rows = sel.sessions.filter((x) => matches(x.title) || matches(sel.name)).map((x) => {
-      const isChat = !!s.chat && s.chat.sessionId === x.id;
-      const busy = isChat && s.chat.status === 'busy';
-      return h('div', { class: 'row' },
-        h('span', { class: `dot ${busy ? 'amber pulse' : isChat ? 'green' : ''}` }),
-        h('div', { class: 'grow' },
-          h('div', { class: 'title', text: x.title }),
-          isChat ? h('div', { class: 'sub', text: busy ? 'Claude arbeitet gerade daran' : 'Im Chat geöffnet' }) : null),
-        h('span', { class: 'when', text: formatWhen(x.updatedAt) }),
-        h('button', { class: 'link', 'data-focus': `open:${x.id}`, onClick: () => openSession(x) }, 'Öffnen'));
-    });
+    const rows = sel.sessions.filter((x) => matches(x.title) || matches(sel.name)).map((x) => sessionRow(x, s, ui.groupMode !== 'folder'));
     sessionsBox = h('div', { class: 'card list' }, rows.length ? rows : h('div', { class: 'empty', text: 'Keine passenden Gespräche.' }));
   }
+  const modeBtn = (mode, label) => h('button', { role: 'radio', 'aria-checked': String(ui.groupMode === mode), 'data-focus': `mode:${mode}`,
+    onClick: () => { ui.groupMode = mode; ui.selected = null; renderOverview(); } }, label);
+  const newCwd = sel && sel.path ? sel.path : null;
 
   keepFocus(() => fill($('#main'),
     h('div', {}, h('div', { class: 'date', text: todayLabel() }), h('h1', { text: greeting() })),
@@ -351,14 +424,25 @@ function renderOverview(force) {
     h('div', { class: 'stats' },
       stat('Projekte', list.length), stat('Gespräche', totalSessions), stat('Tägliche Aufgaben', enabledTasks)),
     h('section', { class: 'section' },
-      h('div', { class: 'section-head' }, h('h2', { text: 'Meine Projekte' })),
-      h('div', { class: 'projects' }, projectCards)),
+      h('div', { class: 'section-head' }, h('h2', { text: ui.groupMode === 'folder' ? 'Meine Projektordner' : 'Meine Themen' }),
+        h('span', { class: 'spacer' }),
+        archivedCount ? h('label', { class: 'toggle-line' },
+          h('button', { class: 'switch', role: 'switch', 'aria-checked': String(ui.showArchived), 'aria-label': 'Archivierte Gespräche zeigen',
+            'data-focus': 'show-archived', onClick: () => { ui.showArchived = !ui.showArchived; renderOverview(); } }),
+          `Archivierte zeigen (${archivedCount})`) : null,
+        h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Gespräche sortieren' },
+          modeBtn('topic', 'Nach Thema'), modeBtn('folder', 'Nach Ordner'))),
+      h('div', { class: 'projects' }, groupCards)),
     h('section', { class: 'section' },
       h('div', { class: 'section-head' },
         h('h2', { text: 'Gespräche' }),
-        h('span', { class: 'sub', text: sel ? sel.name : '' }),
+        h('span', { class: 'sub', text: sel ? `${sel.emoji ? `${sel.emoji} ` : ''}${sel.name}` : '' }),
         h('span', { class: 'spacer' }),
-        sel ? h('button', { class: 'btn', 'data-focus': 'new-session', disabled: !s.claude.found, onClick: () => newSession(sel.path) }, '+ Neues Gespräch') : null),
+        sel && sel.sessions.length ? h('button', { class: 'btn ghost danger-text', 'data-focus': 'trash-group', onClick: () => trashGroup(sel) },
+          ui.groupMode === 'folder' ? 'Projekt löschen …' : 'Alle löschen …') : null,
+        sel ? h('button', { class: 'btn', 'data-focus': 'new-session', disabled: !s.claude.found,
+          onClick: () => (newCwd ? newSession(newCwd) : addProject()) }, newCwd ? '+ Neues Gespräch' : '+ Neues Gespräch …') : null),
+      sel && sel.topicId === 'auto' ? h('p', { class: 'date', text: 'Hier landen Läufe von geplanten Aufgaben und Testaufträge – Titel, die fünfmal oder öfter vorkommen, oder wörtliche Befehle wie „Antworte nur mit …“. Liegt etwas falsch, wähle rechts das richtige Thema.' }) : null,
       sessionsBox)));
 }
 
@@ -447,6 +531,8 @@ function renderChat() {
   updateChatHead();
   renderMessages();
   renderChatApprovals();
+  // Aus „Skills & Agenten“: der Skill-Name steht schon im Eingabefeld.
+  if (ui.prefill) { input.value = ui.prefill; ui.prefill = null; }
   input.focus();
 }
 
@@ -534,259 +620,6 @@ api.onChatEvent((ev) => {
   if (ui.view === 'chat') renderMessages();
 });
 
-// ---------- Tägliche Aufgaben ----------
-
-function nextRunLabel(t) {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(t.time || '');
-  if (!m) return '';
-  const now = new Date();
-  const at = new Date(now);
-  at.setHours(Number(m[1]), Number(m[2]), 0, 0);
-  const todayKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  const today = now < at && t.lastRunDay !== todayKey && t.skipDay !== todayKey;
-  return `Nächster Lauf: ${today ? 'heute' : 'morgen'} ${t.time}`;
-}
-
-function taskInfo(t) {
-  if (!t.enabled) return 'Pausiert';
-  if (t.running) return 'Läuft gerade …';
-  const last = t.lastRunAt ? ` · zuletzt ${formatWhen(t.lastRunAt)} ${t.lastStatus === 'ok' ? 'erfolgreich' : 'mit Fehler'}` : '';
-  return `${nextRunLabel(t)}${last}`;
-}
-
-function taskSwitch(t, where) {
-  return h('button', {
-    class: 'switch', role: 'switch', 'aria-checked': String(!!t.enabled),
-    'aria-label': t.name, 'data-focus': `switch:${where}:${t.id}`,
-    onClick: () => api.toggleTask(t.id),
-  });
-}
-
-function renderTasks() {
-  fill($('#main'),
-    h('div', { class: 'section-head wrap' },
-      h('h1', { text: 'Tägliche Aufgaben' }), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn', id: 'add-task', disabled: !ui.state.claude.found, onClick: () => editTask({}) }, '+ Neue Aufgabe')),
-    h('p', { class: 'date', text: 'Diese Aufgaben laufen jeden Tag zur eingestellten Uhrzeit auf deinem Mac, solange die Zentrale geöffnet ist. War sie zu der Uhrzeit geschlossen, läuft die Aufgabe, sobald du die Zentrale am selben Tag öffnest. Braucht Claude dabei eine Freigabe, meldet sich die Zentrale. Deine Cloud-Aufgaben laufen davon unabhängig weiter.' }),
-    h('div', { id: 'task-form' }),
-    h('div', { id: 'task-list', class: 'section' }));
-  ui.sig.tasks = null;
-  renderTaskForm();
-  renderTaskList();
-}
-
-function renderTaskList() {
-  const box = $('#task-list');
-  if (!box) return;
-  const tasks = ui.state.tasks;
-  const minute = Math.floor(Date.now() / 60000);
-  if (!changed('tasks', [tasks, ui.state.claude.found, minute])) return;
-  if (!tasks.length) {
-    fill(box, h('div', { class: 'card empty', text: 'Noch keine Aufgaben. Lege eine mit „+ Neue Aufgabe“ an.' }));
-    return;
-  }
-  keepFocus(() => fill(box, tasks.map((t) => {
-    const result = t.lastText ? h('details', { class: 'result-box' },
-      h('summary', { text: t.lastStatus === 'ok' ? 'Letztes Ergebnis' : 'Letzter Fehler' }),
-      h('div', { class: 'msg assistant result', text: t.lastText })) : null;
-    if (result) {
-      result.open = ui.openResults.has(t.id);
-      result.addEventListener('toggle', () => {
-        if (result.open) ui.openResults.add(t.id); else ui.openResults.delete(t.id);
-      });
-    }
-    return h('div', { class: 'card' },
-      h('div', { class: 'task wide' },
-        h('div', { class: 'time', text: t.time }),
-        h('div', { class: 'grow' },
-          h('div', { class: 'name', text: t.name }),
-          h('div', { class: 'info', text: `${taskInfo(t)}${t.cwd ? ` · ${t.cwd.split('/').pop()}` : ''}` })),
-        h('div', { class: 'task-actions' },
-          h('button', { class: 'link', 'data-focus': `edit:${t.id}`, onClick: () => editTask(t) }, 'Bearbeiten'),
-          h('button', { class: 'link', 'data-focus': `run:${t.id}`, disabled: t.running || !ui.state.claude.found, onClick: () => api.runTask(t.id) }, 'Jetzt ausführen'),
-          taskSwitch(t, 'list'))),
-      result);
-  })));
-}
-
-function editTask(t) {
-  const cur = ui.editingTask;
-  // Dieselbe Aufgabe (oder schon eine neue) ist bereits offen: nur hinwechseln.
-  if (cur && cur.id === (t.id || null)) { if (ui.view !== 'tasks') setView('tasks'); return; }
-  if (cur && ui.editingDirty && !confirm('Deine Änderungen an der Aufgabe sind noch nicht gespeichert. Verwerfen?')) return;
-  ui.editingTask = { id: t.id || null, name: t.name || '', time: t.time || '08:00', prompt: t.prompt || '', cwd: t.cwd || null };
-  ui.editingDirty = false;
-  if (ui.view !== 'tasks') setView('tasks'); else renderTaskForm();
-}
-
-function renderTaskForm() {
-  const box = $('#task-form');
-  if (!box) return;
-  const t = ui.editingTask;
-  if (!t) { fill(box); return; }
-  const dirty = () => { ui.editingDirty = true; };
-  const folderLabel = h('span', { text: t.cwd || 'Kein Projekt (Benutzerordner)' });
-  const name = h('input', { id: 'task-name', type: 'text', placeholder: 'z. B. Tagesplan' });
-  name.value = t.name;
-  name.addEventListener('input', () => { t.name = name.value; dirty(); });
-  const time = h('input', { id: 'task-time', type: 'time', required: true });
-  time.value = t.time;
-  time.addEventListener('input', () => { t.time = time.value; dirty(); });
-  const prompt = h('textarea', { id: 'task-prompt', placeholder: 'Was soll Claude jeden Tag tun? z. B. „Fasse meine ungelesenen Mails zusammen und lege mir eine Notiz an.“' });
-  prompt.value = t.prompt;
-  prompt.addEventListener('input', () => { t.prompt = prompt.value; dirty(); });
-  const close = () => { ui.editingTask = null; ui.editingDirty = false; renderTaskForm(); };
-
-  const form = h('form', { class: 'card form', onSubmit: async (e) => {
-    e.preventDefault();
-    if (!t.prompt.trim()) { prompt.focus(); return; }
-    await api.saveTask({ id: t.id, name: t.name, time: t.time, prompt: t.prompt, cwd: t.cwd });
-    close();
-  } },
-  h('h2', { class: 'full', text: t.id ? 'Aufgabe bearbeiten' : 'Neue Aufgabe' }),
-  h('div', { class: 'field' }, h('label', { for: 'task-name', text: 'Name' }), name),
-  h('div', { class: 'field' }, h('label', { for: 'task-time', text: 'Uhrzeit' }), time),
-  h('div', { class: 'field full' }, h('span', { class: 'label', text: 'Projekt' }),
-    h('div', { class: 'folder' }, folderLabel,
-      h('button', { type: 'button', class: 'btn ghost', onClick: async () => {
-        const dir = await api.pickFolder();
-        if (dir) { t.cwd = dir; folderLabel.textContent = dir; dirty(); }
-      } }, 'Ordner wählen'))),
-  h('div', { class: 'field full' }, h('label', { for: 'task-prompt', text: 'Auftrag an Claude' }), prompt,
-    h('span', { class: 'hint', text: 'Claude darf Dateien im gewählten Projektordner ohne Rückfrage bearbeiten. Ohne Projektordner und für alles andere fragt die Zentrale dich vorher.' })),
-  h('div', { class: 'actions full' },
-    t.id ? h('button', { type: 'button', class: 'btn danger', onClick: async () => {
-      if (!confirm(`„${t.name || 'Aufgabe'}“ löschen?`)) return;
-      await api.removeTask(t.id);
-      close();
-    } }, 'Löschen') : null,
-    h('span', { class: 'spacer' }),
-    h('button', { type: 'button', class: 'btn ghost', onClick: close }, 'Abbrechen'),
-    h('button', { type: 'submit', class: 'btn' }, 'Speichern')));
-  fill(box, form);
-  name.focus();
-}
-
-// ---------- Verbindungen ----------
-
-const STATUS_LABEL = { connected: 'verbunden', auth: 'Anmeldung nötig', failed: 'Fehler', off: 'nicht eingerichtet', unknown: 'unbekannt' };
-const STATUS_PILL = { connected: 'green', auth: 'amber', failed: 'red', off: '', unknown: '' };
-
-function findConnection(re) {
-  return (ui.connections || []).filter((c) => re.test(c.name));
-}
-
-async function loadConnections() {
-  if (ui.connectionsLoading) return;
-  ui.connectionsLoading = true;
-  if (ui.view === 'connections') renderConnections();
-  try { ui.connections = (await api.listConnections()) || []; } catch { ui.connections = []; }
-  ui.connectionsLoading = false;
-  if (ui.view === 'connections') renderConnections();
-}
-
-async function setConnection(key, value) {
-  const res = await api.updateSettings({ connections: { [key]: value } });
-  if (res && res.applied === false) ui.notice = 'Gespeichert. Claude arbeitet gerade – die neue Verbindung gilt, sobald er fertig ist und du die nächste Nachricht schickst.';
-  else if (res && res.interrupted) ui.notice = 'Verbindung getrennt. Claude wurde dafür neu gestartet; eine laufende Antwort wurde abgebrochen.';
-  else ui.notice = null;
-  ui.todayAt = 0;
-  renderConnections();
-}
-
-function connSwitch(key, label, disabled) {
-  const on = !!settings().connections[key];
-  return h('button', { class: 'switch', role: 'switch', 'aria-checked': String(on), 'aria-label': label, disabled,
-    'data-focus': `conn:${key}`, onClick: () => setConnection(key, !on) });
-}
-
-function statusPill(items, fallback) {
-  if (ui.connectionsLoading && !ui.connections) return h('span', { class: 'pill', text: 'wird geprüft …' });
-  if (!items.length) return h('span', { class: 'pill', text: fallback });
-  const best = items.find((c) => c.status === 'connected') || items[0];
-  return h('span', { class: `pill ${STATUS_PILL[best.status]}`, text: STATUS_LABEL[best.status] });
-}
-
-function connCard({ icon, title, text, right, extra }) {
-  return h('div', { class: 'card conn' },
-    h('div', { class: 'conn-head' },
-      h('span', { class: 'conn-icon', 'aria-hidden': 'true', text: icon }),
-      h('div', { class: 'grow' }, h('div', { class: 'name', text: title }), h('div', { class: 'sub', text })),
-      right),
-    extra);
-}
-
-function macTestResult() {
-  const r = ui.macTest;
-  if (!r) return null;
-  if (r.error) return h('div', { class: 'sub warn', text: r.error });
-  const line = (label, x) => h('li', { class: x && x.ok ? '' : 'warn' }, `${label}: `, x && x.ok ? 'funktioniert' : (x ? x.error : '…'));
-  return h('ul', { class: 'today-list' }, line('Kalender', r.calendar), line('Erinnerungen', r.reminders), line('Mitteilungen', r.notify));
-}
-
-function renderConnections() {
-  const s = ui.state;
-  const mac = isMac();
-  const gmail = findConnection(/gmail/i);
-  const m365 = findConnection(/microsoft|outlook|m365|office/i);
-  const others = (ui.connections || []).filter((c) => !/gmail|microsoft|outlook|m365|office/i.test(c.name));
-  const conn = settings().connections;
-  const link = (url, label) => h('button', { class: 'btn ghost', onClick: () => api.openExternal(url) }, label);
-
-  keepFocus(() => fill($('#main'),
-    h('div', { class: 'section-head wrap' },
-      h('h1', { text: 'Verbindungen' }), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn ghost', 'data-focus': 'conn-refresh', disabled: ui.connectionsLoading || !s.claude.found, onClick: loadConnections },
-        ui.connectionsLoading ? 'Wird geprüft …' : 'Status prüfen')),
-    h('p', { class: 'date', text: 'Hier verbindest du Claude mit deinem Mac und deinen Konten. Lesen geht ohne Rückfrage – bevor Claude etwas sendet, anlegt, öffnet oder löscht, fragt die Zentrale dich.' }),
-    ui.notice ? h('div', { class: 'notice', text: ui.notice }) : null,
-
-    connCard({ icon: '⌘', title: 'Mein Mac',
-      text: 'Kalender, Erinnerungen, Notizen, Apple Mail, Outlook-App, Dateisuche – und jede andere App per AppleScript.',
-      right: connSwitch('mac', 'Mac verbinden', !mac),
-      extra: !mac ? h('div', { class: 'sub warn', text: 'Das geht nur auf dem Mac.' }) : conn.mac ? h('div', { class: 'conn-extra' },
-        h('div', { class: 'actions' },
-          h('button', { class: 'btn ghost', 'data-focus': 'mac-test', onClick: async () => { ui.macTest = {}; renderConnections(); ui.macTest = await api.macTest(); renderConnections(); } }, 'Zugriff testen'),
-          link('x-apple.systempreferences:com.apple.preference.security?Privacy_Automation', 'Mac-Rechte öffnen')),
-        h('div', { class: 'sub', text: 'Beim ersten Zugriff fragt macOS, ob die Zentrale die jeweilige App steuern darf. Bitte jeweils „OK“ klicken.' }),
-        macTestResult()) : null }),
-
-    connCard({ icon: 'G', title: 'Gmail',
-      text: 'Über deine claude.ai-Verbindung: Mails lesen, zusammenfassen, Entwürfe schreiben.',
-      right: statusPill(gmail, ui.connections ? 'nicht verbunden' : '–'),
-      extra: h('div', { class: 'conn-extra' },
-        h('div', { class: 'sub', text: 'Verbinde Gmail einmal auf claude.ai unter „Connectors“ – danach steht es hier automatisch zur Verfügung. Alternativ: Gmail im Browser über Chrome.' }),
-        h('div', { class: 'actions' }, link('https://claude.ai/settings/connectors', 'Auf claude.ai verbinden'))) }),
-
-    connCard({ icon: 'O', title: 'Outlook',
-      text: 'Drei Wege – nimm, was zu dir passt:',
-      right: null,
-      extra: h('ul', { class: 'ways' },
-        h('li', {}, h('strong', { text: 'Outlook-App: ' }), 'über „Mein Mac“ (klassisches Outlook). ',
-          h('span', { class: `pill ${conn.mac && mac ? 'green' : ''}`, text: conn.mac && mac ? 'aktiv' : 'aus' })),
-        h('li', {}, h('strong', { text: 'Outlook im Browser: ' }), 'über Chrome (outlook.com oder Microsoft 365 im Web). ',
-          h('span', { class: `pill ${conn.chrome ? 'green' : ''}`, text: conn.chrome ? 'aktiv' : 'aus' })),
-        h('li', {}, h('strong', { text: 'Microsoft 365: ' }), 'claude.ai-Verbindung, nur mit Firmenkonto. ',
-          statusPill(m365, ui.connections ? 'nicht verbunden' : '–'))) }),
-
-    connCard({ icon: '◎', title: 'Chrome',
-      text: 'Claude öffnet und bedient Webseiten in deinem Chrome – z. B. Outlook oder Gmail im Browser.',
-      right: connSwitch('chrome', 'Chrome verbinden', false),
-      extra: h('div', { class: 'conn-extra' },
-        h('div', { class: 'sub', text: 'Dafür brauchst du die Chrome-Erweiterung „Claude in Chrome“ und musst in ihr angemeldet sein. Diese Verbindung ist neu – falls sie hakt, sag mir Bescheid.' }),
-        h('div', { class: 'actions' }, link('https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn', 'Erweiterung installieren'))) }),
-
-    h('section', { class: 'section' },
-      h('div', { class: 'section-head' }, h('h2', { text: 'Weitere Verbindungen' })),
-      !ui.connections
-        ? h('div', { class: 'card empty', text: ui.connectionsLoading ? 'Wird geprüft …' : 'Klick auf „Status prüfen“.' })
-        : others.length
-          ? h('div', { class: 'card list' }, others.map((c) => h('div', { class: 'row' },
-            h('div', { class: 'grow' }, h('div', { class: 'title', text: c.name }), h('div', { class: 'sub', text: c.statusText })),
-            h('span', { class: `pill ${STATUS_PILL[c.status]}`, text: STATUS_LABEL[c.status] }))))
-          : h('div', { class: 'card empty', text: 'Keine weiteren Verbindungen eingerichtet.' }))));
-}
-
 // ---------- Seitenleiste rechts ----------
 
 function renderAside() {
@@ -835,6 +668,8 @@ function renderMain() {
   if (ui.view === 'overview') renderOverview(true);
   else if (ui.view === 'chat') renderChat();
   else if (ui.view === 'connections') { renderConnections(); if (!ui.connections) loadConnections(); }
+  else if (ui.view === 'library') renderLibrary();
+  else if (ui.view === 'mac') renderMac();
   else renderTasks();
 }
 
@@ -861,6 +696,10 @@ function applyState(s) {
     else { updateChatHead(); renderMessages(); }
   } else if (ui.view === 'connections') {
     if (changed('connView', [settings(), s.claude.found])) renderConnections();
+  } else if (ui.view === 'library') {
+    renderRunning();
+  } else if (ui.view === 'mac') {
+    // „Mein Mac“ lädt seine Daten selbst.
   } else {
     const addBtn = $('#add-task');
     if (addBtn) addBtn.disabled = !s.claude.found;

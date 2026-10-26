@@ -1,13 +1,17 @@
 // Hauptprozess: öffnet das Fenster, startet Claude automatisch und hält alles synchron.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { resolveClaude, ClaudeChat, runTask, stopAllTasks, listMcpServers } = require('./claude');
+const { resolveClaude, ClaudeChat, runTask, stopAllTasks, listMcpServers, permissionModeFor } = require('./claude');
 const { listProjects, readMessages, watchSessions, shortTitle, DEFAULT_ROOT } = require('./sessions');
 const { TaskScheduler } = require('./tasks');
 const { Settings } = require('./settings');
 const mac = require('./mac');
+const { TopicStore, groupByTopic, TOPICS } = require('./categories');
+const { desktopMeta } = require('./desktop-meta');
+const library = require('./library');
+const files = require('./files');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 
 // Links, die die Oberfläche öffnen darf.
@@ -15,7 +19,11 @@ const EXTERNAL_LINKS = new Set([
   'https://claude.ai/settings/connectors',
   'https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
+  'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
 ]);
+
+// So frisch geschriebene Gespräche benutzt vermutlich gerade ein anderes Claude-Fenster.
+const IN_USE_MS = 2 * 60 * 1000;
 
 // Nur eine Zentrale gleichzeitig, sonst liefen tägliche Aufgaben doppelt.
 if (!app.requestSingleInstanceLock()) {
@@ -31,6 +39,8 @@ function setup() {
   let chatGen = 0;
   let scheduler = null;
   let settings = null;
+  let topicStore = null;
+  const iconCache = new Map();
   let sessionWatcher = null;
   let projectsCache = [];
   let quitting = false;
@@ -47,8 +57,28 @@ function setup() {
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
   }
 
+  // Jede Sitzung bekommt ihr Thema; der Textausschnitt dafür bleibt im Hauptprozess.
+  // Titel, Archiv-Status und geplante Läufe kommen aus der Claude-App, sofern sie das Gespräch kennt.
+  function withDesktopMeta(projects) {
+    let meta;
+    try { meta = desktopMeta(); } catch { meta = new Map(); }
+    const generic = /^(wir setzen eine arbeit fort|unten steht der verlauf|ohne titel)/i;
+    return projects.map((p) => ({ ...p, sessions: p.sessions.map((x) => {
+      const m = meta.get(x.id);
+      if (!m) return x;
+      const title = m.title && !generic.test(m.title) ? m.title : x.title;
+      return { ...x, title, archived: m.archived, scheduled: m.scheduled };
+    }) }));
+  }
+
   function refreshProjects() {
-    try { projectsCache = listProjects(); } catch { projectsCache = []; }
+    try {
+      const raw = withDesktopMeta(listProjects());
+      const topicOf = new Map();
+      for (const g of groupByTopic(raw, topicStore)) for (const x of g.sessions) topicOf.set(x.id, x);
+      projectsCache = raw.map((p) => ({ ...p, sessions: p.sessions.map(({ snippet, ...x }) => ({
+        ...x, topic: topicOf.get(x.id).topic, topicManual: topicOf.get(x.id).topicManual })) }));
+    } catch { projectsCache = []; }
     return projectsCache;
   }
 
@@ -69,6 +99,7 @@ function setup() {
     return {
       claude: { found: !!claude.bin, checking: claude.checking, version: claude.version },
       projects: projectsCache,
+      topics: TOPICS,
       chat: chatInfo(),
       tasks: scheduler ? scheduler.list() : [],
       approvals: approvals(),
@@ -302,6 +333,123 @@ function setup() {
     return { calendar, reminders, notify };
   });
 
+  // ---------- Themen und Löschen ----------
+
+  ipcMain.handle('session-topic', (_e, args) => {
+    const ids = Array.isArray(args && args.ids) ? args.ids.filter((x) => typeof x === 'string') : [];
+    const topic = args && typeof args.topic === 'string' ? args.topic : null;
+    if (!ids.length) return false;
+    topicStore.set(ids, topic);
+    refreshProjects();
+    pushState();
+    return true;
+  });
+
+  // Gespräche wandern in den Papierkorb (wiederherstellbar), samt Ordner für Unteragenten und Anhänge.
+  ipcMain.handle('sessions-trash', async (_e, args) => {
+    const ids = Array.isArray(args && args.ids) ? args.ids.filter((x) => typeof x === 'string') : [];
+    const result = { trashed: 0, skipped: [] };
+    const gone = [];
+    for (const id of ids) {
+      const s = findSession(id);
+      if (!s) continue;
+      const ours = !!chat && chat.sessionId === id;
+      if (ours && chat.status === 'busy') { result.skipped.push({ title: s.title, reason: 'Claude arbeitet gerade daran.' }); continue; }
+      if (!ours && Date.now() - s.updatedAt < IN_USE_MS) {
+        result.skipped.push({ title: s.title, reason: 'Wird gerade in einem anderen Claude-Fenster benutzt.' });
+        continue;
+      }
+      if (ours) { const c = chat; chat = null; await c.dispose(); }
+      try {
+        await shell.trashItem(s.file);
+        const extra = s.file.replace(/\.jsonl$/, '');
+        if (isDir(extra)) await shell.trashItem(extra);
+        result.trashed += 1;
+        gone.push(id);
+      } catch (e) {
+        result.skipped.push({ title: s.title, reason: e.message });
+      }
+    }
+    if (gone.length) topicStore.forget(gone);
+    refreshProjects();
+    pushState();
+    return result;
+  });
+
+  // Den Ordner eines Projekts in den Papierkorb – nur echte Projektordner, nie Benutzer- oder Systemordner.
+  ipcMain.handle('project-folder-trash', async (_e, dir) => {
+    if (!isDir(dir)) return { ok: false, error: 'Diesen Ordner gibt es nicht.' };
+    const p = path.resolve(dir);
+    if (files.isProtected(p) || permissionModeFor(p) !== 'acceptEdits') {
+      return { ok: false, error: 'Dieser Ordner ist geschützt und kann über die Zentrale nicht gelöscht werden.' };
+    }
+    if (chat && (chat.cwd === p || chat.cwd.startsWith(p + path.sep))) {
+      if (chat.status === 'busy') return { ok: false, error: 'Claude arbeitet gerade in diesem Ordner.' };
+      const c = chat; chat = null; await c.dispose();
+    }
+    try { await shell.trashItem(p); } catch (e) { return { ok: false, error: e.message }; }
+    pushState();
+    return { ok: true };
+  });
+
+  // ---------- Bibliothek: Skills, Befehle, Plugins, Agenten ----------
+
+  ipcMain.handle('library', () => library.library());
+
+  ipcMain.handle('agent-toggle', (_e, args) => library.setAgentActive(args && args.id, !!(args && args.active)));
+
+  ipcMain.handle('running-work', () => {
+    const work = library.runningWork((id) => { const s = findSession(id); return s ? s.title : null; });
+    const ownId = chat && chat.sessionId;
+    return { ...work, sessions: work.sessions.filter((x) => x.id !== ownId) };
+  });
+
+  // ---------- Mein Mac: Apps und Ordner ----------
+
+  // Für Apps liefert nur die Vorschau-Funktion von macOS das echte Symbol; getFileIcon gibt dort ein Platzhalter-Bild.
+  async function iconFor(p) {
+    if (iconCache.has(p)) return iconCache.get(p);
+    let url = null;
+    if (process.platform === 'darwin') {
+      try { url = (await nativeImage.createThumbnailFromPath(p, { width: 96, height: 96 })).toDataURL(); } catch {}
+    }
+    if (!url) try { url = (await app.getFileIcon(p, { size: 'normal' })).toDataURL(); } catch {}
+    iconCache.set(p, url);
+    return url;
+  }
+
+  ipcMain.handle('mac-apps', async () => {
+    const list = files.listApps();
+    return Promise.all(list.map(async (a) => ({ ...a, icon: await iconFor(a.path) })));
+  });
+
+  ipcMain.handle('fs-favorites', () => {
+    const temp = /^\/(private\/)?(tmp|var\/folders)\//;
+    const projects = projectsCache.filter((p) => isDir(p.path) && p.path !== os.homedir() && !temp.test(`${p.path}/`)).slice(0, 8)
+      .map((p) => ({ name: p.name, path: p.path }));
+    return { places: files.favorites(), projects };
+  });
+
+  ipcMain.handle('fs-list', (_e, args) => files.listDir(args && args.path, { hidden: !!(args && args.hidden) }));
+
+  ipcMain.handle('fs-icon', (_e, p) => (files.validPath(p) ? iconFor(p) : null));
+
+  ipcMain.handle('fs-open', async (_e, p) => {
+    if (!files.validPath(p) || !fs.existsSync(p)) return { ok: false, error: 'Nicht gefunden.' };
+    const err = await shell.openPath(p);
+    return err ? { ok: false, error: err } : { ok: true };
+  });
+
+  ipcMain.handle('fs-reveal', (_e, p) => { if (files.validPath(p)) shell.showItemInFolder(p); });
+
+  ipcMain.handle('fs-trash', async (_e, p) => {
+    if (!files.validPath(p) || !fs.existsSync(p)) return { ok: false, error: 'Nicht gefunden.' };
+    if (files.isProtected(p)) return { ok: false, error: 'Dieser Ordner ist geschützt.' };
+    try { await shell.trashItem(p); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
+  });
+
+  ipcMain.handle('fs-search', (_e, q) => (typeof q === 'string' ? mac.spotlight(q, 60) : { ok: false, error: 'Suchbegriff fehlt.' }));
+
   ipcMain.handle('open-external', (_e, url) => {
     if (typeof url === 'string' && EXTERNAL_LINKS.has(url)) shell.openExternal(url);
   });
@@ -314,6 +462,7 @@ function setup() {
 
   app.whenReady().then(async () => {
     settings = new Settings(path.join(app.getPath('userData'), 'settings.json'));
+    topicStore = new TopicStore(path.join(app.getPath('userData'), 'topics.json'));
     nativeTheme.themeSource = settings.get().theme;
     writeMacConfig();
     refreshProjects();
