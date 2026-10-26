@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<title>Zentrale</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="backdrop" aria-hidden="true"><span class="blob b1"></span><span class="blob b2"></span></div>
+<div class="window">
+  <header class="titlebar">
+    <div class="titlebar-name">Zentrale</div>
+    <div class="spacer"></div>
+    <div id="claude-status" class="status-pill" role="status"></div>
+    <label class="search">
+      <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <span class="sr-only">Suchen</span>
+      <input id="search" type="search" placeholder="Projekte und Sitzungen suchen …" autocomplete="off">
+    </label>
+  </header>
+
+  <div class="body">
+    <nav class="sidebar" aria-label="Hauptmenü">
+      <button class="nav-item" data-view="overview">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>
+        Übersicht
+      </button>
+      <button class="nav-item" data-view="chat">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat
+      </button>
+      <button class="nav-item" data-view="tasks">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        Tägliche Aufgaben
+      </button>
+    </nav>
+
+    <main id="main" class="main"></main>
+
+    <aside class="aside" aria-label="Agenten und Aufgaben">
+      <section>
+        <div class="section-head"><h2>Agenten</h2></div>
+        <div id="agents"></div>
+      </section>
+      <section>
+        <div class="section-head"><h2>Tägliche Aufgaben</h2><button class="link" id="aside-new-task">+ Neu</button></div>
+        <div id="aside-tasks"></div>
+      </section>
+      <div class="spacer"></div>
+      <section>
+        <h2>Schnell fragen</h2>
+        <form id="quick-form" class="composer small">
+          <label for="quick-input" class="sr-only">Nachricht an Claude</label>
+          <input id="quick-input" type="text" placeholder="Frag Claude …" autocomplete="off">
+          <button type="submit" class="send" aria-label="Senden">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+        </form>
+      </section>
+    </aside>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

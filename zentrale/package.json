@@ -1,0 +1,31 @@
+{
+  "name": "zentrale",
+  "productName": "Zentrale",
+  "version": "0.1.0",
+  "description": "Deine Kommandozentrale für Claude Code: Projekte, Sitzungen, Agenten und tägliche Aufgaben im Milchglas-Look.",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "dist": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "de.werkstatt.zentrale",
+    "productName": "Zentrale",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg"
+      ]
+    }
+  }
+}
