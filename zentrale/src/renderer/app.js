@@ -226,11 +226,20 @@ function needTodayRefresh() {
   return isMac() && settings().connections.mac && !ui.todayLoading && Date.now() - ui.todayAt > 5 * 60000;
 }
 
+// Beim ersten Laden und auf Knopfdruck dürfen Kalender und Erinnerungen gestartet werden;
+// die automatische Aktualisierung fragt nur Apps ab, die schon laufen, und behält sonst den alten Stand.
 async function loadToday(force) {
   if (!force && !needTodayRefresh()) return;
+  const launch = force || !ui.today;
   ui.todayLoading = true;
   ui.todayAt = Date.now();
-  try { ui.today = await api.macToday(); } catch { ui.today = null; }
+  let fresh = null;
+  try { fresh = await api.macToday(launch); } catch {}
+  if (fresh) {
+    const old = ui.today || {};
+    for (const key of Object.keys(fresh)) if (fresh[key] && fresh[key].notRunning && old[key]) fresh[key] = old[key];
+  }
+  ui.today = fresh;
   ui.todayLoading = false;
   if (ui.view === 'overview') renderOverview(true);
 }
@@ -244,6 +253,7 @@ function todayCard(title, res, renderItems, emptyText) {
   let body;
   if (!res) body = h('div', { class: 'sub', text: 'Lädt …' });
   else if (!res.ok) body = h('div', { class: 'sub warn', text: res.error });
+  else if (res.notRunning) body = h('div', { class: 'sub', text: 'Die App ist geschlossen. „Aktualisieren“ öffnet sie.' });
   else {
     const items = renderItems(res.data);
     body = items.length ? h('ul', { class: 'today-list' }, items) : h('div', { class: 'sub', text: emptyText });

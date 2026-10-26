@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   runTask: (id) => ipcRenderer.invoke('tasks-run', id),
   updateSettings: (patch) => ipcRenderer.invoke('settings-update', patch),
   listConnections: () => ipcRenderer.invoke('connections-list'),
-  macToday: () => ipcRenderer.invoke('mac-today'),
+  macToday: (launch) => ipcRenderer.invoke('mac-today', { launch: launch === true }),
   macTest: () => ipcRenderer.invoke('mac-test'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   onState: (fn) => ipcRenderer.on('state', (_e, s) => fn(s)),

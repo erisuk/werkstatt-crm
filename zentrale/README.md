@@ -35,6 +35,20 @@ npm run dist
 
 Danach liegt die Installationsdatei in `dist/`. Öffnen, Zentrale in den Programme-Ordner ziehen, fertig. Die App ist nicht von Apple signiert: beim ersten Start **Rechtsklick → Öffnen → Öffnen**.
 
+Meldet macOS, die App sei „beschädigt“, entferne einmal die Download-Markierung:
+
+```bash
+xattr -cr /Applications/Zentrale.app
+```
+
+Nach einem Neubau der App kennt macOS sie nicht wieder und die Mac-Rechte greifen nicht mehr („darf … noch nicht steuern“), obwohl der Schalter in den Systemeinstellungen an ist. Dann einmal zurücksetzen und neu erlauben:
+
+```bash
+tccutil reset AppleEvents de.werkstatt.zentrale
+```
+
+Startest du die Zentrale mit `npm start` aus dem Terminal, fragt macOS die Rechte für „Terminal“ ab, nicht für „Zentrale“ – das ist normal.
+
 ## Verbindungen einrichten
 
 Alles unter **Verbindungen** in der Seitenleiste:
@@ -52,7 +66,8 @@ Alles unter **Verbindungen** in der Seitenleiste:
 - Claude darf Dateien im Projektordner ohne Rückfrage bearbeiten. Alles andere läuft über die Freigaben. „Immer erlauben“ gilt nur für das aktuelle Gespräch – und bei Befehlen nur für genau diesen Befehl.
 - Tägliche Aufgaben laufen, solange die Zentrale geöffnet ist. War sie zur Uhrzeit geschlossen, läuft die Aufgabe, sobald du die Zentrale am selben Tag öffnest.
 - Es kann immer nur eine Zentrale gleichzeitig laufen.
-- Wiederkehrende Kalendertermine zeigt der Mac-Kalender per Skript nur eingeschränkt an; im Zweifel frag Claude („Was steht heute an?“).
+- Terminserien (z. B. „jeden Montag“) rechnet die Zentrale selbst aus, weil der Mac-Kalender per Skript nur den ersten Termin einer Serie liefert. Einzeln verschobene Termine einer Serie können dabei an der alten Stelle erscheinen.
+- Die automatische Aktualisierung der Heute-Ansicht öffnet keine Apps. Sind Kalender oder Erinnerungen geschlossen, öffnet sie erst „Aktualisieren“.
 
 ## Entwicklung
 
@@ -65,6 +80,7 @@ npm test   # Tests für Gespräche, Aufgaben, Freigaben, Mac-Anbindung und Einst
 | `src/main.js` | Fenster, startet Claude, Freigaben, Verbindungen |
 | `src/claude.js` | Spricht mit Claude Code (stream-json, Freigabe-Protokoll) |
 | `src/mac.js` | Steuert Mac-Apps per JavaScript for Automation |
+| `src/recurrence.js` | Rechnet Terminserien aus |
 | `src/mcp/mac-server.js` | Stellt die Mac-Werkzeuge Claude als MCP-Server bereit |
 | `src/sessions.js` | Liest die Gespräche aus `~/.claude/projects` |
 | `src/tasks.js` | Plant und speichert tägliche Aufgaben |

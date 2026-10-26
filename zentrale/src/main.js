@@ -276,16 +276,21 @@ function setup() {
     return listMcpServers({ bin: claude.bin, env: claude.env, cwd: os.homedir() });
   });
 
-  ipcMain.handle('mac-today', async () => {
+  // launch: true nur, wenn du selbst aktualisierst – sonst öffnen sich keine Apps ungefragt.
+  ipcMain.handle('mac-today', async (_e, args) => {
     if (process.platform !== 'darwin' || !settings.get().connections.mac) return null;
-    return mac.today();
+    return mac.today({ launch: !!(args && args.launch === true) });
   });
 
-  // Fragt die Mac-Rechte für Kalender, Erinnerungen und Mitteilungen einmal gezielt ab.
+  // Fragt die Mac-Rechte für Kalender und Erinnerungen einmal gezielt ab und schickt eine Probe-Mitteilung.
   ipcMain.handle('mac-test', async () => {
     if (process.platform !== 'darwin') return { error: 'Das geht nur auf dem Mac.' };
-    const [calendar, reminders, notify] = await Promise.all([
-      mac.calendarEvents(1), mac.reminders(), mac.notify('Zentrale', 'Die Verbindung zum Mac funktioniert.')]);
+    const [calendar, reminders] = await Promise.all([mac.calendarEvents(1), mac.reminders()]);
+    let notify = { ok: false, error: 'Mitteilungen sind ausgeschaltet. Erlaube sie unter Systemeinstellungen → Mitteilungen → Zentrale.' };
+    if (Notification.isSupported()) {
+      new Notification({ title: 'Zentrale', body: 'Die Verbindung zum Mac funktioniert.' }).show();
+      notify = { ok: true };
+    }
     return { calendar, reminders, notify };
   });
 

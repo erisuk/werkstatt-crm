@@ -1,5 +1,6 @@
 // MCP-Server "mac": gibt Claude Werkzeuge für Kalender, Erinnerungen, Notizen, Mail, Outlook,
 // Spotlight und AppleScript. Spricht JSON-RPC 2.0 zeilenweise über stdin/stdout.
+// Mitteilungen schickt die Zentrale selbst; per osascript erschienen sie als "Skripteditor".
 const readline = require('readline');
 const mac = require('../mac');
 
@@ -41,10 +42,6 @@ const TOOLS = [
     description: 'Sucht Dateien auf dem Mac mit Spotlight und gibt bis zu 30 Pfade zurück.',
     inputSchema: { type: 'object', required: ['query'], properties: { query: str('Suchbegriff oder Spotlight-Abfrage') } },
     run: (a) => mac.spotlight(a.query) },
-  { name: 'notify', readOnly: true,
-    description: 'Zeigt eine Mitteilung oben rechts auf dem Mac an.',
-    inputSchema: { type: 'object', required: ['message'], properties: { title: str('Überschrift'), message: str('Text') } },
-    run: (a) => mac.notify(a.title, a.message) },
   { name: 'open', readOnly: false,
     description: 'Öffnet eine Webadresse, eine Datei (Pfad) oder eine App (App-Name) auf dem Mac.',
     inputSchema: { type: 'object', required: ['target'], properties: { target: str('URL, Pfad oder App-Name, z. B. "Microsoft Outlook"') } },

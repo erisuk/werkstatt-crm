@@ -23,6 +23,7 @@
     ],
     "asarUnpack": [
       "src/mac.js",
+      "src/recurrence.js",
       "src/mcp/**"
     ],
     "mac": {
@@ -31,10 +32,10 @@
         "dmg"
       ],
       "extendInfo": {
-        "NSAppleEventsUsageDescription": "Die Zentrale steuert auf deinen Wunsch Kalender, Erinnerungen, Notizen, Mail und Outlook.",
-        "NSCalendarsUsageDescription": "Die Zentrale zeigt deine heutigen Termine an.",
-        "NSRemindersUsageDescription": "Die Zentrale zeigt deine offenen Erinnerungen an."
-      }
+        "NSAppleEventsUsageDescription": "Die Zentrale steuert auf deinen Wunsch Kalender, Erinnerungen, Notizen, Mail und Outlook."
+      },
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     }
   }
 }

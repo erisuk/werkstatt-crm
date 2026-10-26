@@ -1,25 +1,115 @@
-// Tests für die Mac-Anbindung mit nachgebildetem osascript.
+// Tests für die Mac-Anbindung mit nachgebildetem osascript und mdfind.
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
 const readline = require('readline');
 
+const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'osa-'));
+const LOG = path.join(DIR, 'osa.log');
 process.env.ZENTRALE_OSASCRIPT = path.join(__dirname, 'fake-osascript.js');
-const LOG = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'osa-')), 'osa.log');
 process.env.FAKE_OSA_LOG = LOG;
+// mdfind-Nachbildung: gibt endlos Pfade aus, damit das Abbrechen nach 30 Treffern geprüft wird.
+const MDFIND = path.join(DIR, 'mdfind');
+fs.writeFileSync(MDFIND, '#!/bin/sh\necho "ARGS:$*"\ni=0; while true; do i=$((i+1)); echo "/Users/test/Datei$i.txt"; done\n');
+fs.chmodSync(MDFIND, 0o755);
+process.env.ZENTRALE_MDFIND = MDFIND;
 
 const test = require('node:test');
 const assert = require('node:assert');
 const mac = require('../src/mac');
+const { occurrences, parseUntil, nthWeekday } = require('../src/recurrence');
 const { TOOLS, READ_ONLY_TOOLS } = require('../src/mcp/mac-server');
 
-test('Kalender und Erinnerungen werden gelesen', async () => {
-  const cal = await mac.calendarEvents(1);
+const MONDAY = new Date(2026, 9, 26, 12, 0); // Montag, 26.10.2026
+
+// ---------- Serientermine ----------
+
+const day = (y, m, d) => new Date(y, m - 1, d);
+const at = (y, m, d, h = 0, mi = 0) => new Date(y, m - 1, d, h, mi);
+const starts = (list) => list.map((o) => `${o.start.getDate()}.${o.start.getMonth() + 1}. ${o.start.getHours()}:${String(o.start.getMinutes()).padStart(2, '0')}`);
+
+test('wöchentliche Serie erscheint an den richtigen Tagen', () => {
+  const master = { start: at(2026, 1, 5, 10), end: at(2026, 1, 5, 11) };
+  assert.deepStrictEqual(starts(occurrences(master, 'FREQ=WEEKLY;BYDAY=MO', day(2026, 10, 26), day(2026, 10, 27))), ['26.10. 10:00']);
+  assert.deepStrictEqual(occurrences(master, 'FREQ=WEEKLY;BYDAY=MO', day(2026, 10, 27), day(2026, 10, 28)), []);
+  assert.deepStrictEqual(starts(occurrences(master, 'FREQ=WEEKLY;BYDAY=MO,WE', day(2026, 10, 26), day(2026, 11, 2))), ['26.10. 10:00', '28.10. 10:00']);
+  assert.deepStrictEqual(occurrences(master, 'FREQ=WEEKLY;INTERVAL=2;BYDAY=MO', day(2026, 1, 12), day(2026, 1, 13)), []);
+  assert.strictEqual(occurrences(master, 'FREQ=WEEKLY;INTERVAL=2;BYDAY=MO', day(2026, 1, 19), day(2026, 1, 20)).length, 1);
+});
+
+test('Serie über die Zeitumstellung behält die Uhrzeit', () => {
+  const master = { start: at(2026, 3, 2, 9), end: at(2026, 3, 2, 10) };
+  assert.deepStrictEqual(starts(occurrences(master, 'FREQ=DAILY', day(2026, 3, 30), day(2026, 3, 31))), ['30.3. 9:00']);
+});
+
+test('tägliche, monatliche und jährliche Serien', () => {
+  const m = { start: at(2026, 1, 31, 8), end: at(2026, 1, 31, 9) };
+  assert.strictEqual(occurrences(m, 'FREQ=DAILY;INTERVAL=3', day(2026, 2, 3), day(2026, 2, 4)).length, 1);
+  assert.strictEqual(occurrences(m, 'FREQ=DAILY;INTERVAL=3', day(2026, 2, 4), day(2026, 2, 5)).length, 0);
+  // Am 31. gibt es im Februar keinen Termin
+  assert.deepStrictEqual(starts(occurrences(m, 'FREQ=MONTHLY', day(2026, 2, 1), day(2026, 4, 1))), ['31.3. 8:00']);
+  const second = { start: at(2026, 1, 13, 18), end: at(2026, 1, 13, 19) }; // 2. Dienstag
+  assert.deepStrictEqual(starts(occurrences(second, 'FREQ=MONTHLY;BYDAY=2TU', day(2026, 10, 1), day(2026, 11, 1))), ['13.10. 18:00']);
+  const last = { start: at(2026, 1, 30, 15), end: at(2026, 1, 30, 16) };
+  assert.deepStrictEqual(starts(occurrences(last, 'FREQ=MONTHLY;BYDAY=-1FR', day(2026, 10, 1), day(2026, 11, 1))), ['30.10. 15:00']);
+  const bday = { start: at(2020, 10, 26, 0), end: at(2020, 10, 27, 0) };
+  assert.strictEqual(occurrences(bday, 'FREQ=YEARLY', day(2026, 10, 26), day(2026, 10, 27)).length, 1);
+});
+
+test('Ende, Anzahl und ausgenommene Tage werden beachtet', () => {
+  const master = { start: at(2026, 10, 5, 10), end: at(2026, 10, 5, 11) };
+  assert.strictEqual(occurrences(master, 'FREQ=WEEKLY;COUNT=3', day(2026, 10, 19), day(2026, 10, 20)).length, 1);
+  assert.strictEqual(occurrences(master, 'FREQ=WEEKLY;COUNT=3', day(2026, 10, 26), day(2026, 10, 27)).length, 0);
+  assert.strictEqual(occurrences(master, 'FREQ=WEEKLY;UNTIL=20261019', day(2026, 10, 26), day(2026, 10, 27)).length, 0);
+  assert.strictEqual(occurrences(master, 'FREQ=WEEKLY;UNTIL=20261026T235959Z', day(2026, 10, 26), day(2026, 10, 27)).length, 1);
+  assert.strictEqual(occurrences(master, 'FREQ=WEEKLY', day(2026, 10, 26), day(2026, 10, 27), [at(2026, 10, 26, 10).toISOString()]).length, 0);
+});
+
+test('mehrtägige Termine und unbekannte Regeln', () => {
+  const trip = { start: at(2026, 10, 25, 18), end: at(2026, 10, 27, 12) };
+  assert.strictEqual(occurrences(trip, 'FREQ=YEARLY', day(2026, 10, 26), day(2026, 10, 27)).length, 1);
+  assert.deepStrictEqual(occurrences(trip, 'FREQ=SECONDLY', day(2026, 10, 26), day(2026, 10, 27)), []);
+  assert.deepStrictEqual(occurrences({ start: 'kaputt', end: 'x' }, 'FREQ=DAILY', day(2026, 1, 1), day(2026, 1, 2)), []);
+});
+
+test('Hilfsfunktionen für Regeln', () => {
+  assert.strictEqual(nthWeekday(2026, 9, 2, 2), 13);
+  assert.strictEqual(nthWeekday(2026, 9, 5, -1), 30);
+  assert.strictEqual(nthWeekday(2026, 1, 1, 5), null); // kein 5. Montag im Februar 2026
+  assert.strictEqual(parseUntil('20261231').getHours(), 23);
+  assert.strictEqual(parseUntil('quatsch'), null);
+});
+
+// ---------- Mac-Apps ----------
+
+test('Kalender liefert Termine samt Serien für heute', async () => {
+  const cal = await mac.calendarEvents(1, { now: MONDAY });
   assert.strictEqual(cal.ok, true);
-  assert.strictEqual(cal.data[0].title, 'Zahnarzt');
+  assert.deepStrictEqual(cal.data.map((e) => e.title), ['Zahnarzt', 'Teamrunde']);
+  assert.strictEqual(cal.data[1].recurring, true);
+});
+
+test('geschlossene Apps werden bei der automatischen Aktualisierung nicht gestartet', async () => {
+  process.env.FAKE_OSA_CLOSED = '1';
+  try {
+    const t = await mac.today({ launch: false });
+    assert.strictEqual(t.events.notRunning, true);
+    assert.strictEqual(t.reminders.notRunning, true);
+    const forced = await mac.today({ launch: true });
+    assert.strictEqual(forced.events.ok, true);
+    assert.ok(Array.isArray(forced.events.data));
+  } finally {
+    delete process.env.FAKE_OSA_CLOSED;
+  }
+});
+
+test('Erinnerungen lesen und unbekannte Liste melden', async () => {
   const rem = await mac.reminders();
   assert.deepStrictEqual(rem.data, [{ title: 'Milch kaufen', list: 'Einkauf', due: null }]);
+  const missing = await mac.reminders('Gibtsnicht');
+  assert.strictEqual(missing.ok, false);
+  assert.match(missing.error, /gibt es in Erinnerungen nicht/);
 });
 
 test('Eingaben gehen als Parameter, nie in den Skripttext', async () => {
@@ -28,25 +118,29 @@ test('Eingaben gehen als Parameter, nie in den Skripttext', async () => {
   const res = await mac.addReminder(evil, '2026-10-27T09:00', 'Einkauf');
   assert.strictEqual(res.ok, true);
   const params = JSON.parse(fs.readFileSync(LOG, 'utf8').trim().split('\n').pop());
-  assert.deepStrictEqual(params, [evil, '2026-10-27T09:00', 'Einkauf']);
+  assert.deepStrictEqual(params, ['1', evil, String(new Date('2026-10-27T09:00').getTime()), 'Einkauf']);
   assert.ok(!mac.SCRIPTS.addReminder.includes('Finder'));
 });
 
-test('ungültige Eingaben werden abgelehnt', async () => {
+test('reines Datum wird 9 Uhr Ortszeit, ungültige Eingaben werden abgelehnt', async () => {
+  const d = mac.parseDue('2026-10-27');
+  assert.deepStrictEqual([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()], [2026, 9, 27, 9]);
+  assert.strictEqual(mac.parseDue(''), null);
   assert.strictEqual((await mac.addReminder('')).ok, false);
   assert.match((await mac.addReminder('x', 'kein datum')).error, /ungültig/);
   assert.strictEqual((await mac.createNote('')).ok, false);
 });
 
-test('fehlende Mac-Rechte werden verständlich erklärt', async () => {
+test('Fehlercodes werden verständlich erklärt', async () => {
   process.env.FAKE_OSA_DENY = '1';
   try {
     const res = await mac.calendarEvents(1);
-    assert.strictEqual(res.ok, false);
     assert.match(res.error, /Kalender noch nicht steuern.*Automation/);
   } finally {
     delete process.env.FAKE_OSA_DENY;
   }
+  assert.match(mac.friendlyError("Application can't be found. (-2700)", 'Outlook'), /nicht installiert/);
+  assert.match(mac.friendlyError('Fehler (-6000)', 'X'), /-6000/); // nicht mit -600 verwechseln
 });
 
 test('Outlook ohne Mac-Steuerung bekommt einen Hinweis auf den Browser-Weg', async () => {
@@ -55,15 +149,27 @@ test('Outlook ohne Mac-Steuerung bekommt einen Hinweis auf den Browser-Weg', asy
   assert.match(res.error, /neue Outlook.*Chrome/);
 });
 
-test('today() sammelt alles, auch wenn einzelne Apps scheitern', async () => {
-  const t = await mac.today();
-  assert.strictEqual(t.events.ok, true);
-  assert.strictEqual(t.mail.data.running, false);
-  assert.strictEqual(t.outlook.ok, false);
+test('open: Webadressen, Pfade mit ~ und Apps', () => {
+  assert.deepStrictEqual(mac.openArgs('https://outlook.com'), ['https://outlook.com']);
+  assert.deepStrictEqual(mac.openArgs('~/Dokumente/a.pdf'), [path.join(os.homedir(), 'Dokumente/a.pdf')]);
+  assert.deepStrictEqual(mac.openArgs('Dokumente/a.pdf'), [path.join(os.homedir(), 'Dokumente/a.pdf')]);
+  assert.deepStrictEqual(mac.openArgs('/Applications'), ['/Applications']);
+  assert.deepStrictEqual(mac.openArgs('Microsoft Outlook'), ['-a', 'Microsoft Outlook']);
+  assert.strictEqual(mac.openArgs('  '), null);
 });
 
+test('Spotlight hört nach 30 Treffern auf und ignoriert führende Striche', async () => {
+  const res = await mac.spotlight('--live Rechnung');
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.data.length, 30);
+  assert.strictEqual(res.data[0], 'ARGS:live Rechnung');
+  assert.strictEqual((await mac.spotlight('---')).ok, false);
+});
+
+// ---------- MCP-Server ----------
+
 test('MCP-Server: Lese-Werkzeuge ohne Rückfrage, Aktionen mit Rückfrage', () => {
-  assert.deepStrictEqual(READ_ONLY_TOOLS.sort(), ['calendar_events', 'mail_unread', 'notes_search', 'notify', 'outlook_unread', 'reminders_list', 'spotlight_search']);
+  assert.deepStrictEqual([...READ_ONLY_TOOLS].sort(), ['calendar_events', 'mail_unread', 'notes_search', 'outlook_unread', 'reminders_list', 'spotlight_search']);
   for (const t of TOOLS) assert.ok(t.inputSchema && t.inputSchema.type === 'object', t.name);
 });
 

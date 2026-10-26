@@ -1,18 +1,27 @@
 // Steuert Mac-Apps über osascript (JavaScript for Automation).
 // Eingaben gehen immer als Parameter an das Skript, nie in den Skripttext selbst.
-const { execFile } = require('child_process');
+// Eigenschaften werden gebündelt abgefragt (eine Anfrage pro Eigenschaft statt pro Eintrag),
+// sonst wären große Kalender, Notizen oder Postfächer sehr langsam.
+const { execFile, spawn } = require('child_process');
+const readline = require('readline');
+const os = require('os');
+const path = require('path');
+const { occurrences } = require('./recurrence');
 
 const OSASCRIPT = process.env.ZENTRALE_OSASCRIPT || '/usr/bin/osascript';
+const MDFIND = process.env.ZENTRALE_MDFIND || '/usr/bin/mdfind';
 const AVAILABLE = process.platform === 'darwin' || !!process.env.ZENTRALE_OSASCRIPT;
 
 function friendlyError(stderr, app) {
   const s = String(stderr || '');
-  if (/-1743|not authori[sz]ed/i.test(s)) {
+  const name = app || 'Die App';
+  if (/\(-1743\)|not authori[sz]ed|not allowed to send/i.test(s)) {
     return `Die Zentrale darf ${app || 'diese App'} noch nicht steuern. Erlaube es unter Systemeinstellungen → Datenschutz & Sicherheit → Automation.`;
   }
-  if (/-600|isn.t running|application isn.t running/i.test(s)) return `${app || 'Die App'} läuft gerade nicht.`;
-  if (/-1728|can.t get/i.test(s)) return `${app || 'Die App'} hat die Anfrage nicht verstanden.`;
-  if (/-1712|timed out/i.test(s)) return `${app || 'Die App'} hat nicht rechtzeitig geantwortet.`;
+  if (/\(-2700\)|can.t be found|kann nicht gefunden/i.test(s)) return `${name} ist auf diesem Mac nicht installiert.`;
+  if (/\(-600\)|isn.t running/i.test(s)) return `${name} läuft gerade nicht.`;
+  if (/\(-1728\)|can.t get/i.test(s)) return `${name} hat die Anfrage nicht verstanden.`;
+  if (/\(-1712\)|timed out/i.test(s)) return `${name} hat nicht rechtzeitig geantwortet.`;
   return s.trim().split('\n').slice(-2).join(' ') || 'Unbekannter Fehler';
 }
 
@@ -33,65 +42,86 @@ function runScript(script, args = [], { language = 'JavaScript', timeout = 60000
 async function runJson(script, args, opts) {
   const res = await runScript(script, args, opts);
   if (!res.ok) return res;
-  try { return { ok: true, data: JSON.parse(res.out || 'null') }; } catch { return { ok: false, error: 'Unerwartete Antwort der App.' }; }
+  let data;
+  try { data = JSON.parse(res.out || 'null'); } catch { return { ok: false, error: 'Unerwartete Antwort der App.' }; }
+  if (data && data.error) return { ok: false, error: data.error };
+  return { ok: true, data };
 }
 
+// argv[0] in jedem Skript: "1" = App darf gestartet werden, "0" = nur abfragen, wenn sie schon läuft.
 const SCRIPTS = {
   calendar: `function run(argv) {
-  var days = parseInt(argv[0] || '1', 10);
-  var start = new Date(); start.setHours(0, 0, 0, 0);
-  var end = new Date(start.getTime() + days * 86400000);
   var Cal = Application('Calendar');
-  var out = [];
-  Cal.calendars().forEach(function (c) {
+  if (argv[0] !== '1' && !Cal.running()) return JSON.stringify({ notRunning: true });
+  var start = new Date(Number(argv[1]));
+  var end = new Date(Number(argv[2]));
+  var cals = Cal.calendars;
+  var names = cals.name();
+  var events = [], series = [];
+  for (var i = 0; i < names.length; i++) {
     try {
-      c.events.whose({ _and: [{ startDate: { _greaterThanEquals: start } }, { startDate: { _lessThan: end } }] })().forEach(function (e) {
-        out.push({ title: e.summary(), start: e.startDate().toISOString(), end: e.endDate().toISOString(), allDay: e.alldayEvent(), calendar: c.name() });
-      });
+      var ev = cals[i].events.whose({ _and: [{ startDate: { _lessThan: end } }, { endDate: { _greaterThan: start } }] });
+      var t = ev.summary(), s = ev.startDate(), e = ev.endDate(), a = ev.alldayEvent();
+      for (var k = 0; k < t.length; k++) events.push({ title: t[k], start: s[k].toISOString(), end: e[k].toISOString(), allDay: a[k], calendar: names[i] });
     } catch (err) {}
-  });
-  out.sort(function (a, b) { return a.start < b.start ? -1 : 1; });
-  return JSON.stringify(out);
+    try {
+      var rs = cals[i].events.whose({ _and: [{ startDate: { _lessThan: end } }, { recurrence: { _beginsWith: 'FREQ' } }] });
+      var rt = rs.summary(), rst = rs.startDate(), ren = rs.endDate(), ra = rs.alldayEvent(), rr = rs.recurrence();
+      var rx = [];
+      try { rx = rs.excludedDates(); } catch (err) {}
+      for (var j = 0; j < rt.length; j++) {
+        series.push({ title: rt[j], start: rst[j].toISOString(), end: ren[j].toISOString(), allDay: ra[j], calendar: names[i], rule: rr[j],
+          excluded: (rx[j] || []).map(function (d) { return d.toISOString(); }) });
+      }
+    } catch (err) {}
+  }
+  return JSON.stringify({ events: events, series: series });
 }`,
 
   reminders: `function run(argv) {
   var R = Application('Reminders');
-  var only = argv[0] || '';
+  if (argv[0] !== '1' && !R.running()) return JSON.stringify({ notRunning: true });
+  var only = argv[1] || '';
+  var names = R.lists.name();
+  if (only && names.indexOf(only) < 0) return JSON.stringify({ error: 'Die Liste „' + only + '“ gibt es in Erinnerungen nicht.' });
   var out = [];
-  R.lists().forEach(function (l) {
-    if (only && l.name() !== only) return;
+  for (var i = 0; i < names.length; i++) {
+    if (only && names[i] !== only) continue;
     try {
-      l.reminders.whose({ completed: false })().forEach(function (r) {
-        var due = null;
-        try { var d = r.dueDate(); if (d) due = d.toISOString(); } catch (e) {}
-        out.push({ title: r.name(), list: l.name(), due: due });
-      });
+      var rs = R.lists[i].reminders.whose({ completed: false });
+      var t = rs.name(), d = rs.dueDate();
+      for (var k = 0; k < t.length; k++) out.push({ title: t[k], list: names[i], due: d[k] ? d[k].toISOString() : null });
     } catch (e) {}
-  });
+  }
   return JSON.stringify(out.slice(0, 200));
 }`,
 
   addReminder: `function run(argv) {
   var R = Application('Reminders');
-  var list = argv[2] ? R.lists.byName(argv[2]) : R.defaultList();
-  var props = { name: argv[0] };
-  if (argv[1]) props.dueDate = new Date(argv[1]);
+  var list = R.defaultList();
+  if (argv[3]) {
+    if (R.lists.name().indexOf(argv[3]) < 0) return JSON.stringify({ error: 'Die Liste „' + argv[3] + '“ gibt es in Erinnerungen nicht.' });
+    list = R.lists.byName(argv[3]);
+  }
+  var props = { name: argv[1] };
+  if (argv[2]) props.dueDate = new Date(Number(argv[2]));
   list.reminders.push(R.Reminder(props));
   return JSON.stringify({ ok: true });
 }`,
 
   notesSearch: `function run(argv) {
   var N = Application('Notes');
-  var q = (argv[0] || '').toLowerCase();
+  var q = argv[1] || '';
+  var spec = q ? N.notes.whose({ _or: [{ name: { _contains: q } }, { plaintext: { _contains: q } }] }) : N.notes;
+  var ids = spec.id().slice(0, 20);
   var out = [];
-  N.notes().some(function (n) {
-    var name = n.name();
+  ids.forEach(function (id) {
+    var n = N.notes.byId(id);
     var body = '';
     try { body = n.plaintext(); } catch (e) {}
-    if (!q || name.toLowerCase().indexOf(q) >= 0 || body.toLowerCase().indexOf(q) >= 0) {
-      out.push({ title: name, snippet: body.slice(0, 400), modified: n.modificationDate().toISOString() });
-    }
-    return out.length >= 20;
+    var modified = null;
+    try { modified = n.modificationDate().toISOString(); } catch (e) {}
+    out.push({ title: n.name(), snippet: body.slice(0, 400), modified: modified });
   });
   return JSON.stringify(out);
 }`,
@@ -99,106 +129,161 @@ const SCRIPTS = {
   createNote: `function run(argv) {
   var N = Application('Notes');
   var esc = function (s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\\n/g, '<br>'); };
-  N.make({ new: 'note', withProperties: { body: '<h1>' + esc(argv[0]) + '</h1>' + esc(argv[1] || '') } });
+  var body = '<div><h1>' + esc(argv[1]) + '</h1></div><div>' + esc(argv[2] || '') + '</div>';
+  N.defaultAccount.defaultFolder().notes.push(N.Note({ body: body }));
   return JSON.stringify({ ok: true });
 }`,
 
   mailUnread: `function run(argv) {
-  var limit = parseInt(argv[0] || '10', 10);
+  var limit = parseInt(argv[1] || '10', 10);
   var M = Application('Mail');
   if (!M.running()) return JSON.stringify({ running: false });
-  var msgs = M.inbox.messages.whose({ readStatus: false })();
-  return JSON.stringify({ running: true, unread: msgs.length, messages: msgs.slice(0, limit).map(function (m) {
-    return { from: m.sender(), subject: m.subject(), date: m.dateReceived().toISOString() };
-  }) });
+  var count = M.inbox.unreadCount();
+  var ms = M.inbox.messages.whose({ readStatus: false });
+  var subj = count ? ms.subject() : [], from = count ? ms.sender() : [], date = count ? ms.dateReceived() : [];
+  var list = subj.map(function (s, i) { return { subject: s, from: from[i], date: date[i] ? date[i].toISOString() : null }; });
+  list.sort(function (a, b) { return (b.date || '') < (a.date || '') ? -1 : 1; });
+  return JSON.stringify({ running: true, unread: count, messages: list.slice(0, limit) });
 }`,
 
   outlookUnread: `function run(argv) {
-  var limit = parseInt(argv[0] || '10', 10);
+  var limit = parseInt(argv[1] || '10', 10);
   var O = Application('Microsoft Outlook');
   if (!O.running()) return JSON.stringify({ running: false });
-  var msgs = O.inbox.messages.whose({ isRead: false })();
-  return JSON.stringify({ running: true, unread: msgs.length, messages: msgs.slice(0, limit).map(function (m) {
-    var from = '';
-    try { var s = m.sender(); from = (s.name || '') + (s.address ? ' <' + s.address + '>' : ''); } catch (e) {}
-    var date = null;
-    try { date = m.timeReceived().toISOString(); } catch (e) {}
-    return { from: from, subject: m.subject(), date: date };
-  }) });
-}`,
-
-  notify: `function run(argv) {
-  var app = Application.currentApplication();
-  app.includeStandardAdditions = true;
-  app.displayNotification(argv[1] || '', { withTitle: argv[0] || 'Zentrale' });
-  return JSON.stringify({ ok: true });
+  var ms = O.inbox.messages.whose({ isRead: false });
+  var subj = ms.subject();
+  var from = [], date = [];
+  try { from = ms.sender(); } catch (e) {}
+  try { date = ms.timeReceived(); } catch (e) {}
+  var list = subj.map(function (s, i) {
+    var f = from[i] || {};
+    return { subject: s, from: (f.name || '') + (f.address ? ' <' + f.address + '>' : ''), date: date[i] ? date[i].toISOString() : null };
+  });
+  list.sort(function (a, b) { return (b.date || '') < (a.date || '') ? -1 : 1; });
+  return JSON.stringify({ running: true, unread: subj.length, messages: list.slice(0, limit) });
 }`,
 };
 
-async function calendarEvents(days = 1) {
-  return runJson(SCRIPTS.calendar, [Math.min(Math.max(parseInt(days, 10) || 1, 1), 31)], { app: 'Kalender' });
+const toNumber = (x, fallback) => { const n = parseInt(x, 10); return Number.isFinite(n) ? n : fallback; };
+
+// Termine im Zeitraum, inklusive Terminserien (die der Kalender per Skript nicht selbst auffächert).
+async function calendarEvents(days = 1, { launch = true, now = new Date() } = {}) {
+  const n = Math.min(Math.max(toNumber(days, 1), 1), 31);
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + n);
+  const res = await runJson(SCRIPTS.calendar, [launch ? '1' : '0', start.getTime(), end.getTime()], { app: 'Kalender' });
+  if (!res.ok || res.data.notRunning) return res.ok ? { ok: true, data: null, notRunning: true } : res;
+  return { ok: true, data: mergeEvents(res.data, start, end) };
 }
 
-async function reminders(list = '') {
-  return runJson(SCRIPTS.reminders, [list || ''], { app: 'Erinnerungen' });
+function mergeEvents({ events = [], series = [] }, start, end) {
+  const seen = new Set();
+  const out = [];
+  const add = (e) => {
+    const key = `${e.calendar}|${e.title}|${new Date(e.start).getTime()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(e);
+  };
+  events.forEach(add);
+  for (const s of series) {
+    for (const o of occurrences(s, s.rule, start, end, s.excluded || [])) {
+      add({ title: s.title, start: o.start.toISOString(), end: o.end.toISOString(), allDay: s.allDay, calendar: s.calendar, recurring: true });
+    }
+  }
+  return out.sort((a, b) => (a.start < b.start ? -1 : 1));
+}
+
+async function reminders(list = '', { launch = true } = {}) {
+  const res = await runJson(SCRIPTS.reminders, [launch ? '1' : '0', list || ''], { app: 'Erinnerungen' });
+  if (res.ok && res.data && res.data.notRunning) return { ok: true, data: null, notRunning: true };
+  return res;
+}
+
+// Ein reines Datum (2026-10-27) wird als 9 Uhr Ortszeit gelesen, nicht als Mitternacht UTC.
+function parseDue(due) {
+  if (!due) return null;
+  const text = /^\d{4}-\d{2}-\d{2}$/.test(due) ? `${due}T09:00` : due;
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
 async function addReminder(title, due = '', list = '') {
   if (!title) return { ok: false, error: 'Titel fehlt.' };
-  if (due && Number.isNaN(new Date(due).getTime())) return { ok: false, error: 'Das Datum ist ungültig.' };
-  return runJson(SCRIPTS.addReminder, [title, due || '', list || ''], { app: 'Erinnerungen' });
+  const d = parseDue(due);
+  if (d === undefined) return { ok: false, error: 'Das Datum ist ungültig.' };
+  return runJson(SCRIPTS.addReminder, ['1', title, d ? d.getTime() : '', list || ''], { app: 'Erinnerungen' });
 }
 
 async function searchNotes(query = '') {
-  return runJson(SCRIPTS.notesSearch, [query || ''], { app: 'Notizen' });
+  return runJson(SCRIPTS.notesSearch, ['1', query || ''], { app: 'Notizen' });
 }
 
 async function createNote(title, body = '') {
   if (!title) return { ok: false, error: 'Titel fehlt.' };
-  return runJson(SCRIPTS.createNote, [title, body || ''], { app: 'Notizen' });
+  return runJson(SCRIPTS.createNote, ['1', title, body || ''], { app: 'Notizen' });
 }
 
 async function mailUnread(limit = 10) {
-  return runJson(SCRIPTS.mailUnread, [limit], { app: 'Mail' });
+  return runJson(SCRIPTS.mailUnread, ['0', toNumber(limit, 10)], { app: 'Mail' });
 }
 
 async function outlookUnread(limit = 10) {
-  const res = await runJson(SCRIPTS.outlookUnread, [limit], { app: 'Outlook' });
-  if (!res.ok && !/läuft gerade nicht|Automation/.test(res.error)) {
+  const res = await runJson(SCRIPTS.outlookUnread, ['0', toNumber(limit, 10)], { app: 'Outlook' });
+  if (!res.ok && !/läuft gerade nicht|Automation|nicht installiert/.test(res.error)) {
     res.error = 'Outlook lässt sich so nicht lesen. Das „neue Outlook“ unterstützt keine Mac-Steuerung: '
       + 'nutze dafür Outlook im Browser über Chrome, oder stelle in Outlook auf „Legacy Outlook“ um.';
   }
   return res;
 }
 
-async function notify(title, message) {
-  return runJson(SCRIPTS.notify, [title || 'Zentrale', message || ''], { app: 'Mitteilungen', timeout: 15000 });
+// Dateisuche mit Spotlight: höchstens 30 Treffer, danach wird die Suche beendet.
+function spotlight(query, limit = 30) {
+  return new Promise((resolve) => {
+    if (!AVAILABLE) { resolve({ ok: false, error: 'Das geht nur auf dem Mac.' }); return; }
+    const q = String(query || '').replace(/^-+/, '').trim();
+    if (!q) { resolve({ ok: false, error: 'Suchbegriff fehlt.' }); return; }
+    const found = [];
+    let done = false;
+    const proc = spawn(MDFIND, [q], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const finish = (res) => { if (done) return; done = true; clearTimeout(timer); try { proc.kill(); } catch {} resolve(res); };
+    const results = () => ({ ok: true, data: found.slice(0, limit) });
+    const timer = setTimeout(() => finish(results()), 20000);
+    readline.createInterface({ input: proc.stdout }).on('line', (line) => {
+      if (done || !line) return;
+      found.push(line);
+      if (found.length >= limit) finish(results());
+    });
+    proc.on('error', (e) => finish({ ok: false, error: e.message }));
+    proc.on('close', () => finish(results()));
+  });
 }
 
 function execText(cmd, args, timeout = 20000) {
   return new Promise((resolve) => {
     if (!AVAILABLE) { resolve({ ok: false, error: 'Das geht nur auf dem Mac.' }); return; }
-    execFile(cmd, args, { timeout, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { timeout, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
       resolve(err ? { ok: false, error: String(stderr || err.message).trim() } : { ok: true, out: String(stdout) });
     });
   });
 }
 
-async function spotlight(query) {
-  if (!query) return { ok: false, error: 'Suchbegriff fehlt.' };
-  const res = await execText('/usr/bin/mdfind', [query]);
-  if (!res.ok) return res;
-  return { ok: true, data: res.out.split('\n').filter(Boolean).slice(0, 30) };
+// Was open() mit einem Ziel macht: Webadresse, Datei/Ordner oder App.
+function openArgs(target) {
+  let t = String(target || '').trim();
+  if (!t) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(t)) return [t];
+  if (t === '~' || t.startsWith('~/')) t = path.join(os.homedir(), t.slice(1));
+  if (t.startsWith('/')) return [t];
+  if (t.includes('/')) return [path.join(os.homedir(), t)];
+  return ['-a', t];
 }
 
-// Öffnet eine Webadresse, Datei oder App.
 async function open(target) {
-  if (!target) return { ok: false, error: 'Ziel fehlt.' };
-  const isPath = target.startsWith('/') || target.startsWith('~');
-  const isUrl = /^[a-z][a-z0-9+.-]*:/i.test(target);
-  const args = isPath || isUrl ? [target] : ['-a', target];
+  const args = openArgs(target);
+  if (!args) return { ok: false, error: 'Ziel fehlt.' };
   const res = await execText('/usr/bin/open', args);
-  return res.ok ? { ok: true, data: { opened: target } } : res;
+  return res.ok ? { ok: true, data: { opened: args[args.length - 1] } } : res;
 }
 
 async function runUserScript(script, language = 'AppleScript') {
@@ -208,14 +293,16 @@ async function runUserScript(script, language = 'AppleScript') {
   return res.ok ? { ok: true, data: res.out } : res;
 }
 
-// Alles für die "Heute"-Ansicht auf einmal; Fehler einzelner Apps stören die anderen nicht.
-async function today() {
-  const [events, todo, mail, outlook] = await Promise.all([calendarEvents(1), reminders(), mailUnread(5), outlookUnread(5)]);
+// Alles für die "Heute"-Ansicht. launch: false fragt nur Apps ab, die schon laufen –
+// so öffnet die regelmäßige Aktualisierung keine Programme ungefragt.
+async function today({ launch = false } = {}) {
+  const [events, todo, mail, outlook] = await Promise.all([
+    calendarEvents(1, { launch }), reminders('', { launch }), mailUnread(5), outlookUnread(5)]);
   return { events, reminders: todo, mail, outlook };
 }
 
 module.exports = {
-  AVAILABLE, SCRIPTS, runScript, friendlyError,
+  AVAILABLE, SCRIPTS, runScript, friendlyError, mergeEvents, parseDue, openArgs,
   calendarEvents, reminders, addReminder, searchNotes, createNote, mailUnread, outlookUnread,
-  notify, spotlight, open, runUserScript, today,
+  spotlight, open, runUserScript, today,
 };
