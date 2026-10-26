@@ -6,7 +6,8 @@ const path = require('path');
 
 const { listProjects, readMessages, isRealPrompt, shortTitle } = require('../src/sessions');
 const { isDue, dayKey, TaskScheduler } = require('../src/tasks');
-const { simplify, describeTool, describeApproval, approvalKey, permissionModeFor, parseMcpList, cleanEnv, ClaudeChat, runTask } = require('../src/claude');
+const { simplify, describeTool, describeApproval, approvalKey, permissionModeFor, parseMcpList, cleanEnv, ClaudeChat, runTask,
+  safetySettings, isReadOnlyCommand } = require('../src/claude');
 const { Settings } = require('../src/settings');
 
 const FAKE = path.join(__dirname, 'fake-claude.js');
@@ -365,27 +366,32 @@ test('Chat: Freigabe erlauben, ablehnen und "immer erlauben"', async () => {
   const events = collect(chat);
   const texts = () => events.filter((e) => e.kind === 'text').map((e) => e.text);
   try {
-    await chat.send('FREIGABE:ls');
+    await chat.send('FREIGABE:touch a');
     assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
     const a = chat.pendingApprovals()[0];
     assert.strictEqual(a.title, 'Einen Befehl im Terminal ausführen');
-    assert.strictEqual(a.detail, 'ls');
+    assert.strictEqual(a.detail, 'touch a');
     assert.strictEqual(chat.status, 'busy');
     assert.strictEqual(chat.respond(a.id, 'allow'), true);
     assert.strictEqual(chat.respond(a.id, 'allow'), false); // nur einmal
-    assert.ok(await waitFor(() => texts().includes('erlaubt:ls')));
+    assert.ok(await waitFor(() => texts().includes('erlaubt:touch a')));
 
     await chat.send('FREIGABE:rm x');
     assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
     chat.respond(chat.pendingApprovals()[0].id, 'deny');
     assert.ok(await waitFor(() => texts().includes('abgelehnt')));
 
-    await chat.send('FREIGABE:date');
+    await chat.send('FREIGABE:mkdir b');
     assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
     chat.respond(chat.pendingApprovals()[0].id, 'always');
-    assert.ok(await waitFor(() => texts().filter((t) => t === 'erlaubt:date').length === 1));
-    await chat.send('FREIGABE:date');
-    assert.ok(await waitFor(() => texts().filter((t) => t === 'erlaubt:date').length === 2));
+    assert.ok(await waitFor(() => texts().filter((t) => t === 'erlaubt:mkdir b').length === 1));
+    await chat.send('FREIGABE:mkdir b');
+    assert.ok(await waitFor(() => texts().filter((t) => t === 'erlaubt:mkdir b').length === 2));
+    assert.strictEqual(chat.pendingApprovals().length, 0);
+
+    // Reine Lese-Befehle laufen ohne Rückfrage durch.
+    await chat.send('FREIGABE:ls -la');
+    assert.ok(await waitFor(() => texts().includes('erlaubt:ls -la')));
     assert.strictEqual(chat.pendingApprovals().length, 0);
   } finally {
     await chat.stop();
@@ -396,7 +402,7 @@ test('Chat: offene Freigaben verschwinden beim Stoppen', async () => {
   const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir() });
   let changes = 0;
   chat.on('approvals', () => { changes += 1; });
-  await chat.send('FREIGABE:ls');
+  await chat.send('FREIGABE:touch a');
   assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
   await chat.stop();
   assert.strictEqual(chat.pendingApprovals().length, 0);
@@ -429,6 +435,25 @@ test('Chat: im Benutzerordner fragt Claude vor Dateiänderungen', async () => {
   await chat.stop();
   const args = JSON.parse(fs.readFileSync(log, 'utf8').trim());
   assert.strictEqual(args[args.indexOf('--permission-mode') + 1], 'default');
+  const ask = JSON.parse(args[args.indexOf('--settings') + 1]).permissions.ask;
+  assert.ok(ask.includes('Bash') && ask.includes('Write') && ask.includes('Edit'));
+});
+
+test('safetySettings: Befehle fragen immer, Dateiänderungen nur außerhalb von Projektordnern', () => {
+  const project = JSON.parse(safetySettings('acceptEdits')).permissions.ask;
+  assert.ok(project.includes('Bash') && project.includes('WebFetch') && project.includes('mcp__claude-in-chrome'));
+  assert.ok(!project.includes('Edit'));
+  assert.ok(JSON.parse(safetySettings('default')).permissions.ask.includes('Edit'));
+});
+
+test('isReadOnlyCommand: nur einzelne Lese-Befehle ohne Tricks', () => {
+  for (const c of ['ls', 'ls -la ~/Desktop', 'cat README.md', 'grep -n foo src/a.js', 'git status', 'git log --oneline -5', 'whoami']) {
+    assert.strictEqual(isReadOnlyCommand(c), true, c);
+  }
+  for (const c of ['rm x', 'python3 -c "print(1)"', 'ls; rm -rf ~', 'ls && rm x', 'cat a > b', 'echo $(rm x)', 'echo `rm x`',
+    'ls | sh', 'git push', 'git diff --output=/tmp/x', 'find . -delete', 'curl -s http://x', '', 'ls\nrm x']) {
+    assert.strictEqual(isReadOnlyCommand(c), false, c);
+  }
 });
 
 test('Chat: zusätzliche Startoptionen werden beim (Neu-)Start gelesen', async () => {
@@ -457,10 +482,10 @@ test('runTask liefert die letzte Antwort', async () => {
 
 test('runTask meldet Freigaben und läuft danach weiter', async () => {
   let asked = 0;
-  const res = await runTask({ bin: FAKE, env: process.env, cwd: os.tmpdir(), prompt: 'FREIGABE:ls',
+  const res = await runTask({ bin: FAKE, env: process.env, cwd: os.tmpdir(), prompt: 'FREIGABE:touch a',
     onApproval: (chat) => { for (const a of chat.pendingApprovals()) { asked += 1; chat.respond(a.id, 'allow'); } } });
   assert.strictEqual(asked, 1);
-  assert.deepStrictEqual(res, { ok: true, text: 'erlaubt:ls' });
+  assert.deepStrictEqual(res, { ok: true, text: 'erlaubt:touch a' });
 });
 
 test('runTask: zu lange Aufgabe wird abgebrochen', async () => {

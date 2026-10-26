@@ -6,17 +6,31 @@ const { EventEmitter } = require('events');
 
 const DEFAULT_ROOT = path.join(os.homedir(), '.claude', 'projects');
 const HEAD_BYTES = 256 * 1024;
+const TAIL_BYTES = 64 * 1024;
 const MAX_READ_BYTES = 20 * 1024 * 1024;
 
-function readHead(file, bytes = HEAD_BYTES) {
+function readRange(file, bytes, fromEnd = false) {
   const fd = fs.openSync(file, 'r');
   try {
-    const buf = Buffer.alloc(bytes);
-    const n = fs.readSync(fd, buf, 0, bytes, 0);
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(bytes, size);
+    const buf = Buffer.alloc(len);
+    const n = fs.readSync(fd, buf, 0, len, fromEnd ? size - len : 0);
     return buf.toString('utf8', 0, n);
   } finally {
     fs.closeSync(fd);
   }
+}
+
+const readHead = (file) => readRange(file, HEAD_BYTES);
+
+// Umbenennungen (/rename, Titel aus der Claude-App) hängt Claude Code ans Ende an – der letzte gilt.
+function lastCustomTitle(file) {
+  let found = null;
+  for (const o of parseLines(readRange(file, TAIL_BYTES, true))) {
+    if (o.type === 'custom-title' && o.customTitle) found = o.customTitle;
+  }
+  return found;
 }
 
 function parseLines(text) {
@@ -63,11 +77,13 @@ function parseSession(file) {
       if (isRealPrompt(t)) title = shortTitle(t);
     }
   }
+  customTitle = lastCustomTitle(file) || customTitle;
   return {
     id: path.basename(file, '.jsonl'),
     file,
     cwd,
     title: customTitle || title || 'Ohne Titel',
+    firstPrompt: title,
     updatedAt: stat.mtimeMs,
   };
 }
@@ -81,7 +97,7 @@ function cachedSession(file, cache) {
   if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.session;
   // Titel und Ordner stehen am Anfang; bei reinem Anhängen genügt es, die Zeit zu aktualisieren.
   const session = hit && hit.size < stat.size && hit.size >= HEAD_BYTES
-    ? { ...hit.session, updatedAt: stat.mtimeMs }
+    ? { ...hit.session, title: lastCustomTitle(file) || hit.session.title, updatedAt: stat.mtimeMs }
     : parseSession(file);
   cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, session });
   return session;

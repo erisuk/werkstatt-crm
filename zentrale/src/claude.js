@@ -194,6 +194,29 @@ function permissionModeFor(cwd, home = os.homedir()) {
   return unsafe ? 'default' : 'acceptEdits';
 }
 
+// Die Erlaubnisliste in ~/.claude/settings.json (z. B. "Bash(python3 *)") würde sonst an der Zentrale
+// vorbeilaufen. "ask"-Regeln schlagen "allow"-Regeln: so landet jeder Befehl in der Zentrale.
+// Im Projektordner bleiben Dateiänderungen ohne Rückfrage, sonst fragt auch jede Änderung.
+function safetySettings(permissionMode) {
+  const ask = ['Bash', 'WebFetch', 'mcp__claude-in-chrome', 'mcp__Claude_in_Chrome'];
+  if (permissionMode !== 'acceptEdits') ask.push('Write', 'Edit', 'MultiEdit', 'NotebookEdit');
+  return JSON.stringify({ permissions: { ask } });
+}
+
+// Reine Lese-Befehle winkt die Zentrale selbst durch. Streng: ein einziger Befehl aus der Liste,
+// ohne Verkettung, Umleitung oder eingebettete Befehle.
+const READ_ONLY_COMMANDS = new Set(['ls', 'pwd', 'whoami', 'date', 'cat', 'head', 'tail', 'wc', 'grep', 'rg',
+  'stat', 'file', 'which', 'echo', 'du', 'df', 'tree', 'basename', 'dirname', 'realpath', 'uname', 'sw_vers']);
+const READ_ONLY_GIT = new Set(['status', 'log', 'diff', 'show']);
+
+function isReadOnlyCommand(command) {
+  const c = String(command || '').trim();
+  if (!c || /[;&|<>`$(){}\\\n\r]/.test(c)) return false;
+  const [bin, sub, ...rest] = c.split(/\s+/);
+  if (bin === 'git') return READ_ONLY_GIT.has(sub) && ![sub, ...rest].some((a) => /^--(output|ext-diff)/.test(a));
+  return READ_ONLY_COMMANDS.has(bin);
+}
+
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 class ClaudeChat extends EventEmitter {
@@ -265,7 +288,8 @@ class ClaudeChat extends EventEmitter {
       return;
     }
     const key = approvalKey(req.tool_name, req.input);
-    if (this.alwaysAllow.has(key)) {
+    const readOnly = req.tool_name === 'Bash' && isReadOnlyCommand(req.input && req.input.command);
+    if (readOnly || this.alwaysAllow.has(key)) {
       this.write({ type: 'control_response', response: { subtype: 'success', request_id: ev.request_id,
         response: { behavior: 'allow', updatedInput: req.input || {} } } });
       return;
@@ -293,7 +317,8 @@ class ClaudeChat extends EventEmitter {
   start() {
     if (this.alive || this.disposed) return;
     const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-      '--permission-mode', this.permissionMode, '--permission-prompt-tool', 'stdio'];
+      '--permission-mode', this.permissionMode, '--permission-prompt-tool', 'stdio',
+      '--settings', safetySettings(this.permissionMode)];
     args.push(this.sessionSaved() ? '--resume' : '--session-id', this.sessionId);
     args.push(...(this.extraArgs() || []));
     this.stderr = '';
@@ -461,5 +486,6 @@ async function listMcpServers({ bin, env, cwd }) {
 
 module.exports = {
   resolveClaude, cleanEnv, ClaudeChat, simplify, describeTool, describeApproval, approvalKey, permissionModeFor,
+  safetySettings, isReadOnlyCommand,
   runTask, stopAllTasks, terminate, parseMcpList, listMcpServers,
 };
