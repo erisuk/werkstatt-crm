@@ -5,6 +5,7 @@ const readline = require('readline');
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
 const delay = Number(process.env.FAKE_DELAY || 0);
+if (process.env.FAKE_ARGS_LOG) require('fs').appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify(args) + '\n');
 
 if (process.env.FAKE_FAIL) {
   process.stderr.write('Error: No conversation found with session ID x\n');

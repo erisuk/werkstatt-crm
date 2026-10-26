@@ -259,6 +259,52 @@ test('Chat: abgestürzter Prozess wird verständlich gemeldet und Senden stürzt
   assert.strictEqual(chat.status, 'error');
 });
 
+test('Chat: bleibt "arbeitet", bis alle Nachrichten beantwortet sind', async () => {
+  const chat = new ClaudeChat({ bin: FAKE, env: { ...process.env, FAKE_DELAY: '500' }, cwd: os.tmpdir() });
+  await chat.send('eins');
+  await wait(200);
+  await chat.send('zwei');
+  await wait(400); // erste Antwort ist da, zweite noch nicht
+  assert.strictEqual(chat.status, 'busy');
+  await wait(500);
+  assert.strictEqual(chat.status, 'ready');
+  await chat.stop();
+});
+
+test('Chat: ersetzter Chat startet nie wieder', async () => {
+  const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir() });
+  chat.start();
+  const disposing = chat.dispose();
+  const sent = chat.send('geheim');
+  await disposing;
+  assert.strictEqual(await sent, false);
+  assert.strictEqual(chat.proc, null);
+});
+
+test('Chat: ungespeicherte Sitzung wird neu angelegt statt fortgesetzt', async () => {
+  const log = path.join(tmp('args-'), 'args.log');
+  const root = tmp('projects-');
+  const chat = new ClaudeChat({ bin: FAKE, env: { ...process.env, FAKE_ARGS_LOG: log, FAKE_DELAY: '2000' }, cwd: os.tmpdir(), projectsRoot: root });
+  const runs = () => fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  try {
+    await chat.send('erste');
+    await wait(300);
+    await chat.stop({ interrupt: true }); // gestoppt, bevor Claude Code etwas gespeichert hat
+    await chat.send('zweite');
+    await wait(300);
+    assert.deepStrictEqual(runs().map((a) => a.includes('--session-id')), [true, true]);
+    // Sobald Claude Code die Sitzung gespeichert hat, wird fortgesetzt.
+    fs.mkdirSync(path.join(root, 'p'));
+    fs.writeFileSync(path.join(root, 'p', `${chat.sessionId}.jsonl`), '');
+    await chat.stop();
+    await chat.send('dritte');
+    await wait(300);
+    assert.ok(runs()[2].includes('--resume'));
+  } finally {
+    await chat.stop();
+  }
+});
+
 test('runOnce: Auftrag mit Spiegelstrich wird nicht als Option gelesen', async () => {
   const res = await runOnce({ bin: FAKE, env: process.env, cwd: os.tmpdir(), prompt: '- Fasse zusammen' });
   assert.deepStrictEqual(res, { ok: true, text: 'ok:- Fasse zusammen' });

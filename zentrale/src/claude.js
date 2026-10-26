@@ -108,21 +108,36 @@ function explainExit(stderr) {
   return 'Claude wurde unerwartet beendet.';
 }
 
+const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
+
 class ClaudeChat extends EventEmitter {
-  constructor({ bin, env, cwd, resume = null, permissionMode = 'acceptEdits', title = null }) {
+  constructor({ bin, env, cwd, resume = null, permissionMode = 'acceptEdits', title = null, projectsRoot = PROJECTS_ROOT }) {
     super();
     this.bin = bin;
     this.env = env;
     this.cwd = cwd;
     // Neue Chats bekommen ihre Sitzungs-ID sofort, damit sie von Anfang an feststeht.
     this.sessionId = resume || crypto.randomUUID();
-    this.hasHistory = !!resume;
+    this.resumed = !!resume;
+    this.projectsRoot = projectsRoot;
     this.permissionMode = permissionMode;
     this.title = title;
     this.status = 'stopped';
     this.proc = null;
     this.stderr = '';
     this.exiting = null;
+    this.pending = 0;
+    this.disposed = false;
+  }
+
+  // Fortsetzen geht nur, wenn Claude Code die Sitzung schon gespeichert hat.
+  sessionSaved() {
+    if (this.resumed) return true;
+    try {
+      return fs.readdirSync(this.projectsRoot).some((d) => fs.existsSync(path.join(this.projectsRoot, d, `${this.sessionId}.jsonl`)));
+    } catch {
+      return false;
+    }
   }
 
   setStatus(s) {
@@ -136,11 +151,12 @@ class ClaudeChat extends EventEmitter {
   }
 
   start() {
-    if (this.alive) return;
+    if (this.alive || this.disposed) return;
     const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
       '--permission-mode', this.permissionMode];
-    args.push(this.hasHistory ? '--resume' : '--session-id', this.sessionId);
+    args.push(this.sessionSaved() ? '--resume' : '--session-id', this.sessionId);
     this.stderr = '';
+    this.pending = 0;
     let proc;
     try {
       proc = spawn(this.bin, args, { cwd: this.cwd, env: this.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
@@ -162,7 +178,11 @@ class ClaudeChat extends EventEmitter {
       try { ev = JSON.parse(line); } catch { return; }
       if (ev.session_id) this.sessionId = ev.session_id;
       for (const item of simplify(ev)) this.emit('event', item);
-      if (ev.type === 'result') this.setStatus('ready');
+      // Erst "bereit", wenn alle gesendeten Nachrichten beantwortet sind.
+      if (ev.type === 'result') {
+        this.pending = Math.max(0, this.pending - 1);
+        if (this.pending === 0) this.setStatus('ready');
+      }
     });
     proc.stderr.on('data', (d) => { if (current()) this.stderr = (this.stderr + d.toString()).slice(-4000); });
     proc.on('error', (err) => {
@@ -182,14 +202,24 @@ class ClaudeChat extends EventEmitter {
   }
 
   async send(text) {
+    if (this.disposed) return false;
     if (this.exiting) await this.exiting;
+    // Wurde der Chat inzwischen ersetzt, darf er nicht wieder starten.
+    if (this.disposed) return false;
     if (!this.alive || !this.proc.stdin.writable) this.start();
     if (!this.alive) return false;
     const msg = { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } };
     this.proc.stdin.write(JSON.stringify(msg) + '\n');
-    this.hasHistory = true;
+    this.pending += 1;
     this.setStatus('busy');
     return true;
+  }
+
+  // Endgültig beenden: der Chat startet danach nie wieder.
+  dispose() {
+    this.disposed = true;
+    this.removeAllListeners();
+    return this.stop();
   }
 
   // Bricht die laufende Arbeit ab. Der nächste send() setzt dieselbe Sitzung fort.
@@ -228,9 +258,17 @@ function runOnce({ bin, env, cwd, prompt, permissionMode = 'acceptEdits', timeou
     const timer = setTimeout(() => { err += '\nAbgebrochen: Die Aufgabe lief länger als 30 Minuten.'; terminate(proc); }, timeoutMs);
     proc.stdout.on('data', (d) => { out += d.toString(); });
     proc.stderr.on('data', (d) => { err = (err + d.toString()).slice(-2000); });
-    const done = (res) => { clearTimeout(timer); runningTasks.delete(proc); resolve(res); };
+    let finished = false;
+    const done = (res) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      runningTasks.delete(proc);
+      resolve(res);
+    };
     proc.on('error', (e) => done({ ok: false, text: e.message }));
-    proc.on('exit', (code) => {
+    // 'close' statt 'exit': dann ist die Ausgabe sicher vollständig gelesen.
+    proc.on('close', (code) => {
       let text = '';
       let isError = false;
       try { const j = JSON.parse(out); text = j.result || ''; isError = !!j.is_error; } catch { text = out.trim(); }

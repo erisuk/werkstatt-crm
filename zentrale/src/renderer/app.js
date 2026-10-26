@@ -407,7 +407,7 @@ function renderTasks() {
   fill($('#main'),
     h('div', { class: 'section-head wrap' },
       h('h1', { text: 'Tägliche Aufgaben' }), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn', disabled: !ui.state.claude.found, onClick: () => editTask({}) }, '+ Neue Aufgabe')),
+      h('button', { class: 'btn', id: 'add-task', disabled: !ui.state.claude.found, onClick: () => editTask({}) }, '+ Neue Aufgabe')),
     h('p', { class: 'date', text: 'Diese Aufgaben laufen jeden Tag zur eingestellten Uhrzeit auf deinem Mac, solange die Zentrale geöffnet ist. War sie zu der Uhrzeit geschlossen, läuft die Aufgabe, sobald du die Zentrale am selben Tag öffnest. Deine Cloud-Aufgaben laufen davon unabhängig weiter.' }),
     h('div', { id: 'task-form' }),
     h('div', { id: 'task-list', class: 'section' }));
@@ -452,8 +452,9 @@ function renderTaskList() {
 
 function editTask(t) {
   const cur = ui.editingTask;
-  if (cur && ui.editingDirty && cur.id !== (t.id || null) && !confirm('Deine Änderungen an der Aufgabe sind noch nicht gespeichert. Verwerfen?')) return;
-  if (cur && cur.id === (t.id || null) && cur.id) { if (ui.view !== 'tasks') setView('tasks'); return; }
+  // Dieselbe Aufgabe (oder schon eine neue) ist bereits offen: nur hinwechseln.
+  if (cur && cur.id === (t.id || null)) { if (ui.view !== 'tasks') setView('tasks'); return; }
+  if (cur && ui.editingDirty && !confirm('Deine Änderungen an der Aufgabe sind noch nicht gespeichert. Verwerfen?')) return;
   ui.editingTask = { id: t.id || null, name: t.name || '', time: t.time || '08:00', prompt: t.prompt || '', cwd: t.cwd || null };
   ui.editingDirty = false;
   if (ui.view !== 'tasks') setView('tasks'); else renderTaskForm();
@@ -559,17 +560,24 @@ function renderMain() {
 function applyState(s) {
   const firstLoad = !ui.state;
   ui.state = s;
+  // Neuer Chat (auch der beim Start): ab jetzt gehören seine Ereignisse zu uns,
+  // egal welche Ansicht gerade offen ist.
+  const newChat = !!s.chat && ui.chatGen !== s.chat.gen;
+  if (newChat) resetChat(s.chat.gen, []);
   renderStatus();
   renderAside();
   if (firstLoad) { renderMain(); return; }
   if (ui.view === 'overview') renderOverview();
   else if (ui.view === 'chat') {
     const head = $('#chat-head');
-    // Neu aufbauen nur, wenn ein Chat dazukam oder wegfiel; sonst bleibt die Eingabe erhalten.
-    if (!head !== !s.chat) renderChat();
-    else if (s.chat && ui.chatGen !== s.chat.gen) renderChat();
+    // Neu aufbauen nur, wenn ein Chat dazukam, wegfiel oder wechselte; sonst bleibt die Eingabe erhalten.
+    if (!head !== !s.chat || newChat) renderChat();
     else { updateChatHead(); renderMessages(); }
-  } else renderTaskList();
+  } else {
+    const addBtn = $('#add-task');
+    if (addBtn) addBtn.disabled = !s.claude.found;
+    renderTaskList();
+  }
 }
 
 document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));

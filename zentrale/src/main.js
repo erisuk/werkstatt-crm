@@ -24,6 +24,9 @@ function setup() {
   let projectsCache = [];
   let quitting = false;
   let cleanedUp = false;
+  // Anfragen aus der Oberfläche warten, bis die Suche nach Claude abgeschlossen ist.
+  let markClaudeReady;
+  const claudeReady = new Promise((r) => { markClaudeReady = r; });
 
   // Das Design ist hell; dunkle Systemfarben würden die Schrift unlesbar machen.
   nativeTheme.themeSource = 'light';
@@ -75,10 +78,7 @@ function setup() {
     chat = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title });
     chat.on('event', (ev) => send('chat-event', { ...ev, gen }));
     chat.on('status', () => pushState());
-    if (old) {
-      old.removeAllListeners();
-      await old.stop();
-    }
+    if (old) await old.dispose();
     if (gen !== chatGen) return chatInfo();
     chat.start();
     pushState();
@@ -134,6 +134,7 @@ function setup() {
     const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : null;
     const session = sessionId && findSession(sessionId);
     if (!session) return { error: 'Diese Sitzung wurde nicht gefunden.' };
+    await claudeReady;
     if (!claude.bin) return { error: 'Claude Code wurde nicht gefunden.' };
     // Fortsetzen geht nur im Ordner, in dem die Sitzung entstanden ist.
     if (!isDir(session.cwd)) return { error: 'Der Projektordner dieser Sitzung existiert nicht mehr.' };
@@ -147,6 +148,7 @@ function setup() {
   ipcMain.handle('new-session', async (_e, args) => {
     const cwd = args && args.cwd;
     if (!isDir(cwd)) return { error: 'Dieser Ordner existiert nicht.' };
+    await claudeReady;
     if (!claude.bin) return { error: 'Claude Code wurde nicht gefunden.' };
     return { chat: await openChat({ cwd }), history: [] };
   });
@@ -154,11 +156,15 @@ function setup() {
   ipcMain.handle('send-message', async (_e, text) => {
     const t = typeof text === 'string' ? text.trim() : '';
     if (!t) return { ok: false };
+    await claudeReady;
     if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
     if (!chat) await openChat({ cwd: defaultCwd() });
-    if (!chat.title) { chat.title = shortTitle(t); pushState(); }
-    const ok = await chat.send(t);
-    return ok ? { ok: true, gen: chatGen } : { ok: false, error: 'Claude konnte nicht gestartet werden.' };
+    const c = chat;
+    const gen = chatGen;
+    if (!c.title) { c.title = shortTitle(t); pushState(); }
+    const ok = await c.send(t);
+    if (c !== chat) return { ok: false, error: 'Der Chat wurde gewechselt, bevor die Nachricht ankam. Bitte noch einmal senden.' };
+    return ok ? { ok: true, gen } : { ok: false, error: 'Claude konnte nicht gestartet werden.' };
   });
 
   ipcMain.handle('stop-chat', async () => {
@@ -201,6 +207,7 @@ function setup() {
 
     // Claude suchen, ohne das Fenster zu blockieren; dann sofort im letzten Projekt starten.
     claude = { ...(await resolveClaude()), checking: false };
+    markClaudeReady();
     pushState();
     scheduler.start();
     if (claude.bin) await openChat({ cwd: defaultCwd() });
@@ -219,7 +226,7 @@ function setup() {
     if (scheduler) scheduler.stop();
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];
-    if (chat) { chat.removeAllListeners(); jobs.push(chat.stop()); }
+    if (chat) jobs.push(chat.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });
 
