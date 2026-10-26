@@ -1,8 +1,8 @@
 {
   "name": "zentrale",
   "productName": "Zentrale",
-  "version": "0.1.0",
-  "description": "Deine Kommandozentrale für Claude Code: Projekte, Sitzungen, Agenten und tägliche Aufgaben im Milchglas-Look.",
+  "version": "0.2.0",
+  "description": "Deine Kommandozentrale für Claude Code und deinen Mac: Projekte, Gespräche, Agenten, Mail, Kalender und tägliche Aufgaben im Milchglas-Look.",
   "main": "src/main.js",
   "private": true,
   "scripts": {
@@ -21,11 +21,20 @@
       "src/**/*",
       "package.json"
     ],
+    "asarUnpack": [
+      "src/mac.js",
+      "src/mcp/**"
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
         "dmg"
-      ]
+      ],
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "Die Zentrale steuert auf deinen Wunsch Kalender, Erinnerungen, Notizen, Mail und Outlook.",
+        "NSCalendarsUsageDescription": "Die Zentrale zeigt deine heutigen Termine an.",
+        "NSRemindersUsageDescription": "Die Zentrale zeigt deine offenen Erinnerungen an."
+      }
     }
   }
 }

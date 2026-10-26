@@ -103,24 +103,60 @@ function simplify(ev) {
 
 // Übersetzt eine Absturz-Ausgabe in eine verständliche deutsche Meldung.
 function explainExit(stderr) {
-  if (/No conversation found/i.test(stderr)) return 'Diese Sitzung konnte nicht fortgesetzt werden.';
+  if (/No conversation found/i.test(stderr)) return 'Dieses Gespräch konnte nicht fortgesetzt werden.';
   if (/log ?in|auth|credential|API key/i.test(stderr)) return 'Claude ist nicht angemeldet. Starte einmal „claude“ im Terminal und melde dich an.';
   return 'Claude wurde unerwartet beendet.';
+}
+
+const clip = (s, n = 2000) => { const t = String(s == null ? '' : s); return t.length > n ? `${t.slice(0, n)} …` : t; };
+
+// Beschreibt eine Freigabe-Anfrage in einfachen Worten: was will Claude tun, und womit?
+function describeApproval(toolName, input, description) {
+  const i = input && typeof input === 'object' ? input : {};
+  const name = String(toolName || '');
+  const json = () => clip(JSON.stringify(i, null, 2));
+  if (name === 'Bash') return { title: 'Einen Befehl im Terminal ausführen', detail: clip(i.command) };
+  if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(name)) return { title: 'Eine Datei außerhalb des Projekts ändern', detail: clip(i.file_path || i.notebook_path) };
+  if (name === 'WebFetch') return { title: 'Eine Webseite abrufen', detail: clip(i.url) };
+  if (name === 'WebSearch') return { title: 'Im Internet suchen', detail: clip(i.query) };
+  if (name === 'mcp__mac__run_applescript') return { title: 'Den Mac per Skript steuern', detail: clip(i.script) };
+  if (name === 'mcp__mac__open') return { title: 'Etwas auf dem Mac öffnen', detail: clip(i.target) };
+  if (name === 'mcp__mac__reminders_add') return { title: 'Eine Erinnerung anlegen', detail: clip(`${i.title || ''}${i.due ? ` · fällig ${i.due}` : ''}`) };
+  if (name === 'mcp__mac__notes_create') return { title: 'Eine Notiz anlegen', detail: clip(`${i.title || ''}\n\n${i.body || ''}`) };
+  if (/chrome/i.test(name)) return { title: 'Chrome bedienen', detail: json() };
+  if (/mail|outlook|gmail/i.test(name) && /send|reply|forward/i.test(name)) {
+    const to = [].concat(i.to || i.recipient || i.recipients || []).join(', ');
+    return { title: 'Eine E-Mail senden', detail: clip(`${to ? `An: ${to}\n` : ''}${i.subject ? `Betreff: ${i.subject}\n\n` : ''}${i.body || i.content || i.text || ''}`) || json() };
+  }
+  if (/draft/i.test(name)) return { title: 'Einen Mail-Entwurf anlegen', detail: json() };
+  if (/delete|trash|remove/i.test(name)) return { title: 'Etwas löschen', detail: json() };
+  const label = name.startsWith('mcp__') ? name.split('__').slice(1).join(' · ') : name;
+  return { title: description ? clip(description, 140) : `Werkzeug „${label}“ benutzen`, detail: json() };
+}
+
+// Für Befehle und Skripte gilt "immer erlauben" nur für genau diesen Inhalt, sonst für das ganze Werkzeug.
+function approvalKey(toolName, input) {
+  const i = input || {};
+  if (toolName === 'Bash') return `Bash:${i.command}`;
+  if (toolName === 'mcp__mac__run_applescript') return `script:${i.script}`;
+  return toolName;
 }
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 class ClaudeChat extends EventEmitter {
-  constructor({ bin, env, cwd, resume = null, permissionMode = 'acceptEdits', title = null, projectsRoot = PROJECTS_ROOT }) {
+  constructor({ bin, env, cwd, resume = null, permissionMode = 'acceptEdits', title = null,
+    projectsRoot = PROJECTS_ROOT, extraArgs = () => [] }) {
     super();
     this.bin = bin;
     this.env = env;
     this.cwd = cwd;
-    // Neue Chats bekommen ihre Sitzungs-ID sofort, damit sie von Anfang an feststeht.
+    // Neue Chats bekommen ihre Gesprächs-ID sofort, damit sie von Anfang an feststeht.
     this.sessionId = resume || crypto.randomUUID();
     this.resumed = !!resume;
     this.projectsRoot = projectsRoot;
     this.permissionMode = permissionMode;
+    this.extraArgs = extraArgs;
     this.title = title;
     this.status = 'stopped';
     this.proc = null;
@@ -128,9 +164,11 @@ class ClaudeChat extends EventEmitter {
     this.exiting = null;
     this.pending = 0;
     this.disposed = false;
+    this.approvals = new Map();
+    this.alwaysAllow = new Set();
   }
 
-  // Fortsetzen geht nur, wenn Claude Code die Sitzung schon gespeichert hat.
+  // Fortsetzen geht nur, wenn Claude Code das Gespräch schon gespeichert hat.
   sessionSaved() {
     if (this.resumed) return true;
     try {
@@ -150,13 +188,63 @@ class ClaudeChat extends EventEmitter {
     return !!this.proc && this.proc.exitCode === null && this.proc.signalCode === null;
   }
 
+  pendingApprovals() {
+    return [...this.approvals.values()].map(({ id, tool, title, detail, createdAt }) => ({ id, tool, title, detail, createdAt }));
+  }
+
+  clearApprovals() {
+    if (!this.approvals.size) return;
+    this.approvals.clear();
+    this.emit('approvals');
+  }
+
+  write(obj) {
+    if (!this.alive || !this.proc.stdin.writable) return false;
+    this.proc.stdin.write(JSON.stringify(obj) + '\n');
+    return true;
+  }
+
+  // Steueranfragen der Kommandozeile: Freigaben landen bei uns, alles andere lehnen wir höflich ab.
+  handleControl(ev) {
+    const req = ev.request || {};
+    if (req.subtype !== 'can_use_tool') {
+      this.write({ type: 'control_response', response: { subtype: 'error', request_id: ev.request_id, error: 'Nicht unterstützt' } });
+      return;
+    }
+    const key = approvalKey(req.tool_name, req.input);
+    if (this.alwaysAllow.has(key)) {
+      this.write({ type: 'control_response', response: { subtype: 'success', request_id: ev.request_id,
+        response: { behavior: 'allow', updatedInput: req.input || {} } } });
+      return;
+    }
+    const { title, detail } = describeApproval(req.tool_name, req.input, req.description);
+    this.approvals.set(ev.request_id, { id: ev.request_id, tool: req.tool_name, title, detail, key, input: req.input || {}, createdAt: Date.now() });
+    this.emit('approvals');
+  }
+
+  // decision: 'allow' | 'always' | 'deny'
+  respond(id, decision) {
+    const a = this.approvals.get(id);
+    if (!a) return false;
+    this.approvals.delete(id);
+    const allow = decision === 'allow' || decision === 'always';
+    if (decision === 'always') this.alwaysAllow.add(a.key);
+    this.write({ type: 'control_response', response: { subtype: 'success', request_id: id,
+      response: allow ? { behavior: 'allow', updatedInput: a.input }
+        : { behavior: 'deny', message: 'Der Nutzer hat das in der Zentrale abgelehnt.' } } });
+    this.emit('approvals');
+    return true;
+  }
+
   start() {
     if (this.alive || this.disposed) return;
     const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-      '--permission-mode', this.permissionMode];
+      '--permission-mode', this.permissionMode, '--permission-prompt-tool', 'stdio'];
     args.push(this.sessionSaved() ? '--resume' : '--session-id', this.sessionId);
+    args.push(...(this.extraArgs() || []));
     this.stderr = '';
     this.pending = 0;
+    this.clearApprovals();
     let proc;
     try {
       proc = spawn(this.bin, args, { cwd: this.cwd, env: this.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
@@ -176,6 +264,7 @@ class ClaudeChat extends EventEmitter {
       if (!current()) return;
       let ev;
       try { ev = JSON.parse(line); } catch { return; }
+      if (ev.type === 'control_request') { this.handleControl(ev); return; }
       if (ev.session_id) this.sessionId = ev.session_id;
       for (const item of simplify(ev)) this.emit('event', item);
       // Erst "bereit", wenn alle gesendeten Nachrichten beantwortet sind.
@@ -188,12 +277,14 @@ class ClaudeChat extends EventEmitter {
     proc.on('error', (err) => {
       if (!current()) return;
       this.proc = null;
+      this.clearApprovals();
       this.emit('event', { kind: 'error', text: 'Claude konnte nicht starten.', details: err.message });
       this.setStatus('error');
     });
     proc.on('exit', (code, signal) => {
       if (!current()) return;
       this.proc = null;
+      this.clearApprovals();
       if (this.intentional || code === 0) { this.setStatus('stopped'); return; }
       const details = this.stderr.trim().split('\n').slice(-6).join('\n') || (signal ? `Signal ${signal}` : `Exit-Code ${code}`);
       this.emit('event', { kind: 'error', text: explainExit(this.stderr), details });
@@ -207,9 +298,7 @@ class ClaudeChat extends EventEmitter {
     // Wurde der Chat inzwischen ersetzt, darf er nicht wieder starten.
     if (this.disposed) return false;
     if (!this.alive || !this.proc.stdin.writable) this.start();
-    if (!this.alive) return false;
-    const msg = { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } };
-    this.proc.stdin.write(JSON.stringify(msg) + '\n');
+    if (!this.write({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } })) return false;
     this.pending += 1;
     this.setStatus('busy');
     return true;
@@ -218,15 +307,17 @@ class ClaudeChat extends EventEmitter {
   // Endgültig beenden: der Chat startet danach nie wieder.
   dispose() {
     this.disposed = true;
+    const done = this.stop();
     this.removeAllListeners();
-    return this.stop();
+    return done;
   }
 
-  // Bricht die laufende Arbeit ab. Der nächste send() setzt dieselbe Sitzung fort.
+  // Bricht die laufende Arbeit ab. Der nächste send() setzt dasselbe Gespräch fort.
   stop({ interrupt = false } = {}) {
     const proc = this.proc;
     if (!proc) return this.exiting || Promise.resolve();
     this.intentional = true;
+    this.clearApprovals();
     try { proc.stdin.end(); } catch {}
     this.exiting = terminate(proc, { interrupt }).then(() => {
       if (this.proc === proc) this.proc = null;
@@ -240,46 +331,74 @@ class ClaudeChat extends EventEmitter {
 const runningTasks = new Set();
 const TASK_TIMEOUT_MS = 30 * 60 * 1000;
 
-// Führt einen einzelnen Auftrag ohne Unterhaltung aus (für tägliche Aufgaben).
-function runOnce({ bin, env, cwd, prompt, permissionMode = 'acceptEdits', timeoutMs = TASK_TIMEOUT_MS }) {
+// Führt einen einzelnen Auftrag aus (für tägliche Aufgaben). Läuft wie ein Chat, damit
+// Freigaben genauso in der Zentrale landen. onApproval(chat) meldet neue Rückfragen.
+function runTask({ bin, env, cwd, prompt, extraArgs, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot }) {
   return new Promise((resolve) => {
-    let out = '';
-    let err = '';
-    let proc;
-    try {
-      // Der Auftrag steht nach "--", damit ein Text wie "- Fasse zusammen" keine Option ist.
-      proc = spawn(bin, ['-p', '--output-format', 'json', '--permission-mode', permissionMode, '--', prompt],
-        { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
-    } catch (e) {
-      resolve({ ok: false, text: e.message });
-      return;
-    }
-    runningTasks.add(proc);
-    const timer = setTimeout(() => { err += '\nAbgebrochen: Die Aufgabe lief länger als 30 Minuten.'; terminate(proc); }, timeoutMs);
-    proc.stdout.on('data', (d) => { out += d.toString(); });
-    proc.stderr.on('data', (d) => { err = (err + d.toString()).slice(-2000); });
+    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, projectsRoot });
+    const texts = [];
+    let error = null;
+    let sent = false;
     let finished = false;
-    const done = (res) => {
+    runningTasks.add(chat);
+    const finish = (res) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
-      runningTasks.delete(proc);
+      runningTasks.delete(chat);
+      chat.dispose();
       resolve(res);
     };
-    proc.on('error', (e) => done({ ok: false, text: e.message }));
-    // 'close' statt 'exit': dann ist die Ausgabe sicher vollständig gelesen.
-    proc.on('close', (code) => {
-      let text = '';
-      let isError = false;
-      try { const j = JSON.parse(out); text = j.result || ''; isError = !!j.is_error; } catch { text = out.trim(); }
-      const ok = code === 0 && !isError;
-      done({ ok, text: ok ? text : (err.trim() || text || `Exit-Code ${code}`) });
+    const timer = setTimeout(() => finish({ ok: false, text: 'Abgebrochen: Die Aufgabe lief länger als 30 Minuten.' }), timeoutMs);
+    chat.on('event', (ev) => {
+      if (ev.kind === 'text') texts.push(ev.text);
+      else if (ev.kind === 'error') error = ev;
+    });
+    chat.on('approvals', () => { if (onApproval) onApproval(chat); });
+    chat.on('status', (s) => {
+      if (!sent) return;
+      const fail = () => [error && error.text, error && error.details].filter(Boolean).join('\n');
+      if (s === 'ready') finish(error ? { ok: false, text: fail() } : { ok: true, text: texts[texts.length - 1] || '' });
+      else if (s === 'error' || s === 'stopped') finish({ ok: false, text: fail() || 'Claude wurde beendet.' });
+    });
+    chat.send(prompt).then((ok) => {
+      sent = true;
+      if (!ok) finish({ ok: false, text: (error && error.details) || 'Claude konnte nicht gestartet werden.' });
+      else if (chat.status !== 'busy') chat.emit('status', chat.status);
     });
   });
 }
 
 function stopAllTasks() {
-  return Promise.all([...runningTasks].map((p) => terminate(p)));
+  return Promise.all([...runningTasks].map((c) => c.dispose()));
 }
 
-module.exports = { resolveClaude, cleanEnv, ClaudeChat, simplify, describeTool, runOnce, stopAllTasks, terminate };
+// Liest `claude mcp list` und gibt die eingerichteten Verbindungen zurück.
+function parseMcpList(output) {
+  const out = [];
+  for (const raw of String(output || '').split('\n')) {
+    const line = raw.trim();
+    const sep = line.indexOf(': ');
+    const dash = line.lastIndexOf(' - ');
+    if (sep <= 0 || dash <= sep) continue;
+    const name = line.slice(0, sep);
+    const statusText = line.slice(dash + 3).trim();
+    let status = 'unknown';
+    if (/fail|error/i.test(statusText)) status = 'failed';
+    else if (/connected/i.test(statusText)) status = 'connected';
+    else if (/auth/i.test(statusText)) status = 'auth';
+    else if (/not configured|disabled|pending/i.test(statusText)) status = 'off';
+    out.push({ name, target: line.slice(sep + 2, dash).trim(), status, statusText: statusText.replace(/^[^\w]+/, '') });
+  }
+  return out;
+}
+
+async function listMcpServers({ bin, env, cwd }) {
+  const out = await execText(bin, ['mcp', 'list'], { env, cwd, timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
+  return out === null ? null : parseMcpList(out);
+}
+
+module.exports = {
+  resolveClaude, cleanEnv, ClaudeChat, simplify, describeTool, describeApproval, approvalKey,
+  runTask, stopAllTasks, terminate, parseMcpList, listMcpServers,
+};

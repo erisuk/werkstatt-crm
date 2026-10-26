@@ -6,7 +6,8 @@ const path = require('path');
 
 const { listProjects, readMessages, isRealPrompt, shortTitle } = require('../src/sessions');
 const { isDue, dayKey, TaskScheduler } = require('../src/tasks');
-const { simplify, describeTool, cleanEnv, ClaudeChat, runOnce } = require('../src/claude');
+const { simplify, describeTool, describeApproval, approvalKey, parseMcpList, cleanEnv, ClaudeChat, runTask } = require('../src/claude');
+const { Settings } = require('../src/settings');
 
 const FAKE = path.join(__dirname, 'fake-claude.js');
 const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -253,7 +254,7 @@ test('Chat: abgestürzter Prozess wird verständlich gemeldet und Senden stürzt
   chat.start();
   await wait(400);
   assert.strictEqual(chat.status, 'error');
-  assert.strictEqual(events[0].text, 'Diese Sitzung konnte nicht fortgesetzt werden.');
+  assert.strictEqual(events[0].text, 'Dieses Gespräch konnte nicht fortgesetzt werden.');
   await chat.send('noch mal');
   await wait(400);
   assert.strictEqual(chat.status, 'error');
@@ -305,13 +306,138 @@ test('Chat: ungespeicherte Sitzung wird neu angelegt statt fortgesetzt', async (
   }
 });
 
-test('runOnce: Auftrag mit Spiegelstrich wird nicht als Option gelesen', async () => {
-  const res = await runOnce({ bin: FAKE, env: process.env, cwd: os.tmpdir(), prompt: '- Fasse zusammen' });
-  assert.deepStrictEqual(res, { ok: true, text: 'ok:- Fasse zusammen' });
+
+// ---------- Freigaben ----------
+
+test('describeApproval beschreibt Aktionen in einfachen Worten', () => {
+  assert.deepStrictEqual(describeApproval('Bash', { command: 'rm -rf x' }), { title: 'Einen Befehl im Terminal ausführen', detail: 'rm -rf x' });
+  assert.strictEqual(describeApproval('mcp__mac__reminders_add', { title: 'Milch', due: '2026-10-27' }).detail, 'Milch · fällig 2026-10-27');
+  const mail = describeApproval('mcp__claude_ai_Gmail__send_message', { to: ['a@b.de'], subject: 'Hallo', body: 'Text' });
+  assert.strictEqual(mail.title, 'Eine E-Mail senden');
+  assert.strictEqual(mail.detail, 'An: a@b.de\nBetreff: Hallo\n\nText');
+  assert.strictEqual(describeApproval('mcp__x__thing', { a: 1 }, null).title, 'Werkzeug „x · thing“ benutzen');
+  assert.ok(describeApproval('Bash', { command: 'x'.repeat(5000) }).detail.length < 2100);
 });
 
-test('runOnce: zu lange Aufgabe wird abgebrochen', async () => {
-  const res = await runOnce({ bin: FAKE, env: { ...process.env, FAKE_DELAY: '5000' }, cwd: os.tmpdir(), prompt: 'x', timeoutMs: 200 });
+test('approvalKey: "immer erlauben" gilt bei Befehlen nur für genau diesen Befehl', () => {
+  assert.notStrictEqual(approvalKey('Bash', { command: 'ls' }), approvalKey('Bash', { command: 'rm -rf /' }));
+  assert.strictEqual(approvalKey('mcp__mac__open', { target: 'a' }), approvalKey('mcp__mac__open', { target: 'b' }));
+});
+
+async function waitFor(fn, ms = 3000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (fn()) return true; await wait(20); }
+  return false;
+}
+
+test('Chat: Freigabe erlauben, ablehnen und "immer erlauben"', async () => {
+  const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir() });
+  const events = collect(chat);
+  const texts = () => events.filter((e) => e.kind === 'text').map((e) => e.text);
+  try {
+    await chat.send('FREIGABE:ls');
+    assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
+    const a = chat.pendingApprovals()[0];
+    assert.strictEqual(a.title, 'Einen Befehl im Terminal ausführen');
+    assert.strictEqual(a.detail, 'ls');
+    assert.strictEqual(chat.status, 'busy');
+    assert.strictEqual(chat.respond(a.id, 'allow'), true);
+    assert.strictEqual(chat.respond(a.id, 'allow'), false); // nur einmal
+    assert.ok(await waitFor(() => texts().includes('erlaubt:ls')));
+
+    await chat.send('FREIGABE:rm x');
+    assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
+    chat.respond(chat.pendingApprovals()[0].id, 'deny');
+    assert.ok(await waitFor(() => texts().includes('abgelehnt')));
+
+    await chat.send('FREIGABE:date');
+    assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
+    chat.respond(chat.pendingApprovals()[0].id, 'always');
+    assert.ok(await waitFor(() => texts().filter((t) => t === 'erlaubt:date').length === 1));
+    await chat.send('FREIGABE:date');
+    assert.ok(await waitFor(() => texts().filter((t) => t === 'erlaubt:date').length === 2));
+    assert.strictEqual(chat.pendingApprovals().length, 0);
+  } finally {
+    await chat.stop();
+  }
+});
+
+test('Chat: offene Freigaben verschwinden beim Stoppen', async () => {
+  const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir() });
+  let changes = 0;
+  chat.on('approvals', () => { changes += 1; });
+  await chat.send('FREIGABE:ls');
+  assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
+  await chat.stop();
+  assert.strictEqual(chat.pendingApprovals().length, 0);
+  assert.strictEqual(changes, 2);
+});
+
+test('Chat: zusätzliche Startoptionen werden beim (Neu-)Start gelesen', async () => {
+  const log = path.join(tmp('args-'), 'args.log');
+  let extra = ['--chrome'];
+  const chat = new ClaudeChat({ bin: FAKE, env: { ...process.env, FAKE_ARGS_LOG: log }, cwd: os.tmpdir(), extraArgs: () => extra });
+  chat.start();
+  await wait(300);
+  await chat.stop();
+  extra = ['--mcp-config=/x.json'];
+  chat.start();
+  await wait(300);
+  await chat.stop();
+  const runs = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.ok(runs[0].includes('--chrome') && runs[0].includes('--permission-prompt-tool'));
+  assert.ok(runs[1].includes('--mcp-config=/x.json') && !runs[1].includes('--chrome'));
+});
+
+// ---------- Tägliche Aufgaben über Claude ----------
+
+test('runTask liefert die letzte Antwort', async () => {
+  const res = await runTask({ bin: FAKE, env: process.env, cwd: os.tmpdir(), prompt: '- Fasse zusammen' });
+  assert.strictEqual(res.ok, true);
+  assert.match(res.text, /:- Fasse zusammen$/);
+});
+
+test('runTask meldet Freigaben und läuft danach weiter', async () => {
+  let asked = 0;
+  const res = await runTask({ bin: FAKE, env: process.env, cwd: os.tmpdir(), prompt: 'FREIGABE:ls',
+    onApproval: (chat) => { for (const a of chat.pendingApprovals()) { asked += 1; chat.respond(a.id, 'allow'); } } });
+  assert.strictEqual(asked, 1);
+  assert.deepStrictEqual(res, { ok: true, text: 'erlaubt:ls' });
+});
+
+test('runTask: zu lange Aufgabe wird abgebrochen', async () => {
+  const res = await runTask({ bin: FAKE, env: { ...process.env, FAKE_DELAY: '5000' }, cwd: os.tmpdir(), prompt: 'x', timeoutMs: 300 });
   assert.strictEqual(res.ok, false);
   assert.match(res.text, /30 Minuten/);
+});
+
+test('runTask: fehlendes Programm', async () => {
+  const res = await runTask({ bin: '/gibt/es/nicht', env: process.env, cwd: os.tmpdir(), prompt: 'x' });
+  assert.strictEqual(res.ok, false);
+});
+
+// ---------- Verbindungen und Einstellungen ----------
+
+test('parseMcpList erkennt Namen und Status', () => {
+  const list = parseMcpList('Checking MCP server health…\n\n'
+    + 'claude.ai Gmail: https://g/mcp (HTTP) - ✓ Connected\n'
+    + 'plugin:marketing:slack: https://mcp.slack.com/mcp (HTTP) - ! Needs authentication\n'
+    + 'plugin:marketing:hubspot: https://h (HTTP) - × Failed to connect — Incompatible auth server\n'
+    + 'plugin:marketing:gmail:  (HTTP) - - Not configured\n'
+    + 'mac: /usr/bin/node /x/mac-server.js - ✓ Connected\n');
+  assert.deepStrictEqual(list.map((c) => [c.name, c.status]), [
+    ['claude.ai Gmail', 'connected'], ['plugin:marketing:slack', 'auth'], ['plugin:marketing:hubspot', 'failed'],
+    ['plugin:marketing:gmail', 'off'], ['mac', 'connected']]);
+  assert.strictEqual(list[1].statusText, 'Needs authentication');
+});
+
+test('Settings speichert nur gültige Werte', () => {
+  const file = path.join(tmp('settings-'), 'settings.json');
+  const s = new Settings(file);
+  assert.deepStrictEqual(s.get(), { theme: 'system', connections: { mac: false, chrome: false } });
+  s.update({ theme: 'dark', connections: { mac: true, boese: true } });
+  s.update({ theme: 'lila', connections: { chrome: 'ja' } });
+  assert.deepStrictEqual(new Settings(file).get(), { theme: 'dark', connections: { mac: true, chrome: false } });
+  fs.writeFileSync(file, 'kaputt');
+  assert.strictEqual(new Settings(file).get().theme, 'system');
 });
