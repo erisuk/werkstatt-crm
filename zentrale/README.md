@@ -6,6 +6,10 @@ Deine Kommandozentrale für Claude Code und deinen Mac – im Milchglas-Look, he
 - **Projekte & Gespräche:** Alle Projekte, in denen du mit Claude gearbeitet hast, stehen schon da. Klick auf ein Projekt zeigt die Gespräche dazu, „Öffnen“ setzt sie fort. Neue Gespräche – auch aus dem Terminal – erscheinen automatisch.
 - **Mit dem ganzen Mac verbunden:** Kalender, Erinnerungen, Notizen, Apple Mail, Outlook, Dateisuche und jede andere App per AppleScript. Dazu Gmail und Microsoft 365 über deine claude.ai-Verbindungen und Chrome über „Claude in Chrome“.
 - **Freigaben:** Lesen geht ohne Rückfrage. Bevor Claude etwas sendet, anlegt, öffnet, löscht oder einen Befehl ausführt, fragt die Zentrale dich – mit genau dem, was passieren soll (z. B. Empfänger und Text einer Mail). Ist das Fenster im Hintergrund, kommt eine Mac-Mitteilung.
+- **Themen statt Ordner-Chaos:** Gespräche sind nach Themen sortiert (📈 Trading, 🛒 Shop, 🎬 Media …) – nach deinem Emoji-Schema aus der Claude-App, sonst nach Stichwörtern. Geplante Läufe und Tests landen in „🤖 Automatik & Tests“, in der Claude-App archivierte Gespräche sind ausgeblendet. Das Thema jedes Gesprächs lässt sich per Auswahlfeld ändern; „Nach Ordner“ zeigt die alte Sortierung.
+- **Löschen:** Einzelne Gespräche, ganze Themen oder Projekte (auf Wunsch samt Ordner) wandern in den Papierkorb – wiederherstellbar, solange er nicht geleert ist.
+- **Skills & Agenten:** Was gerade arbeitet (auch Unteragenten und andere Claude-Fenster), alle Agenten mit An/Aus-Schalter, Skills, Befehle, Plugins und Konnektoren.
+- **Mein Mac:** Alle Apps mit Symbol zum Starten, Ordner durchblättern und öffnen, „Claude hier starten“ in jedem Ordner, Spotlight-Suche über den ganzen Mac.
 - **Heute-Ansicht:** Termine, offene Erinnerungen und ungelesene Mails auf einen Blick, dazu Knöpfe wie „Mein Tag“ und „Mails zusammenfassen“.
 - **Tägliche Aufgaben:** Aufträge, die Claude jeden Tag zu einer festen Uhrzeit erledigt – mit denselben Freigaben.
 
@@ -63,6 +67,7 @@ Alles unter **Verbindungen** in der Seitenleiste:
 ## Gut zu wissen
 
 - Das rote X schließt nur das Fenster, Claude arbeitet weiter. Ganz beenden mit **⌘Q**.
+- Jeder Terminal-Befehl, jeder Webabruf und jede Chrome-Aktion läuft über die Freigaben – auch wenn deine `~/.claude/settings.json` ihn sonst erlauben würde. Nur reine Lese-Befehle (`ls`, `cat`, `git status` …) winkt die Zentrale selbst durch.
 - Claude darf Dateien in einem echten Projektordner ohne Rückfrage bearbeiten. Ohne Projektordner (Benutzerordner, `~/Library`, Systemordner) fragt die Zentrale vor jeder Dateiänderung. Alles andere läuft immer über die Freigaben.
 - Eine Freigabe zeigt immer alles, was passieren soll – bei Mails auch Kopie, Blindkopie und Anhänge. Ist es zu lang zum Anzeigen, lässt es sich nur ablehnen.
 - „Immer erlauben“ gilt nur im aktuellen Gespräch und nur für genau dieselbe Aktion mit denselben Angaben. Für Senden, Löschen und Chrome gibt es diesen Knopf nicht.
@@ -87,4 +92,8 @@ npm test   # Tests für Gespräche, Aufgaben, Freigaben, Mac-Anbindung und Einst
 | `src/sessions.js` | Liest die Gespräche aus `~/.claude/projects` |
 | `src/tasks.js` | Plant und speichert tägliche Aufgaben |
 | `src/settings.js` | Darstellung und Verbindungen |
+| `src/categories.js` | Sortiert Gespräche in Themen, merkt sich deine Wahl |
+| `src/desktop-meta.js` | Liest Titel, Archiv und geplante Läufe aus der Claude-App |
+| `src/library.js` | Skills, Befehle, Plugins, Agenten und was gerade läuft |
+| `src/files.js` | Apps und Ordner für „Mein Mac“ |
 | `src/renderer/` | Oberfläche (HTML, CSS, JS) |
