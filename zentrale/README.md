@@ -40,7 +40,9 @@ Die App ist nicht von Apple signiert. Beim ersten Start daher **Rechtsklick → 
 
 - Das rote X schließt nur das Fenster, Claude arbeitet weiter. Ganz beenden mit **⌘Q**.
 - Claude darf in der Zentrale Dateien im Projektordner bearbeiten (Modus „acceptEdits“). Befehle, die eine Freigabe bräuchten, werden abgelehnt.
-- Tägliche Aufgaben laufen, solange die Zentrale geöffnet ist. Verpasste Aufgaben werden beim nächsten Start nachgeholt. Gespeichert werden sie unter `~/Library/Application Support/Zentrale/tasks.json`.
+- Tägliche Aufgaben laufen, solange die Zentrale geöffnet ist. War sie zur Uhrzeit geschlossen, läuft die Aufgabe, sobald du die Zentrale am selben Tag öffnest. Gespeichert werden sie unter `~/Library/Application Support/Zentrale/tasks.json`.
+- „Stoppen“ bricht Claudes aktuelle Arbeit ab; die nächste Nachricht setzt dieselbe Sitzung fort.
+- Es kann immer nur eine Zentrale gleichzeitig laufen, damit Aufgaben nicht doppelt ausgeführt werden.
 - Deine Cloud-Aufgaben auf claude.ai laufen davon unabhängig weiter.
 
 ## Entwicklung
