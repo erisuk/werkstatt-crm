@@ -13,6 +13,7 @@ const { desktopMeta } = require('./desktop-meta');
 const library = require('./library');
 const files = require('./files');
 const music = require('./music');
+const vault = require('./vault');
 const { PortalStore, PRESETS } = require('./portals');
 const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
@@ -50,6 +51,11 @@ const N8N_CREATE_KEY = `(async () => {
   const key = d.rawApiKey || (typeof d.apiKey === 'string' && !d.apiKey.includes('*') ? d.apiKey : null);
   return key ? { key } : { error: 'nokey' };
 })()`;
+
+// Hinweis an Claude: das Gehirn des Nutzers ist sein Obsidian-Vault.
+const vaultHint = (dir) => `Das Gedächtnis („Gehirn“) des Nutzers ist sein Obsidian-Vault unter ${dir}. `
+  + 'Bevor du zu Personen, Projekten oder früheren Entscheidungen antwortest, schau dort nach (z. B. mit /was-weiss-ich oder Grep). '
+  + 'Neue wichtige Erkenntnisse legst du mit /merk-dir ab; Notizen im Vault nie löschen, nur ergänzen.';
 
 // Hinweis an Claude, wenn „Web-Tabs für Claude“ eingeschaltet ist.
 const WEB_HINT = 'Du läufst in der Zentrale des Nutzers. Webseiten (z. B. Meta Business, Shopify, Gmail, Instagram) bedienst du '
@@ -190,9 +196,13 @@ function setup() {
     if (c.web && browserConfigFile) {
       args.push(`--mcp-config=${browserConfigFile}`);
       allowed.push(...BROWSER_READ_ONLY.map((t) => `mcp__web__${t}`));
-      // Nicht mit Playwright oder einem separaten Chrome verwechseln: Webseiten gehören in die Tabs der Zentrale.
-      args.push('--append-system-prompt', WEB_HINT);
     }
+    // Ein gemeinsamer Hinweis: wo das Gehirn (Obsidian) liegt und – falls an – wie Webseiten bedient werden.
+    const hints = [];
+    const v = currentVault();
+    if (v) hints.push(vaultHint(v.path));
+    if (c.web && browserConfigFile) hints.push(WEB_HINT);
+    if (hints.length) args.push('--append-system-prompt', hints.join('\n\n'));
     if (allowed.length) args.push(`--allowedTools=${allowed.join(',')}`);
     if (c.chrome) args.push('--chrome');
     return args;
@@ -602,6 +612,27 @@ function setup() {
   });
 
   ipcMain.handle('fs-search', (_e, q) => (typeof q === 'string' ? mac.spotlight(q, 60) : { ok: false, error: 'Suchbegriff fehlt.' }));
+
+  // ---------- Gehirn (Obsidian) ----------
+
+  function currentVault() {
+    try { return vault.findVaults()[0] || null; } catch { return null; }
+  }
+  const withVault = (fn) => {
+    const v = currentVault();
+    if (!v) return { ok: false, error: 'Kein Obsidian-Vault gefunden. Öffne Obsidian einmal mit deinem Vault.' };
+    try { return fn(v.path); } catch (e) { return { ok: false, error: e.message }; }
+  };
+  ipcMain.handle('vault-info', () => ({ vault: currentVault() }));
+  ipcMain.handle('vault-search', (_e, q) => withVault((dir) => vault.search(dir, typeof q === 'string' ? q : '')));
+  ipcMain.handle('vault-read', (_e, rel) => withVault((dir) => vault.readNote(dir, rel)));
+  ipcMain.handle('vault-add', (_e, args) => withVault((dir) => vault.addNote(dir, args && args.title, args && args.text)));
+  ipcMain.handle('vault-open', (_e, rel) => withVault((dir) => {
+    const found = vault.readNote(dir, rel);
+    if (!found.ok) return found;
+    shell.openExternal(vault.obsidianUrl(dir, rel));
+    return { ok: true };
+  }));
 
   // ---------- Musik ----------
 
