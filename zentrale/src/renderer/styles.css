@@ -417,3 +417,8 @@ h2 { font-size: 16px; font-weight: 600; }
 .player .controls button.main { width: 44px; height: 44px; background: var(--accent); color: var(--on-accent); }
 .player .controls button:hover { filter: brightness(1.08); }
 .player .actions { justify-content: center; }
+
+/* Automatisierungen */
+.auto-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.auto-status .sub { font-size: 12px; color: var(--text-2); }
+#auto-body .form textarea { min-height: 70px; }

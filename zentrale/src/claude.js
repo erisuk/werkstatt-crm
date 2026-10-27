@@ -146,6 +146,18 @@ function describeApproval(toolName, input, description) {
   } else if (name === 'mcp__mac__music_control') {
     const what = { playpause: 'Abspielen/Pausieren', play: 'Abspielen', pause: 'Pausieren', next: 'Nächster Titel', previous: 'Vorheriger Titel' };
     title = 'Musik steuern'; summary = `${i.app === 'music' ? 'Apple Music' : 'Spotify'}: ${what[i.action] || field('action')}`; shown = ['app', 'action'];
+  } else if (name === 'mcp__n8n__n8n_create_workflow' || name === 'mcp__n8n__n8n_update_workflow') {
+    const w = i.workflow && typeof i.workflow === 'object' ? i.workflow : {};
+    const nodes = Array.isArray(w.nodes) ? w.nodes : [];
+    title = name.endsWith('create_workflow') ? 'Einen n8n-Workflow anlegen (ausgeschaltet)' : 'Einen n8n-Workflow ändern';
+    summary = [i.id ? `Workflow-ID: ${i.id}` : null, `Name: ${w.name || '(ohne Namen)'}`,
+      `${nodes.length} Knoten: ${nodes.map((n) => `${n && n.name ? n.name : '?'} (${n && n.type ? String(n.type).replace(/^n8n-nodes-base\./, '') : '?'})`).join(', ')}`]
+      .filter(Boolean).join('\n');
+    shown = ['id'];
+  } else if (name === 'mcp__n8n__n8n_set_active') {
+    title = i.active ? 'Einen n8n-Workflow einschalten' : 'Einen n8n-Workflow ausschalten';
+    summary = `Workflow-ID: ${field('id')}${i.active ? '\nEr läuft dann automatisch, sobald sein Auslöser eintritt.' : ''}`;
+    shown = ['id', 'active']; canAlways = false;
   } else if (name === 'mcp__mac__notes_create') {
     title = 'Eine Notiz anlegen'; summary = `${field('title')}\n\n${field('body')}`.trim(); shown = ['title', 'body'];
   } else if (/chrome/i.test(name)) {
@@ -247,9 +259,11 @@ const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 class ClaudeChat extends EventEmitter {
   constructor({ bin, env, cwd, resume = null, permissionMode = null, title = null,
-    projectsRoot = PROJECTS_ROOT, extraArgs = () => [] }) {
+    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], extraEnv = () => ({}) }) {
     super();
     this.bin = bin;
+    // Zusätzliche Umgebung beim (Neu-)Start, z. B. der n8n-Schlüssel – so steht er nie in einer Datei.
+    this.extraEnv = extraEnv;
     this.env = env;
     this.cwd = cwd;
     // Neue Chats bekommen ihre Gesprächs-ID sofort, damit sie von Anfang an feststeht.
@@ -353,7 +367,7 @@ class ClaudeChat extends EventEmitter {
     this.clearApprovals();
     let proc;
     try {
-      proc = spawn(this.bin, args, { cwd: this.cwd, env: this.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+      proc = spawn(this.bin, args, { cwd: this.cwd, env: { ...this.env, ...(this.extraEnv() || {}) }, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     } catch (err) {
       this.emit('event', { kind: 'error', text: 'Claude konnte nicht starten.', details: err.message });
       this.setStatus('error');
@@ -451,9 +465,9 @@ const TASK_TIMEOUT_MS = 30 * 60 * 1000;
 
 // Führt einen einzelnen Auftrag aus (für tägliche Aufgaben). Läuft wie ein Chat, damit
 // Freigaben genauso in der Zentrale landen. onApproval(chat) meldet neue Rückfragen.
-function runTask({ bin, env, cwd, prompt, extraArgs, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot, permissionMode }) {
+function runTask({ bin, env, cwd, prompt, extraArgs, extraEnv, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot, permissionMode }) {
   return new Promise((resolve) => {
-    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, projectsRoot, permissionMode: permissionMode || permissionModeFor(cwd) });
+    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, extraEnv, projectsRoot, permissionMode: permissionMode || permissionModeFor(cwd) });
     const texts = [];
     let error = null;
     let sent = false;

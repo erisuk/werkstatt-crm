@@ -24,6 +24,8 @@
     "asarUnpack": [
       "src/mac.js",
       "src/recurrence.js",
+      "src/music.js",
+      "src/n8n.js",
       "src/mcp/**"
     ],
     "mac": {

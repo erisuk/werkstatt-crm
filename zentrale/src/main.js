@@ -1,5 +1,5 @@
 // Hauptprozess: öffnet das Fenster, startet Claude automatisch und hält alles synchron.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -16,6 +16,8 @@ const music = require('./music');
 const { PortalStore, PRESETS } = require('./portals');
 const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
+const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
+const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase } = require('./n8n');
 
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
@@ -50,6 +52,8 @@ function setup() {
   let quitting = false;
   let cleanedUp = false;
   let macConfigFile = null;
+  let n8nConfigFile = null;
+  let n8nConfig = { url: 'http://localhost:5678', key: null };
   const taskChats = new Map(); // laufende Aufgaben-Chats → Name der Aufgabe
   const notified = new Set();
   const liveNotifications = new Set(); // Referenz halten, sonst geht der Klick auf die Mitteilung verloren
@@ -139,26 +143,74 @@ function setup() {
   function extraArgs() {
     const c = settings ? settings.get().connections : {};
     const args = [];
+    const allowed = [];
     if (c.mac && macConfigFile) {
       args.push(`--mcp-config=${macConfigFile}`);
-      args.push(`--allowedTools=${READ_ONLY_TOOLS.map((t) => `mcp__mac__${t}`).join(',')}`);
+      allowed.push(...READ_ONLY_TOOLS.map((t) => `mcp__mac__${t}`));
     }
+    if (n8nConfig.key && n8nConfigFile) {
+      args.push(`--mcp-config=${n8nConfigFile}`);
+      allowed.push(...N8N_READ_ONLY.map((t) => `mcp__n8n__${t}`));
+    }
+    if (allowed.length) args.push(`--allowedTools=${allowed.join(',')}`);
     if (c.chrome) args.push('--chrome');
     return args;
   }
 
-  // Der Mac-Server läuft mit der Node-Laufzeit, die in Electron steckt.
-  function writeMacConfig() {
-    const server = path.join(__dirname, 'mcp', 'mac-server.js').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-    macConfigFile = path.join(app.getPath('userData'), 'mcp-mac.json');
-    const config = { mcpServers: { mac: { type: 'stdio', command: process.execPath, args: [server], env: { ELECTRON_RUN_AS_NODE: '1' } } } };
+  // Der n8n-Schlüssel geht nur über die Umgebung an Claude und von dort an den n8n-Server.
+  function extraEnv() {
+    return n8nConfig.key ? { ZENTRALE_N8N_KEY: n8nConfig.key, ZENTRALE_N8N_URL: n8nConfig.url } : {};
+  }
+
+  // Die MCP-Server laufen mit der Node-Laufzeit, die in Electron steckt.
+  function writeMcpConfig(name, script, env = {}) {
+    const server = path.join(__dirname, 'mcp', script).replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+    const file = path.join(app.getPath('userData'), `mcp-${name}.json`);
+    const config = { mcpServers: { [name]: { type: 'stdio', command: process.execPath, args: [server], env: { ELECTRON_RUN_AS_NODE: '1', ...env } } } };
     try {
-      fs.mkdirSync(path.dirname(macConfigFile), { recursive: true });
-      fs.writeFileSync(macConfigFile, JSON.stringify(config, null, 2));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(config, null, 2));
+      return file;
     } catch {
-      macConfigFile = null;
+      return null;
     }
   }
+
+  function writeMacConfig() {
+    macConfigFile = writeMcpConfig('mac', 'mac-server.js');
+    // Nur Platzhalter in der Datei – die Werte setzt Claude Code aus seiner Umgebung ein.
+    n8nConfigFile = writeMcpConfig('n8n', 'n8n-server.js', { ZENTRALE_N8N_KEY: '${ZENTRALE_N8N_KEY}', ZENTRALE_N8N_URL: '${ZENTRALE_N8N_URL}' });
+  }
+
+  // ---------- n8n: Adresse und verschlüsselter Schlüssel (macOS-Schlüsselbund) ----------
+
+  function n8nFile() { return path.join(app.getPath('userData'), 'n8n.json'); }
+
+  function loadN8n() {
+    let raw = {};
+    try { raw = JSON.parse(fs.readFileSync(n8nFile(), 'utf8')); } catch {}
+    let key = null;
+    if (raw.key && safeStorage.isEncryptionAvailable()) {
+      try { key = safeStorage.decryptString(Buffer.from(raw.key, 'base64')); } catch { key = null; }
+    }
+    n8nConfig = { url: normalizeBase(raw.url) || N8N_DEFAULT_URL, key };
+  }
+
+  function saveN8n(next) {
+    if (next.key && !safeStorage.isEncryptionAvailable()) return false;
+    const data = { url: next.url, key: next.key ? safeStorage.encryptString(next.key).toString('base64') : null };
+    try {
+      fs.mkdirSync(path.dirname(n8nFile()), { recursive: true });
+      fs.writeFileSync(`${n8nFile()}.tmp`, JSON.stringify(data), { mode: 0o600 });
+      fs.renameSync(`${n8nFile()}.tmp`, n8nFile());
+    } catch { return false; }
+    n8nConfig = next;
+    // Claude startet vor der nächsten Nachricht neu und kennt dann die n8n-Werkzeuge.
+    if (chat) chat.needsRestart = true;
+    return true;
+  }
+
+  const n8nClient = () => new N8n({ baseUrl: n8nConfig.url, apiKey: n8nConfig.key });
 
   function findSession(id) {
     for (const p of projectsCache) {
@@ -177,7 +229,7 @@ function setup() {
     const old = chat;
     chatGen += 1;
     const gen = chatGen;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs });
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs, extraEnv });
     chat = c;
     c.on('event', (ev) => send('chat-event', { ...ev, gen }));
     c.on('status', () => pushState());
@@ -479,6 +531,42 @@ function setup() {
   ipcMain.handle('music-control', (_e, args) => (musicAllowed() && args
     ? music.control(String(args.app || ''), String(args.action || '')) : { ok: false, error: 'Die Verbindung „Mein Mac“ ist aus.' }));
 
+  // ---------- Automatisierungen (n8n) ----------
+
+  ipcMain.handle('n8n-status', async () => {
+    const health = await n8nClient().health();
+    return { url: n8nConfig.url, running: health.ok, hasKey: !!n8nConfig.key };
+  });
+  // Prüft den Schlüssel sofort an n8n, bevor er gespeichert wird.
+  ipcMain.handle('n8n-connect', async (_e, args) => {
+    const url = normalizeBase(args && args.url) || N8N_DEFAULT_URL;
+    const key = args && typeof args.key === 'string' ? args.key.trim() : '';
+    if (!key || key.length > 4000) return { ok: false, error: 'Bitte den API-Schlüssel aus n8n einfügen.' };
+    const test = await new N8n({ baseUrl: url, apiKey: key }).listWorkflows();
+    if (!test.ok) return test;
+    if (!saveN8n({ url, key })) return { ok: false, error: 'Der Schlüssel konnte nicht sicher gespeichert werden (Schlüsselbund nicht verfügbar).' };
+    return { ok: true, count: test.data.length };
+  });
+  ipcMain.handle('n8n-disconnect', () => saveN8n({ url: n8nConfig.url, key: null }));
+  ipcMain.handle('n8n-workflows', () => n8nClient().listWorkflows());
+  ipcMain.handle('n8n-executions', () => n8nClient().listExecutions(50));
+  ipcMain.handle('n8n-set-active', (_e, args) => (args && typeof args.id === 'string'
+    ? n8nClient().setActive(args.id, args.active === true) : { ok: false, error: 'Workflow fehlt.' }));
+  // Öffnet den n8n-Editor als Tab im Bereich Web (die Anmeldung bei n8n bleibt dort gespeichert).
+  ipcMain.handle('n8n-open-editor', (_e, id) => {
+    const target = n8nClient().editorUrl(typeof id === 'string' ? id : null);
+    const origin = new URL(target).origin;
+    let portal = webTabs.store.get().portals.find((p) => new URL(p.url).origin === origin);
+    if (!portal) {
+      const res = webTabs.store.add('n8n', `${origin}/`);
+      if (!res.ok) return res;
+      portal = res.portal;
+    }
+    webTabs.show(portal.id);
+    webTabs.openUrl(portal.id, target);
+    return { ok: true, id: portal.id };
+  });
+
   // ---------- Web: Seiten mit dauerhaftem Login ----------
 
   const webState = () => ({ ...webTabs.info(), presets: PRESETS });
@@ -531,6 +619,7 @@ function setup() {
     webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
     webTabs.on('change', () => send('web-state', webState()));
     nativeTheme.themeSource = settings.get().theme;
+    loadN8n();
     writeMacConfig();
     refreshProjects();
     createWindow();
@@ -539,7 +628,7 @@ function setup() {
       if (!claude.bin) return Promise.resolve({ ok: false, text: 'Claude Code wurde nicht gefunden.' });
       const cwd = isDir(task.cwd) ? task.cwd : os.homedir();
       return runTask({
-        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs,
+        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs, extraEnv,
         onApproval: (c) => {
           // Läuft die Aufgabe, merken wir uns ihren Chat, damit Freigaben zugeordnet werden können.
           if (!taskChats.has(c)) taskChats.set(c, task.name);
