@@ -251,3 +251,17 @@ test('Musik-Werkzeuge: Abfragen ohne Rückfrage, Steuern mit Freigabe', () => {
   assert.strictEqual(a.title, 'Musik steuern');
   assert.strictEqual(a.detail, 'Spotify: Nächster Titel');
 });
+
+test('Serien: mehrere Monate sortiert, BYSETPOS, ganztägig über die Zeitumstellung', () => {
+  const { occurrences } = require('../src/recurrence');
+  const days = (rule, start, end, from, to) => occurrences({ start, end }, rule, from, to).map((o) => `${o.start.getMonth() + 1}/${o.start.getDate()}`);
+  // Oktober und März, COUNT=3: Okt 2026, Mär 2027, Okt 2027 – in dieser Reihenfolge, nicht März 2026 zuerst
+  assert.deepStrictEqual(days('FREQ=YEARLY;BYMONTH=10,3;COUNT=3', '2026-10-01T09:00:00', '2026-10-01T10:00:00', new Date(2026, 0, 1), new Date(2028, 0, 1)), ['10/1', '3/1', '10/1']);
+  // Letzter Werktag im Monat
+  assert.deepStrictEqual(days('FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1', '2026-10-30T09:00:00', '2026-10-30T10:00:00', new Date(2026, 9, 1), new Date(2027, 0, 1)), ['10/30', '11/30', '12/31']);
+  // Ganztägiger Termin am Tag der Zeitumstellung (29.03.2026) endet am selben Tag um Mitternacht, nicht am 30. um 01:00
+  const [o] = occurrences({ start: '2025-03-29T00:00:00', end: '2025-03-30T00:00:00' }, 'FREQ=YEARLY', new Date(2026, 2, 29), new Date(2026, 2, 30));
+  assert.strictEqual(o.end.getDate(), 30);
+  assert.strictEqual(o.end.getHours(), 0);
+  assert.strictEqual(occurrences({ start: '2025-03-29T00:00:00', end: '2025-03-30T00:00:00' }, 'FREQ=YEARLY', new Date(2026, 2, 30), new Date(2026, 2, 31)).length, 0);
+});

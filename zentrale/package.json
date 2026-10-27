@@ -26,6 +26,7 @@
       "src/recurrence.js",
       "src/music.js",
       "src/n8n.js",
+      "src/n8n-proxy.js",
       "src/mcp/**"
     ],
     "mac": {

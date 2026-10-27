@@ -48,7 +48,7 @@ function renderAddForm() {
     h('h2', { class: 'full', text: 'Seite hinzufügen' }),
     [...new Set(s.presets.map((p) => p.group))].map((group) => {
       const items = s.presets.filter((p) => p.group === group && !used.has(p.url));
-      return items.length ? h('div', { class: 'field full' }, h('span', { class: 'label', text: group }),
+      return items.length ? h('div', { class: 'field full', role: 'group', 'aria-label': group }, h('span', { class: 'label', 'aria-hidden': 'true', text: group }),
         h('div', { class: 'quick-actions' }, items.map((p) =>
           h('button', { type: 'button', class: 'chip', 'data-focus': `preset:${p.name}`, onClick: () => addPortal(p.name, p.url) }, p.name)))) : null;
     }),

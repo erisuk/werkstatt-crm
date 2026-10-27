@@ -5,6 +5,11 @@
 const DEFAULT_URL = 'http://localhost:5678';
 const TIMEOUT_MS = 15000;
 
+// Unverschlüsseltes http nur für den eigenen Mac.
+function isLoopback(base) {
+  try { return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(base).hostname); } catch { return false; }
+}
+
 function normalizeBase(url) {
   let u;
   try { u = new URL(String(url || DEFAULT_URL).trim()); } catch { return null; }
@@ -26,7 +31,7 @@ class N8n {
     const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
     try {
       const res = await this.fetch(`${this.base}/api/v1${path}`, {
-        method, signal: ctrl.signal,
+        method, signal: ctrl.signal, redirect: 'error',
         headers: { 'X-N8N-API-KEY': this.apiKey, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: body ? JSON.stringify(body) : undefined,
       });
@@ -48,7 +53,7 @@ class N8n {
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 4000);
-      const res = await this.fetch(`${this.base}/healthz`, { signal: ctrl.signal });
+      const res = await this.fetch(`${this.base}/healthz`, { signal: ctrl.signal, redirect: 'error' });
       clearTimeout(timer);
       return { ok: res.ok };
     } catch {
@@ -116,4 +121,4 @@ function cleanDefinition(def) {
     settings: def.settings && typeof def.settings === 'object' ? def.settings : { executionOrder: 'v1' } } };
 }
 
-module.exports = { N8n, DEFAULT_URL, normalizeBase, cleanDefinition, validId };
+module.exports = { N8n, DEFAULT_URL, normalizeBase, cleanDefinition, validId, isLoopback };

@@ -30,7 +30,9 @@ function frontmatter(text) {
     if (kv) {
       const value = kv[2].trim();
       block = /^[>|][+-]?$/.test(value) ? kv[1] : null;
-      out[kv[1]] = block ? '' : value.replace(/^["']|["']$/g, '');
+      let parsed = value.replace(/^["']|["']$/g, '');
+      if (/^".*"$/.test(value)) { try { parsed = JSON.parse(value); } catch {} }
+      out[kv[1]] = block ? '' : parsed;
     } else if (block && /^\s+\S/.test(line)) {
       out[block] = `${out[block]} ${line.trim()}`.trim();
     }
@@ -210,7 +212,28 @@ function parseTools(value) {
   const v = String(value || '').trim();
   if (!v) return [];
   try { const arr = JSON.parse(v); if (Array.isArray(arr)) return arr.map(String); } catch {}
-  return v.split(',').map((x) => x.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+  const out = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of v) {
+    if (ch === '(') depth += 1;
+    if (ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+}
+
+// Kopfzeilen, die die Zentrale nicht selbst schreibt, samt ihrer Folgezeilen.
+function otherHeadLines(text, own) {
+  const raw = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  if (!raw) return [];
+  let keep = false;
+  return raw[1].split(/\r?\n/).filter((line) => {
+    const key = (/^([A-Za-z][\w-]*):/.exec(line) || [])[1];
+    if (key) keep = !own.includes(key);
+    return keep;
+  });
 }
 
 function agentFile(id, active, root = CLAUDE_DIR) {
@@ -224,8 +247,13 @@ function readAgent(id, root = CLAUDE_DIR) {
     if (!file || !fs.existsSync(file)) continue;
     const text = fs.readFileSync(file, 'utf8');
     const fm = frontmatter(text);
+    const tools = parseTools(fm.tools);
+    const known = new Set(Object.values(TOOL_GROUPS).flat());
+    // Passen die Werkzeuge nicht genau in die Gruppen der Oberfläche, bleiben sie beim Speichern unverändert.
+    const groupsOnly = tools.every((t) => known.has(t))
+      && Object.values(TOOL_GROUPS).every((g) => g.every((t) => tools.includes(t)) || g.every((t) => !tools.includes(t)));
     return { ok: true, data: { id, active, name: fm.name || id.replace(/\.md$/, ''), description: fm.description || '',
-      model: MODELS.includes(fm.model) ? fm.model : 'inherit', tools: parseTools(fm.tools), body: splitFrontmatter(text).trim() } };
+      model: fm.model || 'inherit', tools, customTools: tools.length > 0 && !groupsOnly, body: splitFrontmatter(text).trim() } };
   }
   return { ok: false, error: 'Diesen Agenten gibt es nicht.' };
 }
@@ -239,14 +267,18 @@ function saveAgent(input, root = CLAUDE_DIR) {
   if (description.length < 10) return { ok: false, error: 'Beschreib in einem Satz, wofür der Agent da ist und wann Claude ihn einsetzen soll.' };
   const body = String(a.body || '').trim();
   if (body.length < 20) return { ok: false, error: 'Die Anweisungen sind zu kurz – schreib, wie der Agent arbeiten soll.' };
-  const model = MODELS.includes(a.model) ? a.model : 'inherit';
+  const model = /^[\w.-]{1,60}$/.test(String(a.model || '')) ? String(a.model) : 'inherit';
   const known = new Set(Object.values(TOOL_GROUPS).flat());
-  const tools = Array.isArray(a.tools) ? [...new Set(a.tools.filter((t) => known.has(t)))] : [];
+  let tools = Array.isArray(a.tools) ? [...new Set(a.tools.filter((t) => known.has(t)))] : [];
   const id = `${name}.md`;
   let file = agentFile(id, true, root);
+  let extraHead = [];
   if (a.id) {
     const old = readAgent(a.id, root);
     if (!old.ok) return old;
+    if (a.keepTools) tools = old.data.tools.filter((t) => /^[^\n]{1,200}$/.test(t));
+    // Kopfzeilen, die die Zentrale nicht kennt (z. B. color), bleiben erhalten.
+    extraHead = otherHeadLines(fs.readFileSync(agentFile(a.id, old.data.active, root), 'utf8'), ['name', 'description', 'model', 'tools']);
     const oldFile = agentFile(a.id, old.data.active, root);
     file = agentFile(id, old.data.active, root);
     if (a.id !== id && (fs.existsSync(agentFile(id, true, root)) || fs.existsSync(agentFile(id, false, root)))) {
@@ -259,14 +291,25 @@ function saveAgent(input, root = CLAUDE_DIR) {
   const head = ['---', `name: ${name}`, `description: ${yamlLine(description)}`];
   if (model !== 'inherit') head.push(`model: ${model}`);
   if (tools.length) head.push(`tools: ${tools.join(', ')}`);
-  head.push('---', '');
+  head.push(...extraHead, '---', '');
+  if (!noSymlink(path.dirname(file), file)) return { ok: false, error: 'Der Agenten-Ordner ist eine Verknüpfung – aus Sicherheitsgründen wird dort nicht geschrieben.' };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${head.join('\n')}${body}\n`);
   return { ok: true, id };
 }
 
+// Diese Ordner gehören zu ECC, Konto oder Plugins – dort legt die Zentrale keine Skills an.
+const RESERVED_SKILLS = new Set(['ecc', 'synced', 'plugins']);
 function skillDir(name, root = CLAUDE_DIR) {
-  return SLUG.test(name) ? path.join(root, 'skills', name) : null;
+  return SLUG.test(name) && !RESERVED_SKILLS.has(name) ? path.join(root, 'skills', name) : null;
+}
+
+// Nie über Verknüpfungen schreiben (sonst landete die Datei woanders als angezeigt).
+function noSymlink(...paths) {
+  for (const p of paths) {
+    try { if (fs.lstatSync(p).isSymbolicLink()) return false; } catch {}
+  }
+  return true;
 }
 
 // Eigene Skills liegen direkt in ~/.claude/skills/<name>/SKILL.md – nur die lassen sich hier ändern oder löschen.
@@ -277,8 +320,10 @@ function ownSkillDir(file, root = CLAUDE_DIR) {
 
 function saveSkill(input, root = CLAUDE_DIR) {
   const a = input && typeof input === 'object' ? input : {};
-  const name = slugify(a.name);
-  const dir = skillDir(name, root);
+  const editDir = a.edit ? ownSkillDir(a.file, root) : null;
+  if (a.edit && (!editDir || !fs.existsSync(path.join(editDir, 'SKILL.md')))) return { ok: false, error: 'Nur eigene Skills lassen sich hier bearbeiten.' };
+  const name = editDir ? path.basename(editDir) : slugify(a.name);
+  const dir = editDir || skillDir(name, root);
   if (!dir) return { ok: false, error: 'Der Name braucht mindestens 2 Zeichen (Buchstaben, Zahlen, Bindestriche).' };
   const description = String(a.description || '').trim();
   if (description.length < 10) return { ok: false, error: 'Beschreib, was der Skill tut und wann Claude ihn benutzen soll.' };
@@ -286,8 +331,10 @@ function saveSkill(input, root = CLAUDE_DIR) {
   if (body.length < 20) return { ok: false, error: 'Die Anleitung ist zu kurz.' };
   const file = path.join(dir, 'SKILL.md');
   if (!a.edit && fs.existsSync(file)) return { ok: false, error: `Es gibt schon einen Skill „${name}“.` };
+  if (!noSymlink(path.join(root, 'skills'), dir, file)) return { ok: false, error: 'Der Skill-Ordner ist eine Verknüpfung – aus Sicherheitsgründen wird dort nicht geschrieben.' };
+  const extra = editDir ? otherHeadLines(fs.readFileSync(file, 'utf8'), ['name', 'description']) : [];
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, `---\nname: ${name}\ndescription: ${yamlLine(description)}\n---\n\n${body}\n`);
+  fs.writeFileSync(file, ['---', `name: ${name}`, `description: ${yamlLine(description)}`, ...extra, '---', '', body, ''].join('\n'));
   return { ok: true, name, file };
 }
 
@@ -309,9 +356,13 @@ function listMarketplace(root = CLAUDE_DIR) {
     let data = null;
     try { data = JSON.parse(fs.readFileSync(path.join(dir, m, '.claude-plugin', 'marketplace.json'), 'utf8')); } catch { continue; }
     for (const p of (data && Array.isArray(data.plugins) ? data.plugins : [])) {
-      if (!p || typeof p.name !== 'string') continue;
-      out.push({ name: p.name, marketplace: (data.name || m), description: String(p.description || '').slice(0, 300),
-        category: p.category || 'sonstiges', installed: installed.has(p.name) });
+      // Namen landen in einer Nachricht an Claude – nur harmlose Zeichen, damit sie nichts „anweisen“ können.
+      if (!p || typeof p.name !== 'string' || !/^[\w.@-]{1,64}$/.test(p.name)) continue;
+      const market = typeof data.name === 'string' && /^[\w.@-]{1,64}$/.test(data.name) ? data.name : m;
+      if (!/^[\w.@-]{1,64}$/.test(market)) continue;
+      const category = typeof p.category === 'string' && /^[\w -]{1,40}$/.test(p.category) ? p.category : 'sonstiges';
+      out.push({ name: p.name, marketplace: market, description: String(p.description || '').slice(0, 300),
+        category, installed: installed.has(p.name) });
     }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, 'de'));

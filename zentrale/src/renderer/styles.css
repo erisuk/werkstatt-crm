@@ -414,7 +414,7 @@ h2 { font-size: 16px; font-weight: 600; }
 .player .bar span { display: block; height: 100%; background: var(--accent); }
 .player .controls { display: flex; justify-content: center; gap: 8px; }
 .player .controls button { width: 38px; height: 38px; border: 0; border-radius: 999px; background: var(--fill); color: var(--text); font-size: 15px; }
-.player .controls button.main { width: 44px; height: 44px; background: var(--accent); color: var(--on-accent); }
+.player .controls button.play { width: 44px; height: 44px; background: var(--accent); color: var(--on-accent); }
 .player .controls button:hover { filter: brightness(1.08); }
 .player .actions { justify-content: center; }
 
@@ -448,3 +448,24 @@ h2 { font-size: 16px; font-weight: 600; }
 .table td.actions-cell { white-space: nowrap; text-align: right; }
 .table td.actions-cell .link { margin-left: 10px; }
 .table tbody tr:hover { background: var(--card-hover); }
+
+/* Werkstatt: einklappbare Bereiche, schmale Fenster */
+.builder > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; height: 34px; padding: 0 14px; border-radius: 10px; background: var(--fill); font-weight: 600; font-size: 13px; color: var(--text); }
+.builder > summary::-webkit-details-marker { display: none; }
+.builder[open] > summary { margin-bottom: 10px; }
+.checks-field { border: 0; margin: 0; padding: 0; min-width: 0; }
+.checks-field legend { padding: 0; margin-bottom: 4px; }
+.table th[scope="row"] { font-weight: 600; text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); white-space: nowrap; }
+@container (max-width: 640px) {
+  .skills-table thead { display: none; }
+  .skills-table tr { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .skills-table th, .skills-table td { display: block; padding: 0; border: 0; }
+  .skills-table th[scope="row"] { white-space: normal; overflow-wrap: anywhere; }
+  .skills-table td.desc { flex: 1 1 100%; min-width: 0; }
+  .skills-table td.actions-cell { flex: 1 1 100%; text-align: left; white-space: normal; }
+  .skills-table td.actions-cell .link { margin: 0 12px 0 0; }
+  .lib-row { flex-wrap: wrap; row-gap: 6px; }
+  .lib-row .grow { flex: 1 1 100%; }
+  .lib-row .title { flex-wrap: wrap; white-space: normal; }
+  .form { grid-template-columns: 1fr; }
+}

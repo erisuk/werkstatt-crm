@@ -357,7 +357,7 @@ const TODAY_PARTS = {
 
 // Ein Teil der Heute-Ansicht. Jede Karte lädt für sich, damit der langsame Kalender die anderen nicht aufhält.
 async function todayPart(part, { launch = false } = {}) {
-  const run = TODAY_PARTS[part];
+  const run = Object.prototype.hasOwnProperty.call(TODAY_PARTS, part) ? TODAY_PARTS[part] : null;
   return run ? run(launch) : { ok: false, error: 'Unbekannter Teil.' };
 }
 

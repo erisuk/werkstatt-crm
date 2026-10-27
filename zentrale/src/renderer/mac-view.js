@@ -208,7 +208,7 @@ function renderMac() {
   keepFocus(() => fill($('#main'),
     h('div', { class: 'section-head wrap' }, h('h1', { text: 'Mein Mac' })),
     h('div', { class: 'section-head wrap' }, h('div', { class: 'tabs', id: 'mac-tabs', role: 'group', 'aria-label': 'Bereich wählen' }), h('span', { class: 'spacer' }), filter),
-    h('div', { id: 'mac-body', class: 'section', 'aria-live': 'polite' })));
+    h('div', { id: 'mac-body', class: 'section' })));
   renderMacTabs();
   renderMacBody();
   if (filter && macv.tab === 'apps' && !(document.activeElement && document.activeElement.dataset.focus)) filter.focus();

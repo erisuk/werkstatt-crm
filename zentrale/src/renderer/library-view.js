@@ -32,8 +32,14 @@ function libMatches(item) {
 }
 
 // Ein Skill oder Befehl lässt sich direkt im Chat benutzen: der Name steht dann schon im Eingabefeld.
-function useInChat(text) {
-  if (!ui.state.chat) { alert('Öffne zuerst einen Chat in der Übersicht – dann geht es direkt los.'); return; }
+// Ist kein Chat offen, startet einer im zuletzt benutzten Projekt.
+async function useInChat(text) {
+  if (!ui.state.chat) {
+    const recent = projects().find((p) => p.path);
+    const res = await api.newSession({ cwd: recent ? recent.path : null });
+    if (!res || res.error || !res.chat) { alert((res && res.error) || 'Es konnte kein Chat gestartet werden.'); return; }
+    resetChat(res.chat.gen, []);
+  }
   ui.prefill = text;
   setView('chat');
 }
@@ -76,7 +82,7 @@ function renderRunning() {
 function renderSkillList(list, prefix) {
   const filtered = list.filter(libMatches);
   return h('div', { class: 'card list' }, filtered.length ? filtered.map((x) => itemRow(x,
-    h('button', { class: 'link', onClick: () => useInChat(`${prefix}${x.name.replace(/^\//, '')} `) }, 'Im Chat nutzen')))
+    h('button', { class: 'link', 'aria-label': `${x.name} im Chat nutzen`, onClick: () => useInChat(`${prefix}${x.name.replace(/^\//, '')} `) }, 'Im Chat nutzen')))
     : h('div', { class: 'empty', text: 'Nichts gefunden.' }));
 }
 
@@ -133,13 +139,14 @@ function renderLibrary() {
   fill($('#main'),
     h('div', { class: 'section-head wrap' },
       h('h1', { text: 'Skills & Agenten' }), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn ghost', onClick: () => { loadLibrary(true); loadRunning(); } }, 'Aktualisieren')),
+      h('button', { class: 'btn ghost', onClick: () => { ws.market = null; loadLibrary(true); loadRunning(); } }, 'Aktualisieren')),
+    h('p', { class: 'date', text: 'Agenten sind Spezialisten, denen Claude Arbeit übergibt. Skills sind Anleitungen, die Claude bei passenden Aufgaben von selbst benutzt.' }),
     h('section', { class: 'section' },
       h('div', { class: 'section-head' }, h('h2', { text: 'Läuft gerade' })),
       h('div', { id: 'lib-running' })),
     h('section', { class: 'section' },
       h('div', { class: 'section-head wrap' }, h('div', { class: 'tabs', id: 'lib-tabs', role: 'group', 'aria-label': 'Bereich wählen' }), h('span', { class: 'spacer' }), filter),
-      h('div', { id: 'lib-body', class: 'section', 'aria-live': 'polite' })));
+      h('div', { id: 'lib-body', class: 'section' })));
   ui.sig.libRunning = null;
   renderRunning();
   renderLibraryBody();

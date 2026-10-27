@@ -235,7 +235,7 @@ test('Skills anlegen und nur eigene bearbeiten oder löschen', () => {
   assert.strictEqual(res.ok, true);
   assert.strictEqual(res.name, 'angebot-schreiben');
   assert.strictEqual(saveSkill({ name: 'angebot-schreiben', description: 'x'.repeat(20), body: 'y'.repeat(30) }, root).ok, false);
-  assert.strictEqual(saveSkill({ name: 'angebot-schreiben', description: 'Neue Beschreibung, lang genug.', body: 'y'.repeat(30), edit: true }, root).ok, true);
+  assert.strictEqual(saveSkill({ file: res.file, description: 'Neue Beschreibung, lang genug.', body: 'y'.repeat(30), edit: true }, root).ok, true);
   assert.strictEqual(readSkill(res.file, root).data.description, 'Neue Beschreibung, lang genug.');
   const skills = listSkills(root);
   assert.strictEqual(skills.find((s) => s.name === 'angebot-schreiben').own, true);
@@ -254,4 +254,35 @@ test('Marktplatz: Plugins mit Kategorie, installierte sind markiert', () => {
   const list = listMarketplace(root);
   assert.deepStrictEqual(list.map((p) => `${p.name}:${p.category}:${p.installed}`), ['github:sonstiges:false', 'marketing:productivity:true']);
   assert.strictEqual(list[0].marketplace, 'claude-plugins-official');
+});
+
+test('Speichern ist stabil: keine wachsenden Backslashes, Kommas in Klammern, fremde Kopfzeilen bleiben', () => {
+  const { saveAgent, readAgent, saveSkill, readSkill, frontmatter } = require('../src/library');
+  const root = fakeClaudeDir();
+  const desc = 'Prüft "Texte" und C:\\pfad sorgfältig.';
+  saveAgent({ name: 'pruefer', description: desc, body: 'Anweisungen, lang genug für den Test.' }, root);
+  for (let i = 0; i < 3; i += 1) {
+    const d = readAgent('pruefer.md', root).data;
+    saveAgent({ id: 'pruefer.md', name: d.name, description: d.description, body: d.body, keepTools: true }, root);
+  }
+  assert.strictEqual(readAgent('pruefer.md', root).data.description, desc);
+  // Werkzeug-Liste mit Kommas in Klammern und eine fremde Kopfzeile
+  const file = path.join(root, 'agents', 'pruefer.md');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('---\n\n', '---\n').replace(/\n---\n/, '\ntools: Read, Bash(git log,git diff), mcp__x__y\ncolor: blue\n---\n'));
+  const d = readAgent('pruefer.md', root).data;
+  assert.deepStrictEqual(d.tools, ['Read', 'Bash(git log,git diff)', 'mcp__x__y']);
+  assert.strictEqual(d.customTools, true);
+  saveAgent({ id: 'pruefer.md', name: d.name, description: d.description, body: d.body, keepTools: true }, root);
+  const after = fs.readFileSync(file, 'utf8');
+  assert.match(after, /tools: Read, Bash\(git log,git diff\), mcp__x__y/);
+  assert.match(after, /color: blue/);
+  // Skill bearbeiten: kein Duplikat, allowed-tools bleibt
+  const sk = saveSkill({ name: 'foo', description: 'Ein Test-Skill, lang genug.', body: 'Schritt 1: etwas Sinnvolles tun.' }, root);
+  fs.writeFileSync(sk.file, fs.readFileSync(sk.file, 'utf8').replace('name: foo', 'name: Foo Skill\nallowed-tools: Bash, Read'));
+  assert.strictEqual(saveSkill({ name: 'Foo Skill', file: sk.file, description: 'Geändert, lang genug.', body: 'Schritt 1: etwas anderes tun.', edit: true }, root).ok, true);
+  assert.ok(!fs.existsSync(path.join(root, 'skills', 'foo-skill')));
+  const text = fs.readFileSync(sk.file, 'utf8');
+  assert.match(text, /allowed-tools: Bash, Read/);
+  assert.strictEqual(readSkill(sk.file, root).data.description, 'Geändert, lang genug.');
+  assert.strictEqual(frontmatter('---\nx: "a \\"b\\""\n---\n').x, 'a "b"');
 });

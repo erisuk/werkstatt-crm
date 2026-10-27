@@ -17,7 +17,8 @@ const { PortalStore, PRESETS } = require('./portals');
 const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
-const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase } = require('./n8n');
+const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require('./n8n');
+const { startProxy, makeOps, socketPath: n8nSocketPath } = require('./n8n-proxy');
 
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
@@ -53,6 +54,7 @@ function setup() {
   let cleanedUp = false;
   let macConfigFile = null;
   let n8nConfigFile = null;
+  let n8nProxy = null;
   let n8nConfig = { url: 'http://localhost:5678', key: null };
   const taskChats = new Map(); // laufende Aufgaben-Chats → Name der Aufgabe
   const notified = new Set();
@@ -157,10 +159,6 @@ function setup() {
     return args;
   }
 
-  // Der n8n-Schlüssel geht nur über die Umgebung an Claude und von dort an den n8n-Server.
-  function extraEnv() {
-    return n8nConfig.key ? { ZENTRALE_N8N_KEY: n8nConfig.key, ZENTRALE_N8N_URL: n8nConfig.url } : {};
-  }
 
   // Die MCP-Server laufen mit der Node-Laufzeit, die in Electron steckt.
   function writeMcpConfig(name, script, env = {}) {
@@ -178,8 +176,8 @@ function setup() {
 
   function writeMacConfig() {
     macConfigFile = writeMcpConfig('mac', 'mac-server.js');
-    // Nur Platzhalter in der Datei – die Werte setzt Claude Code aus seiner Umgebung ein.
-    n8nConfigFile = writeMcpConfig('n8n', 'n8n-server.js', { ZENTRALE_N8N_KEY: '${ZENTRALE_N8N_KEY}', ZENTRALE_N8N_URL: '${ZENTRALE_N8N_URL}' });
+    // Der n8n-Server bekommt nur den Weg zur Vermittlung in der Zentrale – keinen Schlüssel.
+    n8nConfigFile = writeMcpConfig('n8n', 'n8n-server.js', { ZENTRALE_N8N_SOCKET: n8nSocketPath(app.getPath('userData')) });
   }
 
   // ---------- n8n: Adresse und verschlüsselter Schlüssel (macOS-Schlüsselbund) ----------
@@ -243,7 +241,7 @@ function setup() {
     const old = chat;
     chatGen += 1;
     const gen = chatGen;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs, extraEnv });
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs });
     chat = c;
     c.on('event', (ev) => send('chat-event', { ...ev, gen }));
     c.on('status', () => pushState());
@@ -493,7 +491,7 @@ function setup() {
   ipcMain.handle('agent-read', (_e, id) => safely(() => library.readAgent(id)));
   ipcMain.handle('agent-save', (_e, input) => safely(() => library.saveAgent(input)));
   ipcMain.handle('agent-trash', async (_e, id) => {
-    const found = library.readAgent(id);
+    const found = safely(() => library.readAgent(id));
     if (!found.ok) return found;
     try { await shell.trashItem(library.agentFile(id, found.data.active)); } catch (e) { return { ok: false, error: e.message }; }
     roles.remove(id);
@@ -575,7 +573,9 @@ function setup() {
   });
   // Prüft den Schlüssel sofort an n8n, bevor er gespeichert wird.
   ipcMain.handle('n8n-connect', async (_e, args) => {
-    const url = normalizeBase(args && args.url) || N8N_DEFAULT_URL;
+    const url = normalizeBase(args && args.url);
+    if (!url) return { ok: false, error: 'Das ist keine gültige Adresse (z. B. http://localhost:5678).' };
+    if (url.startsWith('http:') && !isLoopback(url)) return { ok: false, error: 'Für ein n8n außerhalb deines Macs bitte eine https-Adresse – sonst ginge der Schlüssel unverschlüsselt durchs Netz.' };
     const key = args && typeof args.key === 'string' ? args.key.trim() : '';
     if (!key || key.length > 4000) return { ok: false, error: 'Bitte den API-Schlüssel aus n8n einfügen.' };
     const test = await new N8n({ baseUrl: url, apiKey: key }).listWorkflows();
@@ -656,6 +656,7 @@ function setup() {
     webTabs.on('change', () => send('web-state', webState()));
     nativeTheme.themeSource = settings.get().theme;
     loadN8n();
+    n8nProxy = startProxy(makeOps(n8nClient), n8nSocketPath(app.getPath('userData')));
     writeMacConfig();
     refreshProjects();
     createWindow();
@@ -664,7 +665,7 @@ function setup() {
       if (!claude.bin) return Promise.resolve({ ok: false, text: 'Claude Code wurde nicht gefunden.' });
       const cwd = isDir(task.cwd) ? task.cwd : os.homedir();
       return runTask({
-        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs, extraEnv,
+        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs,
         onApproval: (c) => {
           // Läuft die Aufgabe, merken wir uns ihren Chat, damit Freigaben zugeordnet werden können.
           if (!taskChats.has(c)) taskChats.set(c, task.name);
@@ -702,6 +703,7 @@ function setup() {
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];
     if (webTabs) jobs.push(webTabs.saveLogins());
+    if (n8nProxy) n8nProxy.close();
     if (chat) jobs.push(chat.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });

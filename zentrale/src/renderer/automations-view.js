@@ -1,7 +1,7 @@
 // Ansicht „Automatisierungen“: dein n8n – Status, Workflows an/aus, letzte Läufe,
 // Editor als Tab und „Mit Claude bauen“. Nutzt die Helfer aus app.js (h, fill, ui, api …).
 
-const auto = { status: null, workflows: null, runs: null, error: null, filter: '', connectError: null, loading: false };
+const auto = { status: null, workflows: null, runs: null, error: null, filter: '', connectError: null, loading: false, wish: '', formUrl: null, formKey: '' };
 
 const RUN_LABEL = { success: ['erfolgreich', 'green'], error: ['Fehler', 'red'], crashed: ['abgestürzt', 'red'], running: ['läuft', 'amber'],
   waiting: ['wartet', 'amber'], canceled: ['abgebrochen', ''], new: ['neu', ''] };
@@ -50,13 +50,18 @@ So gehst du vor:
 
 function connectForm() {
   const url = h('input', { id: 'n8n-url', type: 'text', 'aria-label': 'Adresse von n8n' });
-  url.value = (auto.status && auto.status.url) || 'http://localhost:5678';
-  const key = h('input', { id: 'n8n-key', type: 'password', autocomplete: 'off', placeholder: 'API-Schlüssel aus n8n einfügen', 'aria-label': 'n8n-API-Schlüssel' });
+  url.value = auto.formUrl || (auto.status && auto.status.url) || 'http://localhost:5678';
+  url.addEventListener('input', () => { auto.formUrl = url.value; });
+  const key = h('input', { id: 'n8n-key', type: 'password', autocomplete: 'off', placeholder: 'API-Schlüssel aus n8n einfügen', 'aria-label': 'n8n-API-Schlüssel', 'data-focus': 'n8n-key' });
+  // Bis zum Absenden nur im Speicher halten, damit ein Neuzeichnen das Feld nicht leert.
+  key.value = auto.formKey;
+  key.addEventListener('input', () => { auto.formKey = key.value; });
   return h('form', { class: 'card form', onSubmit: async (e) => {
     e.preventDefault();
     auto.connectError = null;
     const res = await api.n8nConnect(url.value, key.value);
     key.value = '';
+    auto.formKey = '';
     if (!res.ok) { auto.connectError = res.error; renderAutomationsBody(); return; }
     await loadAutomations();
   } },
@@ -72,8 +77,10 @@ function connectForm() {
 }
 
 function builderCard() {
-  const text = h('textarea', { id: 'n8n-wish', rows: '3', placeholder: 'z. B. „Jeden Morgen um 7 die Wettervorhersage für Ulm per Telegram an mich“ oder „Neue Shopify-Bestellung → Zeile in Google Sheets + Nachricht an mich“' });
-  return h('form', { class: 'card form', onSubmit: (e) => { e.preventDefault(); buildWithClaude(text.value); } },
+  const text = h('textarea', { id: 'n8n-wish', rows: '3', 'data-focus': 'n8n-wish', placeholder: 'z. B. „Jeden Morgen um 7 die Wettervorhersage für Ulm per Telegram an mich“ oder „Neue Shopify-Bestellung → Zeile in Google Sheets + Nachricht an mich“' });
+  text.value = auto.wish;
+  text.addEventListener('input', () => { auto.wish = text.value; });
+  return h('form', { class: 'card form', onSubmit: (e) => { e.preventDefault(); const t = text.value; auto.wish = ''; buildWithClaude(t); } },
     h('h2', { class: 'full', text: 'Neue Automatisierung mit Claude bauen' }),
     h('div', { class: 'field full' }, h('label', { for: 'n8n-wish', text: 'Was soll automatisch passieren?' }), text,
       h('span', { class: 'hint', text: 'Claude baut den Workflow in deinem n8n und legt ihn ausgeschaltet an. Bevor er etwas anlegt, fragt die Zentrale dich. Zugangsdaten verbindest du danach selbst in n8n.' })),
@@ -89,7 +96,7 @@ function workflowRow(w, last) {
       h('div', { class: 'sub', text: [w.nodes != null ? plural(w.nodes, 'Knoten', 'Knoten') : null, w.tags.length ? w.tags.join(', ') : null,
         w.updatedAt ? `geändert ${formatWhen(Date.parse(w.updatedAt))}` : null].filter(Boolean).join(' · ') })),
     run ? h('span', { class: `pill ${run[1]}`, title: last.startedAt ? `Letzter Lauf: ${new Date(last.startedAt).toLocaleString('de-DE')}` : '', text: run[0] }) : null,
-    h('button', { class: 'link', 'data-focus': `n8n-edit:${w.id}`, onClick: () => openN8nEditor(w.id) }, 'Bearbeiten'),
+    h('button', { class: 'link', 'data-focus': `n8n-edit:${w.id}`, 'aria-label': `${w.name} in n8n öffnen`, onClick: () => openN8nEditor(w.id) }, 'In n8n öffnen'),
     h('button', { class: 'switch', role: 'switch', 'aria-checked': String(w.active), 'aria-label': w.name, 'data-focus': `n8n-active:${w.id}`,
       title: w.active ? 'Eingeschaltet – läuft automatisch' : 'Ausgeschaltet',
       onClick: async () => {
@@ -146,7 +153,8 @@ function renderAutomations() {
     h('div', { class: 'section-head wrap' }, h('h1', { text: 'Automatisierungen' }), h('span', { class: 'spacer' }), filter,
       h('button', { class: 'btn ghost', onClick: loadAutomations }, 'Aktualisieren'),
       h('button', { class: 'btn', onClick: () => openN8nEditor() }, 'n8n-Editor öffnen')),
-    h('div', { id: 'auto-body', class: 'section', 'aria-live': 'polite' }));
+    h('p', { class: 'date', text: 'Automatisierungen laufen in deinem n8n von selbst – zum Beispiel jeden Morgen oder sobald eine Mail kommt. Claude baut sie dir nach deiner Beschreibung.' }),
+    h('div', { id: 'auto-body', class: 'section' }));
   renderAutomationsBody();
   loadAutomations();
 }
