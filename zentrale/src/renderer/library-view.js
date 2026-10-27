@@ -7,6 +7,7 @@ const LIB_TABS = [
   { id: 'commands', label: 'Befehle' },
   { id: 'plugins', label: 'Plugins' },
   { id: 'connectors', label: 'Konnektoren' },
+  { id: 'discover', label: 'Entdecken' },
 ];
 
 const lib = { tab: 'agents', data: null, error: null, loading: false, filter: '', agentFilter: 'all', running: null, runningTimer: null };
@@ -72,28 +73,6 @@ function renderRunning() {
     : h('div', { class: 'card empty', text: 'Gerade arbeitet kein Agent. Hier erscheinen Chats, Aufgaben und Unteragenten, sobald sie loslegen – auch aus anderen Claude-Fenstern.' }));
 }
 
-function renderAgents(list) {
-  const filtered = list.filter(libMatches).filter((a) => lib.agentFilter === 'all' || (lib.agentFilter === 'on') === a.active);
-  const on = list.filter((a) => a.active).length;
-  const filterBtn = (id, label) => h('button', { 'aria-pressed': String(lib.agentFilter === id), 'data-focus': `agent-filter:${id}`,
-    onClick: () => { lib.agentFilter = id; renderLibraryBody(); } }, label);
-  return [
-    h('div', { class: 'section-head' },
-      h('span', { class: 'sub', text: `${on} aktiv · ${list.length - on} ausgeschaltet` }), h('span', { class: 'spacer' }),
-      h('div', { class: 'segmented', role: 'group', 'aria-label': 'Agenten filtern' },
-        filterBtn('all', 'Alle'), filterBtn('on', 'Aktiv'), filterBtn('off', 'Aus'))),
-    h('p', { class: 'date', text: 'Ausgeschaltete Agenten kennt Claude nicht. Der Schalter verschiebt die Datei zwischen ~/.claude/agents und ~/.claude/agents-archiv – neue Gespräche sehen die Änderung sofort.' }),
-    h('div', { class: 'card list' }, filtered.length ? filtered.map((a) => itemRow(a,
-      a.id ? h('button', { class: 'switch', role: 'switch', 'aria-checked': String(a.active), 'aria-label': a.name, 'data-focus': `agent:${a.id}`,
-        onClick: async () => {
-          const res = await api.toggleAgent(a.id, !a.active);
-          if (res && !res.ok) alert(res.error);
-          await loadLibrary(true);
-        } }) : h('span', { class: 'pill green', text: 'über Plugin' })))
-      : h('div', { class: 'empty', text: 'Keine passenden Agenten.' })),
-  ];
-}
-
 function renderSkillList(list, prefix) {
   const filtered = list.filter(libMatches);
   return h('div', { class: 'card list' }, filtered.length ? filtered.map((x) => itemRow(x,
@@ -135,14 +114,15 @@ function renderLibraryBody() {
   else if (lib.error) body = h('div', { class: 'card empty warn' }, `Die Liste konnte nicht gelesen werden: ${lib.error} `,
     h('button', { class: 'link', onClick: () => loadLibrary(true) }, 'Erneut versuchen'));
   else if (!d) body = h('div', { class: 'card empty', text: 'Lädt …' });
-  else if (lib.tab === 'agents') body = renderAgents(d.agents);
-  else if (lib.tab === 'skills') body = renderSkillList(d.skills, '/');
+  else if (lib.tab === 'agents') body = renderAgentsWorkshop(d.agents);
+  else if (lib.tab === 'skills') body = renderSkillsTable(d.skills);
+  else if (lib.tab === 'discover') body = renderDiscover();
   else if (lib.tab === 'commands') body = renderSkillList(d.commands, '/');
   else body = renderPlugins(d.plugins);
   const counts = d ? { agents: d.agents.length, skills: d.skills.length, commands: d.commands.length, plugins: d.plugins.length,
-    connectors: ui.connections ? ui.connections.length : null } : {};
+    connectors: ui.connections ? ui.connections.length : null, discover: ws.market ? ws.market.length : null } : {};
   keepFocus(() => fill($('#lib-tabs'), LIB_TABS.map((t) => h('button', { 'aria-pressed': String(lib.tab === t.id), 'data-focus': `lib-tab:${t.id}`,
-    onClick: () => { lib.tab = t.id; renderLibraryBody(); } }, t.label, counts[t.id] != null ? h('span', { class: 'count', text: String(counts[t.id]) }) : null))));
+    onClick: () => { lib.tab = t.id; ws.editor = null; ws.taskFor = null; renderLibraryBody(); } }, t.label, counts[t.id] != null ? h('span', { class: 'count', text: String(counts[t.id]) }) : null))));
   keepFocus(() => fill(box, body));
 }
 

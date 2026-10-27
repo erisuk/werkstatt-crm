@@ -84,11 +84,11 @@ function listSkills(root = CLAUDE_DIR) {
   const own = findFiles(path.join(root, 'skills'), (n) => n === 'SKILL.md').map((f) => {
     const rel = path.relative(path.join(root, 'skills'), f).split(path.sep);
     const source = rel[0] === 'ecc' ? 'ECC' : rel[0] === 'synced' ? 'Konto' : 'Eigene';
-    return { ...describe(f, rel[rel.length - 2]), source };
+    return { ...describe(f, rel[rel.length - 2]), source, own: !!ownSkillDir(f, root) };
   });
   const fromPlugins = pluginDirs(root).flatMap((dir) => {
     const p = pluginInfo(dir);
-    return findFiles(dir, (n) => n === 'SKILL.md').map((f) => ({ ...describe(f, path.basename(path.dirname(f))), source: `Plugin ${p.name}` }));
+    return findFiles(dir, (n) => n === 'SKILL.md').map((f) => ({ ...describe(f, path.basename(path.dirname(f))), source: `Plugin ${p.name}`, own: false }));
   });
   return [...own, ...fromPlugins].sort((a, b) => a.name.localeCompare(b.name, 'de'));
 }
@@ -180,8 +180,146 @@ function runningWork(sessionTitle = () => null, root = CLAUDE_DIR, now = Date.no
   return { sessions: sessions.sort(byTime), agents: agents.sort(byTime) };
 }
 
+// ---------- Agenten und Skills anlegen, lesen, ändern ----------
+
+const SLUG = /^[a-z0-9][a-z0-9-]{1,48}$/;
+const MODELS = ['inherit', 'sonnet', 'opus', 'haiku'];
+// Werkzeug-Gruppen für die Oberfläche; ohne Angabe darf ein Agent alle Werkzeuge nutzen.
+const TOOL_GROUPS = {
+  lesen: ['Read', 'Grep', 'Glob'],
+  schreiben: ['Write', 'Edit'],
+  terminal: ['Bash'],
+  web: ['WebSearch', 'WebFetch'],
+};
+
+// Aus einem Namen wie „Mein SEO Prüfer“ wird „mein-seo-pruefer“.
+function slugify(name) {
+  return String(name || '').toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+}
+
+// YAML-sicherer Einzeiler (Anführungszeichen, keine Zeilenumbrüche).
+const yamlLine = (v) => JSON.stringify(String(v || '').replace(/\s*\n\s*/g, ' ').trim());
+
+function splitFrontmatter(text) {
+  const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(text);
+  return m ? text.slice(m[0].length) : text;
+}
+
+function parseTools(value) {
+  const v = String(value || '').trim();
+  if (!v) return [];
+  try { const arr = JSON.parse(v); if (Array.isArray(arr)) return arr.map(String); } catch {}
+  return v.split(',').map((x) => x.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+}
+
+function agentFile(id, active, root = CLAUDE_DIR) {
+  if (typeof id !== 'string' || !/^[\w.-]+\.md$/.test(id) || id.startsWith('.')) return null;
+  return path.join(root, active ? 'agents' : 'agents-archiv', id);
+}
+
+function readAgent(id, root = CLAUDE_DIR) {
+  for (const active of [true, false]) {
+    const file = agentFile(id, active, root);
+    if (!file || !fs.existsSync(file)) continue;
+    const text = fs.readFileSync(file, 'utf8');
+    const fm = frontmatter(text);
+    return { ok: true, data: { id, active, name: fm.name || id.replace(/\.md$/, ''), description: fm.description || '',
+      model: MODELS.includes(fm.model) ? fm.model : 'inherit', tools: parseTools(fm.tools), body: splitFrontmatter(text).trim() } };
+  }
+  return { ok: false, error: 'Diesen Agenten gibt es nicht.' };
+}
+
+// Legt einen Agenten an (id fehlt) oder ändert einen bestehenden (id gesetzt). Neue Agenten sind sofort aktiv.
+function saveAgent(input, root = CLAUDE_DIR) {
+  const a = input && typeof input === 'object' ? input : {};
+  const name = slugify(a.name);
+  if (!SLUG.test(name)) return { ok: false, error: 'Der Name braucht mindestens 2 Zeichen (Buchstaben, Zahlen, Bindestriche).' };
+  const description = String(a.description || '').trim();
+  if (description.length < 10) return { ok: false, error: 'Beschreib in einem Satz, wofür der Agent da ist und wann Claude ihn einsetzen soll.' };
+  const body = String(a.body || '').trim();
+  if (body.length < 20) return { ok: false, error: 'Die Anweisungen sind zu kurz – schreib, wie der Agent arbeiten soll.' };
+  const model = MODELS.includes(a.model) ? a.model : 'inherit';
+  const known = new Set(Object.values(TOOL_GROUPS).flat());
+  const tools = Array.isArray(a.tools) ? [...new Set(a.tools.filter((t) => known.has(t)))] : [];
+  const id = `${name}.md`;
+  let file = agentFile(id, true, root);
+  if (a.id) {
+    const old = readAgent(a.id, root);
+    if (!old.ok) return old;
+    const oldFile = agentFile(a.id, old.data.active, root);
+    file = agentFile(id, old.data.active, root);
+    if (a.id !== id && (fs.existsSync(agentFile(id, true, root)) || fs.existsSync(agentFile(id, false, root)))) {
+      return { ok: false, error: `Es gibt schon einen Agenten „${name}“.` };
+    }
+    if (a.id !== id) fs.renameSync(oldFile, file);
+  } else if (fs.existsSync(agentFile(id, true, root)) || fs.existsSync(agentFile(id, false, root))) {
+    return { ok: false, error: `Es gibt schon einen Agenten „${name}“.` };
+  }
+  const head = ['---', `name: ${name}`, `description: ${yamlLine(description)}`];
+  if (model !== 'inherit') head.push(`model: ${model}`);
+  if (tools.length) head.push(`tools: ${tools.join(', ')}`);
+  head.push('---', '');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${head.join('\n')}${body}\n`);
+  return { ok: true, id };
+}
+
+function skillDir(name, root = CLAUDE_DIR) {
+  return SLUG.test(name) ? path.join(root, 'skills', name) : null;
+}
+
+// Eigene Skills liegen direkt in ~/.claude/skills/<name>/SKILL.md – nur die lassen sich hier ändern oder löschen.
+function ownSkillDir(file, root = CLAUDE_DIR) {
+  const rel = path.relative(path.join(root, 'skills'), String(file || '')).split(path.sep);
+  return rel.length === 2 && rel[1] === 'SKILL.md' && SLUG.test(rel[0]) ? path.join(root, 'skills', rel[0]) : null;
+}
+
+function saveSkill(input, root = CLAUDE_DIR) {
+  const a = input && typeof input === 'object' ? input : {};
+  const name = slugify(a.name);
+  const dir = skillDir(name, root);
+  if (!dir) return { ok: false, error: 'Der Name braucht mindestens 2 Zeichen (Buchstaben, Zahlen, Bindestriche).' };
+  const description = String(a.description || '').trim();
+  if (description.length < 10) return { ok: false, error: 'Beschreib, was der Skill tut und wann Claude ihn benutzen soll.' };
+  const body = String(a.body || '').trim();
+  if (body.length < 20) return { ok: false, error: 'Die Anleitung ist zu kurz.' };
+  const file = path.join(dir, 'SKILL.md');
+  if (!a.edit && fs.existsSync(file)) return { ok: false, error: `Es gibt schon einen Skill „${name}“.` };
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, `---\nname: ${name}\ndescription: ${yamlLine(description)}\n---\n\n${body}\n`);
+  return { ok: true, name, file };
+}
+
+function readSkill(file, root = CLAUDE_DIR) {
+  if (!ownSkillDir(file, root) || !fs.existsSync(file)) return { ok: false, error: 'Nur eigene Skills lassen sich hier bearbeiten.' };
+  const text = fs.readFileSync(file, 'utf8');
+  const fm = frontmatter(text);
+  return { ok: true, data: { name: fm.name || path.basename(path.dirname(file)), description: fm.description || '', body: splitFrontmatter(text).trim() } };
+}
+
+// Plugins aus den lokal bekannten Marktplätzen (zum Entdecken neuer Skills und Agenten).
+function listMarketplace(root = CLAUDE_DIR) {
+  const dir = path.join(root, 'plugins', 'marketplaces');
+  let markets = [];
+  try { markets = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch {}
+  const installed = new Set(listPlugins(root).map((p) => p.name));
+  const out = [];
+  for (const m of markets) {
+    let data = null;
+    try { data = JSON.parse(fs.readFileSync(path.join(dir, m, '.claude-plugin', 'marketplace.json'), 'utf8')); } catch { continue; }
+    for (const p of (data && Array.isArray(data.plugins) ? data.plugins : [])) {
+      if (!p || typeof p.name !== 'string') continue;
+      out.push({ name: p.name, marketplace: (data.name || m), description: String(p.description || '').slice(0, 300),
+        category: p.category || 'sonstiges', installed: installed.has(p.name) });
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name, 'de'));
+}
+
 function library(root = CLAUDE_DIR) {
   return { skills: listSkills(root), commands: listCommands(root), plugins: listPlugins(root), agents: listAgents(root) };
 }
 
-module.exports = { frontmatter, listSkills, listCommands, listPlugins, listAgents, setAgentActive, runningWork, library, CLAUDE_DIR };
+module.exports = { frontmatter, listSkills, listCommands, listPlugins, listAgents, setAgentActive, runningWork, library, CLAUDE_DIR,
+  slugify, readAgent, saveAgent, agentFile, saveSkill, readSkill, ownSkillDir, listMarketplace, TOOL_GROUPS, MODELS };

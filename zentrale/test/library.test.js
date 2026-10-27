@@ -200,3 +200,58 @@ test('Ein Skill ohne Namen legt die Liste nicht lahm', () => {
   assert.strictEqual(names.length, 2);
   assert.ok(names.every((n) => typeof n === 'string' && n));
 });
+
+// ---------- Werkstatt: Agenten und Skills anlegen ----------
+
+test('Agenten anlegen, lesen, umbenennen – ohne Überschreiben', () => {
+  const { saveAgent, readAgent, slugify } = require('../src/library');
+  const root = fakeClaudeDir();
+  assert.strictEqual(slugify('Mein SEO Prüfer!'), 'mein-seo-pruefer');
+  const res = saveAgent({ name: 'Shop Texter', description: 'Schreibt Produkttexte. Nutzen, wenn ein neues Produkt online geht.',
+    model: 'sonnet', tools: ['Read', 'Write', 'Edit', 'Rm-Rf'], body: 'Schreib verkaufsstarke, ehrliche Texte in Eris Ton.' }, root);
+  assert.deepStrictEqual(res, { ok: true, id: 'shop-texter.md' });
+  const text = fs.readFileSync(path.join(root, 'agents', 'shop-texter.md'), 'utf8');
+  assert.match(text, /^---\nname: shop-texter\ndescription: "Schreibt Produkttexte\. Nutzen, wenn ein neues Produkt online geht\."\nmodel: sonnet\ntools: Read, Write, Edit\n---\n/);
+  const read = readAgent('shop-texter.md', root);
+  assert.deepStrictEqual(read.data.tools, ['Read', 'Write', 'Edit']);
+  assert.strictEqual(read.data.model, 'sonnet');
+  // Gleichen Namen nicht noch einmal anlegen, auch nicht über einen ausgeschalteten
+  assert.strictEqual(saveAgent({ name: 'shop-texter', description: 'x'.repeat(20), body: 'y'.repeat(30) }, root).ok, false);
+  assert.strictEqual(saveAgent({ name: 'old', description: 'x'.repeat(20), body: 'y'.repeat(30) }, root).ok, false);
+  // Umbenennen behält den Ort (aktiv) und löscht die alte Datei
+  const renamed = saveAgent({ id: 'shop-texter.md', name: 'shop-autor', description: 'Schreibt Produkttexte für den Shop.', body: 'Neue Anweisungen, ausführlich genug.' }, root);
+  assert.strictEqual(renamed.id, 'shop-autor.md');
+  assert.ok(!fs.existsSync(path.join(root, 'agents', 'shop-texter.md')) && fs.existsSync(path.join(root, 'agents', 'shop-autor.md')));
+  // Zu wenig Angaben
+  assert.strictEqual(saveAgent({ name: 'a', description: 'kurz', body: 'kurz' }, root).ok, false);
+  assert.strictEqual(saveAgent({ name: 'ok-name', description: 'kurz', body: 'y'.repeat(30) }, root).ok, false);
+  assert.strictEqual(readAgent('../settings.md', root).ok, false);
+});
+
+test('Skills anlegen und nur eigene bearbeiten oder löschen', () => {
+  const { saveSkill, readSkill, ownSkillDir, listSkills } = require('../src/library');
+  const root = fakeClaudeDir();
+  const res = saveSkill({ name: 'Angebot schreiben', description: 'Schreibt ESA-Angebote. Benutzen bei: Angebot schreiben.', body: 'Schritt 1: Leistung klären. Schritt 2: Angebot schreiben.' }, root);
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.name, 'angebot-schreiben');
+  assert.strictEqual(saveSkill({ name: 'angebot-schreiben', description: 'x'.repeat(20), body: 'y'.repeat(30) }, root).ok, false);
+  assert.strictEqual(saveSkill({ name: 'angebot-schreiben', description: 'Neue Beschreibung, lang genug.', body: 'y'.repeat(30), edit: true }, root).ok, true);
+  assert.strictEqual(readSkill(res.file, root).data.description, 'Neue Beschreibung, lang genug.');
+  const skills = listSkills(root);
+  assert.strictEqual(skills.find((s) => s.name === 'angebot-schreiben').own, true);
+  assert.strictEqual(skills.find((s) => s.name === 'tdd').own, false); // ECC-Skill
+  assert.strictEqual(skills.find((s) => s.name === 'seo').own, false); // aus einem Plugin
+  assert.strictEqual(ownSkillDir(path.join(root, 'skills', 'ecc', 'tdd', 'SKILL.md'), root), null);
+  assert.strictEqual(ownSkillDir(path.join(root, 'skills', '..', 'settings.json'), root), null);
+  assert.strictEqual(readSkill(path.join(root, 'skills', 'ecc', 'tdd', 'SKILL.md'), root).ok, false);
+});
+
+test('Marktplatz: Plugins mit Kategorie, installierte sind markiert', () => {
+  const { listMarketplace } = require('../src/library');
+  const root = fakeClaudeDir();
+  write(path.join(root, 'plugins', 'marketplaces', 'offiziell', '.claude-plugin', 'marketplace.json'), JSON.stringify({ name: 'claude-plugins-official',
+    plugins: [{ name: 'marketing', description: 'Kampagnen', category: 'productivity' }, { name: 'github', description: 'Repos' }, { foo: 1 }] }));
+  const list = listMarketplace(root);
+  assert.deepStrictEqual(list.map((p) => `${p.name}:${p.category}:${p.installed}`), ['github:sonstiges:false', 'marketing:productivity:true']);
+  assert.strictEqual(list[0].marketplace, 'claude-plugins-official');
+});

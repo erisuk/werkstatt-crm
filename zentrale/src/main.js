@@ -212,6 +212,20 @@ function setup() {
 
   const n8nClient = () => new N8n({ baseUrl: n8nConfig.url, apiKey: n8nConfig.key });
 
+  // Rollen der Agenten (z. B. „Marketing“, „Recherche“) – nur für die Ordnung in der Zentrale.
+  const roles = {
+    file: () => path.join(app.getPath('userData'), 'agent-roles.json'),
+    get() { try { const r = JSON.parse(fs.readFileSync(this.file(), 'utf8')); return r && typeof r === 'object' ? r : {}; } catch { return {}; } },
+    write(map) { try { fs.writeFileSync(this.file(), JSON.stringify(map, null, 2)); return true; } catch { return false; } },
+    set(id, role) {
+      if (typeof id !== 'string' || !/^[\w.-]+\.md$/.test(id)) return false;
+      const r = String(role || '').trim().slice(0, 40);
+      const { [id]: _old, ...rest } = this.get();
+      return this.write(r ? { ...rest, [id]: r } : rest);
+    },
+    remove(id) { const { [id]: _old, ...rest } = this.get(); this.write(rest); },
+  };
+
   function findSession(id) {
     for (const p of projectsCache) {
       const s = p.sessions.find((x) => x.id === id);
@@ -473,6 +487,28 @@ function setup() {
   ipcMain.handle('library', () => library.library());
 
   ipcMain.handle('agent-toggle', (_e, args) => library.setAgentActive(args && args.id, !!(args && args.active)));
+
+  // Agenten und Skills selbst anlegen, ändern, löschen (Löschen = Papierkorb).
+  const safely = (fn) => { try { return fn(); } catch (e) { return { ok: false, error: e.message }; } };
+  ipcMain.handle('agent-read', (_e, id) => safely(() => library.readAgent(id)));
+  ipcMain.handle('agent-save', (_e, input) => safely(() => library.saveAgent(input)));
+  ipcMain.handle('agent-trash', async (_e, id) => {
+    const found = library.readAgent(id);
+    if (!found.ok) return found;
+    try { await shell.trashItem(library.agentFile(id, found.data.active)); } catch (e) { return { ok: false, error: e.message }; }
+    roles.remove(id);
+    return { ok: true };
+  });
+  ipcMain.handle('agent-roles', () => roles.get());
+  ipcMain.handle('agent-role-set', (_e, args) => roles.set(args && args.id, args && args.role));
+  ipcMain.handle('skill-read', (_e, file) => safely(() => library.readSkill(file)));
+  ipcMain.handle('skill-save', (_e, input) => safely(() => library.saveSkill(input)));
+  ipcMain.handle('skill-trash', async (_e, file) => {
+    const dir = library.ownSkillDir(file);
+    if (!dir || !fs.existsSync(dir)) return { ok: false, error: 'Nur eigene Skills lassen sich hier löschen.' };
+    try { await shell.trashItem(dir); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
+  });
+  ipcMain.handle('marketplace', () => safely(() => library.listMarketplace()));
 
   ipcMain.handle('running-work', () => {
     const work = library.runningWork((id) => { const s = findSession(id); return s ? s.title : null; });
