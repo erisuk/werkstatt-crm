@@ -375,3 +375,28 @@ h2 { font-size: 16px; font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Web: eigene Seiten als Tabs */
+.nav-badge { margin-left: auto; min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--red); color: #fff; font-size: 11px; font-weight: 600; text-align: center; }
+.main.web-mode { overflow: hidden; }
+.web-chrome { display: flex; flex-direction: column; gap: 10px; }
+.web-tabs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.web-tab { display: inline-flex; align-items: center; border-radius: 10px; background: var(--fill); }
+.web-tab.active { background: var(--card-strong); box-shadow: var(--shadow); outline: 1.5px solid var(--accent); }
+.web-tab-main { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 6px 0 12px; border: 0; background: transparent; color: var(--text); font-size: 13px; font-weight: 500; }
+.web-tab-main .count { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--red); color: #fff; font-weight: 600; }
+.web-tab-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.web-tab-close { width: 26px; height: 26px; margin-right: 4px; border: 0; border-radius: 7px; background: transparent; color: var(--text-2); font-size: 16px; line-height: 1; }
+.web-tab-close:hover, .web-tab-close:focus-visible { background: var(--pill-red-bg); color: var(--pill-red); }
+.web-tab-add { width: 34px; height: 34px; border: 1.5px dashed var(--border-strong); border-radius: 10px; background: transparent; color: var(--text-3); font-size: 18px; }
+.web-tab-add:hover { background: var(--fill); }
+.web-bar { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.plain-icon { font-size: 16px; color: var(--text-3); }
+.plain-icon:hover:not(:disabled), .plain-icon:focus-visible { background: var(--fill); color: var(--text); }
+.web-url { flex: 1; min-width: 0; height: 30px; padding: 0 12px; margin: 0 6px; border-radius: 8px; background: var(--fill); color: var(--text-2); font-size: 12px; display: flex; align-items: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.web-url span { overflow: hidden; text-overflow: ellipsis; }
+.web-host { flex: 1; min-height: 260px; border-radius: 12px; background: var(--card); border: 1px solid var(--border); }
+.web-host[hidden] { display: none; }
+.web-add .quick-actions { margin-top: 4px; }
+.actions .hint { font-size: 12px; color: var(--text-2); }
+.web-bar .link { margin-left: 12px; white-space: nowrap; }

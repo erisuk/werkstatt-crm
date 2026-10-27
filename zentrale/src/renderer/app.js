@@ -167,6 +167,7 @@ darkQuery.addEventListener('change', renderTheme);
 // Beim Wechsel landet der Fokus auf der Überschrift, damit Tastatur und Vorlesefunktion mitkommen.
 // Der Chat setzt seinen Fokus selbst ins Eingabefeld.
 function setView(view) {
+  if (ui.view === 'web' && view !== 'web') leaveWeb();
   ui.view = view;
   ui.sig.main = null;
   renderNav();
@@ -692,6 +693,7 @@ function renderMain() {
   else if (ui.view === 'connections') { renderConnections(); if (!ui.connections) loadConnections(); }
   else if (ui.view === 'library') renderLibrary();
   else if (ui.view === 'mac') renderMac();
+  else if (ui.view === 'web') renderWeb();
   else renderTasks();
 }
 
@@ -722,8 +724,8 @@ function applyState(s) {
     if (changed('connView', [settings(), s.claude.found])) renderConnections();
   } else if (ui.view === 'library') {
     renderRunning();
-  } else if (ui.view === 'mac') {
-    // „Mein Mac“ lädt seine Daten selbst.
+  } else if (ui.view === 'mac' || ui.view === 'web') {
+    // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');
     if (addBtn) addBtn.disabled = !s.claude.found;

@@ -12,6 +12,8 @@ const { TopicStore, groupByTopic, TOPICS } = require('./categories');
 const { desktopMeta } = require('./desktop-meta');
 const library = require('./library');
 const files = require('./files');
+const { PortalStore, PRESETS } = require('./portals');
+const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 
 // Links, die die Oberfläche öffnen darf.
@@ -40,6 +42,7 @@ function setup() {
   let scheduler = null;
   let settings = null;
   let topicStore = null;
+  let webTabs = null;
   const iconCache = new Map();
   let sessionWatcher = null;
   let projectsCache = [];
@@ -223,6 +226,7 @@ function setup() {
       },
     });
     win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    if (webTabs) webTabs.attach(win);
     win.once('ready-to-show', () => win.show());
 
     // Links öffnen im Browser, nie im App-Fenster.
@@ -463,6 +467,42 @@ function setup() {
 
   ipcMain.handle('fs-search', (_e, q) => (typeof q === 'string' ? mac.spotlight(q, 60) : { ok: false, error: 'Suchbegriff fehlt.' }));
 
+  // ---------- Web: Seiten mit dauerhaftem Login ----------
+
+  const webState = () => ({ ...webTabs.info(), presets: PRESETS });
+  ipcMain.handle('web-state', () => webState());
+  ipcMain.handle('web-add', (_e, args) => {
+    const res = webTabs.store.add(args && args.name, args && args.url);
+    if (res.ok) webTabs.show(res.portal.id);
+    return res.ok ? { ok: true, id: res.portal.id } : res;
+  });
+  ipcMain.handle('web-show', (_e, id) => typeof id === 'string' && webTabs.show(id));
+  ipcMain.handle('web-close', (_e, id) => { if (typeof id === 'string') webTabs.close(id); });
+  ipcMain.handle('web-rename', (_e, args) => {
+    const ok = !!args && typeof args.id === 'string' && webTabs.store.rename(args.id, args.name);
+    webTabs.emit('change');
+    return ok;
+  });
+  ipcMain.handle('web-nav', (_e, args) => {
+    if (args && typeof args.id === 'string' && ['back', 'forward', 'reload', 'home'].includes(args.action)) webTabs.navigate(args.id, args.action);
+  });
+  ipcMain.handle('web-bounds', (_e, rect) => webTabs.setBounds(rect));
+  ipcMain.handle('web-visible', (_e, on) => webTabs.setVisible(on === true));
+  ipcMain.handle('web-open-browser', (_e, id) => {
+    const url = typeof id === 'string' && webTabs.currentUrl(id);
+    if (url && /^https?:\/\//.test(url)) shell.openExternal(url);
+  });
+  ipcMain.handle('web-clear-logins', async () => {
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'warning', buttons: ['Abbrechen', 'Überall abmelden'], defaultId: 0, cancelId: 0,
+      message: 'Bei allen Web-Seiten der Zentrale abmelden?',
+      detail: 'Das löscht die gespeicherten Anmeldungen und Seitendaten aller Tabs. Die Tabs selbst bleiben.',
+    });
+    if (response !== 1) return false;
+    await webTabs.clearLogins();
+    return true;
+  });
+
   ipcMain.handle('open-external', (_e, url) => {
     if (typeof url === 'string' && EXTERNAL_LINKS.has(url)) shell.openExternal(url);
   });
@@ -476,6 +516,8 @@ function setup() {
   app.whenReady().then(async () => {
     settings = new Settings(path.join(app.getPath('userData'), 'settings.json'));
     topicStore = new TopicStore(path.join(app.getPath('userData'), 'topics.json'));
+    webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
+    webTabs.on('change', () => send('web-state', webState()));
     nativeTheme.themeSource = settings.get().theme;
     writeMacConfig();
     refreshProjects();
@@ -522,6 +564,7 @@ function setup() {
     if (scheduler) scheduler.stop();
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];
+    if (webTabs) jobs.push(webTabs.saveLogins());
     if (chat) jobs.push(chat.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });
