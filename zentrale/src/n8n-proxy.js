@@ -14,10 +14,10 @@ const SECRET_KEY = /(pass(word)?|secret|token|api[-_]?key|auth|bearer|credential
 
 // Eigener Anschluss je Benutzer und Datenordner: zwei Zentralen kommen sich so nicht in die Quere.
 // (Kurz gehalten, weil Unix-Sockets höchstens ~100 Zeichen Pfad erlauben.)
-function socketPath(dataDir = '') {
+function socketPath(dataDir = '', service = 'n8n') {
   const uid = typeof process.getuid === 'function' ? process.getuid() : 'x';
   const tag = crypto.createHash('sha256').update(String(dataDir)).digest('hex').slice(0, 10);
-  return path.join(os.tmpdir(), `zentrale-n8n-${uid}-${tag}.sock`);
+  return path.join(os.tmpdir(), `zentrale-${service}-${uid}-${tag}.sock`);
 }
 
 // Ersetzt Werte geheimer Felder (auch in Kopfzeilen-Listen wie { name: 'Authorization', value: … }).
@@ -106,16 +106,16 @@ function startProxy(ops, file = socketPath()) {
 }
 
 // Für den MCP-Server: ruft eine Aktion über die Schnittstelle auf.
-function callProxy(op, args, file = process.env.ZENTRALE_N8N_SOCKET || socketPath()) {
+function callProxy(op, args, file = process.env.ZENTRALE_N8N_SOCKET || socketPath(), timeout = 30000) {
   return new Promise((resolve) => {
     const body = JSON.stringify({ op, args });
-    const req = http.request({ socketPath: file, path: '/call', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }, timeout: 30000 }, (res) => {
+    const req = http.request({ socketPath: file, path: '/call', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }, timeout }, (res) => {
       let raw = '';
       res.on('data', (d) => { raw += d; });
       res.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve({ ok: false, error: 'Unerwartete Antwort der Zentrale.' }); } });
     });
-    req.on('error', () => resolve({ ok: false, error: 'Die Zentrale ist nicht erreichbar – n8n-Werkzeuge gehen nur, solange sie läuft.' }));
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'n8n hat nicht rechtzeitig geantwortet.' }); });
+    req.on('error', () => resolve({ ok: false, error: 'Die Zentrale ist nicht erreichbar – diese Werkzeuge gehen nur, solange sie läuft.' }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Keine rechtzeitige Antwort.' }); });
     req.end(body);
   });
 }

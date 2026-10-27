@@ -19,6 +19,8 @@ const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
 const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require('./n8n');
 const { startProxy, makeOps, socketPath: n8nSocketPath } = require('./n8n-proxy');
+const { BrowserControl, makeBrowserOps } = require('./browser-control');
+const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
 
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
@@ -27,6 +29,13 @@ const EXTERNAL_LINKS = new Set([
   'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
 ]);
+
+// Hinweis an Claude, wenn „Web-Tabs für Claude“ eingeschaltet ist.
+const WEB_HINT = 'Du läufst in der Zentrale des Nutzers. Webseiten (z. B. Meta Business, Shopify, Gmail, Instagram) bedienst du '
+  + 'mit den Werkzeugen zentrale_web_* in den Web-Tabs der Zentrale, wo der Nutzer angemeldet ist und live zusieht – nicht mit '
+  + 'Playwright und nicht mit einem separaten Chrome. Lies die Seite (zentrale_web_read) vor und nach jeder Aktion. '
+  + 'Passwörter, Karten- und Bankdaten gibt nur der Nutzer selbst ein. Vor allem, was Geld kostet oder etwas veröffentlicht, '
+  + 'fasst du zusammen, was passieren wird, und lässt den Nutzer entscheiden.';
 
 // So frisch geschriebene Gespräche benutzt vermutlich gerade ein anderes Claude-Fenster.
 const IN_USE_MS = 2 * 60 * 1000;
@@ -55,6 +64,9 @@ function setup() {
   let macConfigFile = null;
   let n8nConfigFile = null;
   let n8nProxy = null;
+  let browserProxy = null;
+  let browser = null;
+  let browserConfigFile = null;
   let n8nConfig = { url: 'http://localhost:5678', key: null };
   const taskChats = new Map(); // laufende Aufgaben-Chats → Name der Aufgabe
   const notified = new Set();
@@ -154,11 +166,22 @@ function setup() {
       args.push(`--mcp-config=${n8nConfigFile}`);
       allowed.push(...N8N_READ_ONLY.map((t) => `mcp__n8n__${t}`));
     }
+    if (c.web && browserConfigFile) {
+      args.push(`--mcp-config=${browserConfigFile}`);
+      allowed.push(...BROWSER_READ_ONLY.map((t) => `mcp__web__${t}`));
+      // Nicht mit Playwright oder einem separaten Chrome verwechseln: Webseiten gehören in die Tabs der Zentrale.
+      args.push('--append-system-prompt', WEB_HINT);
+    }
     if (allowed.length) args.push(`--allowedTools=${allowed.join(',')}`);
     if (c.chrome) args.push('--chrome');
     return args;
   }
 
+
+  // Freigaben für Browser-Aktionen zeigen, welcher Knopf auf welcher Seite gemeint ist.
+  function approvalInfo(toolName, input) {
+    return browser ? browser.approvalInfo(toolName, input) : null;
+  }
 
   // Die MCP-Server laufen mit der Node-Laufzeit, die in Electron steckt.
   function writeMcpConfig(name, script, env = {}) {
@@ -178,6 +201,7 @@ function setup() {
     macConfigFile = writeMcpConfig('mac', 'mac-server.js');
     // Der n8n-Server bekommt nur den Weg zur Vermittlung in der Zentrale – keinen Schlüssel.
     n8nConfigFile = writeMcpConfig('n8n', 'n8n-server.js', { ZENTRALE_N8N_SOCKET: n8nSocketPath(app.getPath('userData')) });
+    browserConfigFile = writeMcpConfig('web', 'browser-server.js', { ZENTRALE_BROWSER_SOCKET: n8nSocketPath(app.getPath('userData'), 'browser') });
   }
 
   // ---------- n8n: Adresse und verschlüsselter Schlüssel (macOS-Schlüsselbund) ----------
@@ -241,7 +265,7 @@ function setup() {
     const old = chat;
     chatGen += 1;
     const gen = chatGen;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs });
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs, approvalInfo });
     chat = c;
     c.on('event', (ev) => send('chat-event', { ...ev, gen }));
     c.on('status', () => pushState());
@@ -654,6 +678,10 @@ function setup() {
     topicStore = new TopicStore(path.join(app.getPath('userData'), 'topics.json'));
     webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
     webTabs.on('change', () => send('web-state', webState()));
+    // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
+    browser = new BrowserControl(webTabs);
+    browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));
+    browserProxy = startProxy(makeBrowserOps(browser), n8nSocketPath(app.getPath('userData'), 'browser'));
     nativeTheme.themeSource = settings.get().theme;
     loadN8n();
     n8nProxy = startProxy(makeOps(n8nClient), n8nSocketPath(app.getPath('userData')));
@@ -665,7 +693,7 @@ function setup() {
       if (!claude.bin) return Promise.resolve({ ok: false, text: 'Claude Code wurde nicht gefunden.' });
       const cwd = isDir(task.cwd) ? task.cwd : os.homedir();
       return runTask({
-        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs,
+        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs, approvalInfo,
         onApproval: (c) => {
           // Läuft die Aufgabe, merken wir uns ihren Chat, damit Freigaben zugeordnet werden können.
           if (!taskChats.has(c)) taskChats.set(c, task.name);
@@ -704,6 +732,7 @@ function setup() {
     const jobs = [stopAllTasks()];
     if (webTabs) jobs.push(webTabs.saveLogins());
     if (n8nProxy) n8nProxy.close();
+    if (browserProxy) browserProxy.close();
     if (chat) jobs.push(chat.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });

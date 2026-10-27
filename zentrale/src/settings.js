@@ -4,7 +4,7 @@ const path = require('path');
 
 const DEFAULTS = {
   theme: 'system', // 'system' | 'light' | 'dark'
-  connections: { mac: false, chrome: false },
+  connections: { mac: false, chrome: false, web: false },
 };
 
 const THEMES = ['system', 'light', 'dark'];
@@ -14,7 +14,7 @@ function sanitize(raw) {
   const c = s.connections && typeof s.connections === 'object' ? s.connections : {};
   return {
     theme: THEMES.includes(s.theme) ? s.theme : DEFAULTS.theme,
-    connections: { mac: c.mac === true, chrome: c.chrome === true },
+    connections: { mac: c.mac === true, chrome: c.chrome === true, web: c.web === true },
   };
 }
 

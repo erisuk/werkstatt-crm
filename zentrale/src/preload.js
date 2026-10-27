@@ -62,6 +62,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   webOpenBrowser: (id) => ipcRenderer.invoke('web-open-browser', id),
   webClearLogins: () => ipcRenderer.invoke('web-clear-logins'),
   onWebState: (fn) => ipcRenderer.on('web-state', (_e, s) => fn(s)),
+  onWebActivity: (fn) => ipcRenderer.on('web-activity', (_e, a) => fn(a)),
   onState: (fn) => ipcRenderer.on('state', (_e, s) => fn(s)),
   onChatEvent: (fn) => ipcRenderer.on('chat-event', (_e, ev) => fn(ev)),
 });

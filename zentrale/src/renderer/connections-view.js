@@ -109,6 +109,12 @@ function renderConnections() {
         h('li', {}, h('strong', { text: 'Microsoft 365: ' }), 'claude.ai-Verbindung, nur mit Firmenkonto. ',
           statusPill(m365, ui.connections ? 'nicht verbunden' : '–'))) }),
 
+    connCard({ icon: '🌐', title: 'Web-Tabs für Claude',
+      text: 'Claude bedient die Seiten im Bereich „Web“ – z. B. Meta Business, Shopify oder Gmail, wo du schon angemeldet bist. Du siehst live zu.',
+      right: connSwitch('web', 'Claude darf Web-Tabs bedienen', false),
+      extra: h('div', { class: 'conn-extra' },
+        h('div', { class: 'sub', text: 'Lesen und Ansehen geht ohne Rückfrage. Jeder Klick, jede Eingabe und jede neue Adresse braucht deine Freigabe. Passwort-, Karten- und Bankfelder füllt Claude nie aus. Knöpfe, die Geld kosten oder etwas veröffentlichen, sind in der Freigabe markiert.' })) }),
+
     connCard({ icon: '◎', title: 'Chrome',
       text: 'Claude öffnet und bedient Webseiten in deinem Chrome – z. B. Outlook oder Gmail im Browser.',
       right: connSwitch('chrome', 'Chrome verbinden', false),

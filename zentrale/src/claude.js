@@ -162,6 +162,14 @@ function describeApproval(toolName, input, description) {
     title = i.active ? 'Einen n8n-Workflow einschalten' : 'Einen n8n-Workflow ausschalten';
     summary = `Workflow-ID: ${field('id')}${i.active ? '\nEr läuft dann automatisch, sobald sein Auslöser eintritt.' : ''}`;
     shown = ['id', 'active']; canAlways = false;
+  } else if (name.startsWith('mcp__web__')) {
+    const what = { zentrale_web_click: 'Im Web-Tab klicken', zentrale_web_type: 'Im Web-Tab etwas eintippen', zentrale_web_key: 'Im Web-Tab eine Taste drücken',
+      zentrale_web_open: 'Im Web-Tab eine Seite öffnen' };
+    title = what[name.slice('mcp__web__'.length)] || 'Den Web-Tab bedienen';
+    summary = [i.url ? `Adresse: ${field('url')}` : null, i.text != null ? `Text: ${field('text')}${i.submit ? '  (danach Enter)' : ''}` : null,
+      i.key ? `Taste: ${field('key')}` : null].filter(Boolean).join('\n');
+    shown = ['url', 'text', 'submit', 'key', 'tab', 'ref'];
+    canAlways = false;
   } else if (name === 'mcp__mac__notes_create') {
     title = 'Eine Notiz anlegen'; summary = `${field('title')}\n\n${field('body')}`.trim(); shown = ['title', 'body'];
   } else if (/chrome/i.test(name)) {
@@ -263,9 +271,10 @@ const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 class ClaudeChat extends EventEmitter {
   constructor({ bin, env, cwd, resume = null, permissionMode = null, title = null,
-    projectsRoot = PROJECTS_ROOT, extraArgs = () => [] }) {
+    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null }) {
     super();
     this.bin = bin;
+    this.approvalInfo = approvalInfo;
     this.env = env;
     this.cwd = cwd;
     // Neue Chats bekommen ihre Gesprächs-ID sofort, damit sie von Anfang an feststeht.
@@ -337,7 +346,11 @@ class ClaudeChat extends EventEmitter {
         response: { behavior: 'allow', updatedInput: req.input || {} } } });
       return;
     }
-    const { title, detail, canAlways, truncated } = describeApproval(req.tool_name, req.input, req.description);
+    const described = describeApproval(req.tool_name, req.input, req.description);
+    let extra = null;
+    try { extra = this.approvalInfo(req.tool_name, req.input || {}); } catch {}
+    const { title, canAlways, truncated } = described;
+    const detail = extra ? `${extra}\n\n${described.detail}` : described.detail;
     this.approvals.set(ev.request_id, { id: ev.request_id, tool: req.tool_name, title, detail, canAlways, truncated, key,
       input: req.input || {}, createdAt: Date.now() });
     this.emit('approvals');
@@ -467,9 +480,9 @@ const TASK_TIMEOUT_MS = 30 * 60 * 1000;
 
 // Führt einen einzelnen Auftrag aus (für tägliche Aufgaben). Läuft wie ein Chat, damit
 // Freigaben genauso in der Zentrale landen. onApproval(chat) meldet neue Rückfragen.
-function runTask({ bin, env, cwd, prompt, extraArgs, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot, permissionMode }) {
+function runTask({ bin, env, cwd, prompt, extraArgs, approvalInfo, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot, permissionMode }) {
   return new Promise((resolve) => {
-    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, projectsRoot, permissionMode: permissionMode || permissionModeFor(cwd) });
+    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, approvalInfo, projectsRoot, permissionMode: permissionMode || permissionModeFor(cwd) });
     const texts = [];
     let error = null;
     let sent = false;

@@ -31,7 +31,9 @@ function makeHandler(tools, serverName) {
       let res;
       try { res = await tool.run((params && params.arguments) || {}); } catch (e) { res = { ok: false, error: e.message }; }
       const text = res.ok ? JSON.stringify(res.data === undefined ? 'ok' : res.data, null, 1) : res.error;
-      return reply(id, { content: [{ type: 'text', text }], isError: !res.ok });
+      const content = [{ type: 'text', text }];
+      if (res.ok && typeof res.image === 'string') content.push({ type: 'image', data: res.image, mimeType: 'image/png' });
+      return reply(id, { content, isError: !res.ok });
     }
     return fail(id, -32601, `Methode nicht unterstützt: ${method}`);
   };
