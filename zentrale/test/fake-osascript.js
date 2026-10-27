@@ -11,6 +11,18 @@ process.stdin.on('end', () => {
     process.stderr.write('execution error: Not authorized to send Apple events to Calendar. (-1743)\n');
     process.exit(1);
   }
+  if (script.includes('playerState')) {
+    if (params[0] === 'Music' || process.env.FAKE_MUSIC_OFF) return out({ running: false });
+    return out({ running: true, state: params[1] === 'playpause' ? 'kPSP' : 'playing',
+      track: { title: 'Marseille', artist: 'Saliou', album: 'X', duration: 121443 }, position: 35.2 });
+  }
+  if (script.includes('EKEventStore')) {
+    if (script.includes('requestFullAccess')) return out({ granted: !!process.env.FAKE_EK_ACCESS, status: process.env.FAKE_EK_ACCESS ? 3 : 4 });
+    if (!process.env.FAKE_EK_ACCESS) return out({ noAccess: true, status: 4 });
+    return out({ fast: true, events: [
+      { title: 'Spät', start: '2026-10-26T15:00:00.000Z', end: '2026-10-26T16:00:00.000Z', allDay: false, calendar: 'Privat', recurring: false },
+      { title: 'Früh', start: '2026-10-26T07:00:00.000Z', end: '2026-10-26T08:00:00.000Z', allDay: false, calendar: 'Arbeit', recurring: true }] });
+  }
   if (process.env.FAKE_OSA_CLOSED && params[0] === '0' && /Calendar|Reminders/.test(script)) return out({ notRunning: true });
   if (script.includes("Application('Calendar')")) {
     return out({

@@ -2,7 +2,8 @@
 // Hauptprozess als eingebettete Browser-Ansicht über den Platzhalter #web-host; diese Datei meldet,
 // wo der Platz ist. Nutzt die Helfer aus app.js (h, fill, ui, api …).
 
-const webv = { state: null, adding: false, renaming: false, addError: null, observer: null };
+const webv = { state: null, adding: false, renaming: false, addError: null, observer: null, activity: null };
+const ACTIVITY_MS = 20000; // so lange gilt „Claude bedient gerade …“ nach der letzten Aktion
 
 function activePortal() {
   const s = webv.state;
@@ -46,9 +47,12 @@ function renderAddForm() {
   const url = h('input', { id: 'web-url', type: 'text', placeholder: 'Adresse, z. B. outlook.com', 'aria-label': 'Webadresse' });
   const form = h('form', { class: 'card form web-add', onSubmit: (e) => { e.preventDefault(); addPortal(name.value, url.value); } },
     h('h2', { class: 'full', text: 'Seite hinzufügen' }),
-    h('div', { class: 'field full' }, h('span', { class: 'label', text: 'Vorschläge' }),
-      h('div', { class: 'quick-actions' }, s.presets.filter((p) => !used.has(p.url)).map((p) =>
-        h('button', { type: 'button', class: 'chip', 'data-focus': `preset:${p.name}`, onClick: () => addPortal(p.name, p.url) }, p.name)))),
+    [...new Set(s.presets.map((p) => p.group))].map((group) => {
+      const items = s.presets.filter((p) => p.group === group && !used.has(p.url));
+      return items.length ? h('div', { class: 'field full', role: 'group', 'aria-label': group }, h('span', { class: 'label', 'aria-hidden': 'true', text: group }),
+        h('div', { class: 'quick-actions' }, items.map((p) =>
+          h('button', { type: 'button', class: 'chip', 'data-focus': `preset:${p.name}`, onClick: () => addPortal(p.name, p.url) }, p.name)))) : null;
+    }),
     h('div', { class: 'field' }, h('label', { for: 'web-name', text: 'Name' }), name),
     h('div', { class: 'field' }, h('label', { for: 'web-url', text: 'Adresse' }), url),
     webv.addError ? h('div', { class: 'full sub warn', role: 'alert', text: webv.addError }) : null,
@@ -99,6 +103,23 @@ function renderToolbar(p) {
     h('button', { class: 'link', 'data-focus': 'web-browser', onClick: () => api.webOpenBrowser(p.id) }, 'Im Browser öffnen'));
 }
 
+// „Claude bedient gerade …“ – oben im Web-Bereich und als Hinweis in der rechten Seitenleiste.
+function activityBanner() {
+  const a = webv.activity;
+  if (!a || Date.now() - a.at > ACTIVITY_MS) return null;
+  return h('div', { class: 'web-activity', role: 'status' },
+    h('span', { class: 'dot blue pulse', 'aria-hidden': 'true' }),
+    h('span', { class: 'grow', text: `Claude bedient gerade „${a.name || 'Web-Tab'}“ (${a.action})` }),
+    ui.view !== 'web' ? h('button', { class: 'link', onClick: () => setView('web') }, 'Ansehen') : null,
+    h('button', { class: 'btn ghost', onClick: () => api.stopChat() }, 'Stopp'));
+}
+
+function renderActivityHint() {
+  const box = $('#web-activity-hint');
+  if (!box) return;
+  fill(box, ui.view === 'web' ? null : activityBanner());
+}
+
 // Alles außer der eingebetteten Seite: Tabs, Leiste, Formular.
 function renderWebChrome() {
   const box = $('#web-chrome');
@@ -108,6 +129,7 @@ function renderWebChrome() {
   const p = activePortal();
   const showForm = webv.adding || !s.portals.length;
   keepFocus(() => fill(box,
+    activityBanner(),
     s.portals.length ? h('div', { class: 'web-tabs', role: 'group', 'aria-label': 'Webseiten' },
       s.portals.map((x) => webTab(x, x.id === s.active && !showForm)),
       h('button', { class: 'web-tab-add', 'aria-label': 'Seite hinzufügen', title: 'Seite hinzufügen', 'data-focus': 'web-add',
@@ -149,3 +171,12 @@ window.zentrale.onWebState((s) => {
   if (ui.view === 'web' && !webv.renaming) renderWebChrome();
 });
 window.zentrale.webState().then((s) => { webv.state = s; renderWebBadge(); }).catch(() => {});
+window.zentrale.onWebActivity((a) => {
+  // Beim ersten Schritt einer neuen Browser-Arbeit in den Web-Bereich wechseln, damit du zusiehst.
+  const fresh = !webv.activity || a.at - webv.activity.at > ACTIVITY_MS;
+  webv.activity = a;
+  if (fresh && ui.view !== 'web') setView('web');
+  const redraw = () => { if (ui.view === 'web') renderWebChrome(); else renderActivityHint(); };
+  redraw();
+  setTimeout(redraw, ACTIVITY_MS + 200);
+});

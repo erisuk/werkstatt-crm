@@ -244,20 +244,26 @@ function needTodayRefresh() {
 
 // Beim ersten Laden und auf Knopfdruck dürfen Kalender und Erinnerungen gestartet werden;
 // die automatische Aktualisierung fragt nur Apps ab, die schon laufen, und behält sonst den alten Stand.
+// Jede Karte lädt für sich und erscheint, sobald sie fertig ist. Läuft schon eine Abfrage, startet keine zweite –
+// zwei gleichzeitige Kalenderabfragen würden sich nur gegenseitig ausbremsen.
+const TODAY_PARTS = ['events', 'reminders', 'mail', 'outlook'];
 async function loadToday(force) {
-  if (!force && !needTodayRefresh()) return;
+  if (ui.todayLoading || (!force && !needTodayRefresh())) return;
   const launch = force || !ui.today;
   ui.todayLoading = true;
   ui.todayAt = Date.now();
-  let fresh = null;
-  try { fresh = await api.macToday(launch); } catch {}
-  if (fresh) {
-    const old = ui.today || {};
-    for (const key of Object.keys(fresh)) if (fresh[key] && fresh[key].notRunning && old[key]) fresh[key] = old[key];
-  }
-  ui.today = fresh;
+  if (!ui.today) ui.today = {};
+  if (ui.view === 'overview') renderOverview();
+  await Promise.all(TODAY_PARTS.map(async (part) => {
+    let fresh = null;
+    try { fresh = await api.macToday(launch, part); } catch {}
+    // Geschlossene App: den letzten Stand behalten statt „geschlossen“ anzuzeigen.
+    if (fresh && fresh.notRunning && ui.today[part]) fresh = ui.today[part];
+    ui.today = { ...ui.today, [part]: fresh || { ok: false, error: 'Konnte nicht geladen werden.' } };
+    if (ui.view === 'overview') renderOverview();
+  }));
   ui.todayLoading = false;
-  if (ui.view === 'overview') renderOverview(true);
+  if (ui.view === 'overview') renderOverview();
 }
 
 function timeOf(iso) {
@@ -400,7 +406,7 @@ function renderOverview(force) {
   // Ist gerade ein Auswahlfeld offen, nicht neu zeichnen – sonst klappt es unter der Maus zu.
   const picking = document.activeElement && document.activeElement.tagName === 'SELECT' && $('#main').contains(document.activeElement);
   if (picking && !force) return;
-  if (!changed('main', ['overview', list, chat, enabledTasks, s.claude, ui.search, sel && sel.key, ui.groupMode, ui.showArchived, minute, settings().connections]) && !force) return;
+  if (!changed('main', ['overview', list, chat, enabledTasks, s.claude, ui.search, sel && sel.key, ui.groupMode, ui.showArchived, minute, settings().connections, ui.today, ui.todayLoading]) && !force) return;
   loadToday(false);
 
   const totalSessions = list.reduce((n, p) => n + p.sessions.length, 0);
@@ -694,6 +700,7 @@ function renderMain() {
   else if (ui.view === 'library') renderLibrary();
   else if (ui.view === 'mac') renderMac();
   else if (ui.view === 'web') renderWeb();
+  else if (ui.view === 'automations') renderAutomations();
   else renderTasks();
 }
 
@@ -724,7 +731,7 @@ function applyState(s) {
     if (changed('connView', [settings(), s.claude.found])) renderConnections();
   } else if (ui.view === 'library') {
     renderRunning();
-  } else if (ui.view === 'mac' || ui.view === 'web') {
+  } else if (ui.view === 'mac' || ui.view === 'web' || ui.view === 'automations') {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');

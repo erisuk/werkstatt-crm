@@ -57,7 +57,11 @@ function macTestResult() {
   if (!r) return null;
   if (r.error) return h('div', { class: 'sub warn', text: r.error });
   const line = (label, x) => h('li', { class: x && x.ok ? '' : 'warn' }, `${label}: `, x && x.ok ? 'funktioniert' : (x ? x.error : '…'));
-  return h('ul', { class: 'today-list' }, line('Kalender', r.calendar), line('Erinnerungen', r.reminders), line('Mitteilungen', r.notify));
+  const fast = r.access && r.access.ok && r.access.granted
+    ? { ok: true }
+    : { ok: false, error: 'nicht erlaubt – der Kalender funktioniert, aber langsamer. Erlauben unter Systemeinstellungen → Datenschutz & Sicherheit → Kalender → Zentrale: „Voller Zugriff“.' };
+  return h('ul', { class: 'today-list' }, line('Kalender', r.calendar), line('Kalender, schneller Zugriff', r.access ? fast : null),
+    line('Erinnerungen', r.reminders), line('Mitteilungen', r.notify));
 }
 
 function renderConnections() {
@@ -104,6 +108,12 @@ function renderConnections() {
           h('span', { class: `pill ${conn.chrome ? 'green' : ''}`, text: conn.chrome ? 'aktiv' : 'aus' })),
         h('li', {}, h('strong', { text: 'Microsoft 365: ' }), 'claude.ai-Verbindung, nur mit Firmenkonto. ',
           statusPill(m365, ui.connections ? 'nicht verbunden' : '–'))) }),
+
+    connCard({ icon: '🌐', title: 'Web-Tabs für Claude',
+      text: 'Claude bedient die Seiten im Bereich „Web“ – z. B. Meta Business, Shopify oder Gmail, wo du schon angemeldet bist. Du siehst live zu.',
+      right: connSwitch('web', 'Claude darf Web-Tabs bedienen', false),
+      extra: h('div', { class: 'conn-extra' },
+        h('div', { class: 'sub', text: 'Lesen und Ansehen geht ohne Rückfrage. Jeder Klick, jede Eingabe und jede neue Adresse braucht deine Freigabe. Passwort-, Karten- und Bankfelder füllt Claude nie aus. Knöpfe, die Geld kosten oder etwas veröffentlichen, sind in der Freigabe markiert.' })) }),
 
     connCard({ icon: '◎', title: 'Chrome',
       text: 'Claude öffnet und bedient Webseiten in deinem Chrome – z. B. Outlook oder Gmail im Browser.',

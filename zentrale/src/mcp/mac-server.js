@@ -1,8 +1,9 @@
 // MCP-Server "mac": gibt Claude Werkzeuge für Kalender, Erinnerungen, Notizen, Mail, Outlook,
 // Spotlight und AppleScript. Spricht JSON-RPC 2.0 zeilenweise über stdin/stdout.
 // Mitteilungen schickt die Zentrale selbst; per osascript erschienen sie als "Skripteditor".
-const readline = require('readline');
+const { serve } = require('./core');
 const mac = require('../mac');
+const music = require('../music');
 
 const str = (description) => ({ type: 'string', description });
 const num = (description) => ({ type: 'number', description });
@@ -42,6 +43,16 @@ const TOOLS = [
     description: 'Sucht Dateien auf dem Mac mit Spotlight und gibt bis zu 30 Pfade zurück.',
     inputSchema: { type: 'object', required: ['query'], properties: { query: str('Suchbegriff oder Spotlight-Abfrage') } },
     run: (a) => mac.spotlight(a.query) },
+  { name: 'music_now_playing', readOnly: true,
+    description: 'Was gerade in Spotify oder Apple Music läuft (Titel, Interpret, spielt/pausiert). Öffnet keine App.',
+    inputSchema: { type: 'object', properties: {} },
+    run: () => music.nowPlaying() },
+  { name: 'music_control', readOnly: false,
+    description: 'Steuert Spotify oder Apple Music: abspielen/pausieren, nächster oder vorheriger Titel. Die App muss geöffnet sein.',
+    inputSchema: { type: 'object', required: ['app', 'action'], properties: {
+      app: { type: 'string', enum: ['spotify', 'music'], description: 'spotify oder music (Apple Music)' },
+      action: { type: 'string', enum: ['playpause', 'play', 'pause', 'next', 'previous'], description: 'Was passieren soll' } } },
+    run: (a) => music.control(a.app, a.action) },
   { name: 'open', readOnly: false,
     description: 'Öffnet eine Webadresse, eine Datei (Pfad) oder eine App (App-Name) auf dem Mac.',
     inputSchema: { type: 'object', required: ['target'], properties: { target: str('URL, Pfad oder App-Name, z. B. "Microsoft Outlook"') } },
@@ -56,45 +67,6 @@ const TOOLS = [
 
 const READ_ONLY_TOOLS = TOOLS.filter((t) => t.readOnly).map((t) => t.name);
 
-function reply(id, result) {
-  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
-}
-function fail(id, code, message) {
-  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n');
-}
-
-async function handle(msg) {
-  const { id, method, params } = msg;
-  if (method === 'initialize') {
-    return reply(id, {
-      protocolVersion: (params && params.protocolVersion) || '2025-06-18',
-      capabilities: { tools: {} },
-      serverInfo: { name: 'zentrale-mac', version: '1.0.0' },
-    });
-  }
-  if (id === undefined) return; // Benachrichtigungen brauchen keine Antwort
-  if (method === 'ping') return reply(id, {});
-  if (method === 'tools/list') {
-    return reply(id, { tools: TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema,
-      annotations: { readOnlyHint: t.readOnly } })) });
-  }
-  if (method === 'tools/call') {
-    const tool = TOOLS.find((t) => t.name === (params && params.name));
-    if (!tool) return fail(id, -32602, `Unbekanntes Werkzeug: ${params && params.name}`);
-    let res;
-    try { res = await tool.run((params && params.arguments) || {}); } catch (e) { res = { ok: false, error: e.message }; }
-    const text = res.ok ? JSON.stringify(res.data === undefined ? 'ok' : res.data, null, 1) : res.error;
-    return reply(id, { content: [{ type: 'text', text }], isError: !res.ok });
-  }
-  return fail(id, -32601, `Methode nicht unterstützt: ${method}`);
-}
-
-if (require.main === module) {
-  readline.createInterface({ input: process.stdin }).on('line', (line) => {
-    let msg;
-    try { msg = JSON.parse(line); } catch { return; }
-    handle(msg).catch((e) => { if (msg.id !== undefined) fail(msg.id, -32603, e.message); });
-  });
-}
+if (require.main === module) serve(TOOLS, 'zentrale-mac');
 
 module.exports = { TOOLS, READ_ONLY_TOOLS };

@@ -60,22 +60,64 @@ const SCRIPTS = {
   var events = [], series = [];
   for (var i = 0; i < names.length; i++) {
     try {
-      var ev = cals[i].events.whose({ _and: [{ startDate: { _lessThan: end } }, { endDate: { _greaterThan: start } }] });
-      var t = ev.summary(), s = ev.startDate(), e = ev.endDate(), a = ev.alldayEvent();
-      for (var k = 0; k < t.length; k++) events.push({ title: t[k], start: s[k].toISOString(), end: e[k].toISOString(), allDay: a[k], calendar: names[i] });
-    } catch (err) {}
-    try {
-      var rs = cals[i].events.whose({ _and: [{ startDate: { _lessThan: end } }, { recurrence: { _beginsWith: 'FREQ' } }] });
-      var rt = rs.summary(), rst = rs.startDate(), ren = rs.endDate(), ra = rs.alldayEvent(), rr = rs.recurrence();
-      var rx = [];
-      try { rx = rs.excludedDates(); } catch (err) {}
-      for (var j = 0; j < rt.length; j++) {
-        series.push({ title: rt[j], start: rst[j].toISOString(), end: ren[j].toISOString(), allDay: ra[j], calendar: names[i], rule: rr[j],
-          excluded: (rx[j] || []).map(function (d) { return d.toISOString(); }) });
+      var ev = cals[i].events;
+      var s = ev.startDate(), e = ev.endDate(), r = ev.recurrence();
+      var need = [];
+      for (var k = 0; k < s.length; k++) {
+        if (s[k] < end && (e[k] > start || (r[k] && r[k].indexOf('FREQ') === 0))) need.push(k);
+      }
+      if (!need.length) continue;
+      var t = ev.summary(), a = ev.alldayEvent();
+      for (var n = 0; n < need.length; n++) {
+        var j = need[n];
+        var item = { title: t[j], start: s[j].toISOString(), end: e[j].toISOString(), allDay: a[j], calendar: names[i] };
+        if (r[j] && r[j].indexOf('FREQ') === 0) {
+          var x = [];
+          try { x = ev[j].excludedDates().map(function (d) { return d.toISOString(); }); } catch (err) {}
+          item.rule = r[j];
+          item.excluded = x;
+          series.push(item);
+        } else events.push(item);
       }
     } catch (err) {}
   }
   return JSON.stringify({ events: events, series: series });
+}`,
+
+  // Schneller Weg über EventKit (die Schnittstelle der Kalender-App): Millisekunden statt Sekunden,
+  // Serien rechnet macOS selbst aus, und die Kalender-App muss nicht laufen. Braucht vollen Kalenderzugriff.
+  calendarFast: `ObjC.import('EventKit');
+function run(argv) {
+  var status = Number(ObjC.unwrap($.EKEventStore.authorizationStatusForEntityType($.EKEntityTypeEvent)));
+  if (status !== 3) return JSON.stringify({ noAccess: true, status: status });
+  var store = $.EKEventStore.alloc.init;
+  var from = $.NSDate.dateWithTimeIntervalSince1970(Number(argv[1]) / 1000);
+  var to = $.NSDate.dateWithTimeIntervalSince1970(Number(argv[2]) / 1000);
+  var list = store.eventsMatchingPredicate(store.predicateForEventsWithStartDateEndDateCalendars(from, to, $()));
+  var out = [];
+  for (var i = 0; i < list.count; i++) {
+    var e = list.objectAtIndex(i);
+    out.push({ title: ObjC.unwrap(e.title) || '', start: new Date(e.startDate.timeIntervalSince1970 * 1000).toISOString(),
+      end: new Date(e.endDate.timeIntervalSince1970 * 1000).toISOString(), allDay: !!e.allDay,
+      calendar: ObjC.unwrap(e.calendar.title) || '', recurring: !!e.hasRecurrenceRules });
+  }
+  return JSON.stringify({ fast: true, events: out });
+}`,
+
+  // Fragt einmal nach vollem Kalenderzugriff (macOS zeigt dazu ein Fenster).
+  calendarAccess: `ObjC.import('EventKit');
+function run() {
+  var status = Number(ObjC.unwrap($.EKEventStore.authorizationStatusForEntityType($.EKEntityTypeEvent)));
+  if (status === 3) return JSON.stringify({ granted: true, status: status });
+  var store = $.EKEventStore.alloc.init;
+  var done = false;
+  var callback = function () { done = true; };
+  if (store.respondsToSelector('requestFullAccessToEventsWithCompletion:')) store.requestFullAccessToEventsWithCompletion(callback);
+  else store.requestAccessToEntityTypeCompletion($.EKEntityTypeEvent, callback);
+  var limit = Date.now() + 120000;
+  while (!done && Date.now() < limit) $.NSRunLoop.currentRunLoop.runModeBeforeDate($.NSDefaultRunLoopMode, $.NSDate.dateWithTimeIntervalSinceNow(0.1));
+  status = Number(ObjC.unwrap($.EKEventStore.authorizationStatusForEntityType($.EKEntityTypeEvent)));
+  return JSON.stringify({ granted: status === 3, status: status });
 }`,
 
   reminders: `function run(argv) {
@@ -171,6 +213,10 @@ async function calendarEvents(days = 1, { launch = true, now = new Date() } = {}
   const n = Math.min(Math.max(toNumber(days, 1), 1), 31);
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + n);
+  const fast = await runJson(SCRIPTS.calendarFast, ['1', start.getTime(), end.getTime()], { app: 'Kalender', timeout: 20000 });
+  if (fast.ok && fast.data && fast.data.fast) {
+    return { ok: true, data: fast.data.events.sort((a, b) => (a.start < b.start ? -1 : 1)) };
+  }
   const res = await runJson(SCRIPTS.calendar, [launch ? '1' : '0', start.getTime(), end.getTime()], { app: 'Kalender' });
   if (!res.ok || res.data.notRunning) return res.ok ? { ok: true, data: null, notRunning: true } : res;
   return { ok: true, data: mergeEvents(res.data, start, end) };
@@ -192,6 +238,12 @@ function mergeEvents({ events = [], series = [] }, start, end) {
     }
   }
   return out.sort((a, b) => (a.start < b.start ? -1 : 1));
+}
+
+// Ergebnis: { ok, granted, status } – status 3 = voller Zugriff, 4 = nur hinzufügen, 2 = abgelehnt.
+async function requestCalendarAccess() {
+  const res = await runJson(SCRIPTS.calendarAccess, [], { app: 'Kalender', timeout: 130000 });
+  return res.ok ? { ok: true, granted: !!res.data.granted, status: res.data.status } : res;
 }
 
 async function reminders(list = '', { launch = true } = {}) {
@@ -296,14 +348,27 @@ async function runUserScript(script, language = 'AppleScript') {
 
 // Alles für die "Heute"-Ansicht. launch: false fragt nur Apps ab, die schon laufen –
 // so öffnet die regelmäßige Aktualisierung keine Programme ungefragt.
+const TODAY_PARTS = {
+  events: (launch) => calendarEvents(1, { launch }),
+  reminders: (launch) => reminders('', { launch }),
+  mail: () => mailUnread(5),
+  outlook: () => outlookUnread(5),
+};
+
+// Ein Teil der Heute-Ansicht. Jede Karte lädt für sich, damit der langsame Kalender die anderen nicht aufhält.
+async function todayPart(part, { launch = false } = {}) {
+  const run = Object.prototype.hasOwnProperty.call(TODAY_PARTS, part) ? TODAY_PARTS[part] : null;
+  return run ? run(launch) : { ok: false, error: 'Unbekannter Teil.' };
+}
+
 async function today({ launch = false } = {}) {
-  const [events, todo, mail, outlook] = await Promise.all([
-    calendarEvents(1, { launch }), reminders('', { launch }), mailUnread(5), outlookUnread(5)]);
-  return { events, reminders: todo, mail, outlook };
+  const parts = Object.keys(TODAY_PARTS);
+  const results = await Promise.all(parts.map((p) => todayPart(p, { launch })));
+  return Object.fromEntries(parts.map((p, i) => [p, results[i]]));
 }
 
 module.exports = {
   AVAILABLE, SCRIPTS, runScript, friendlyError, mergeEvents, parseDue, openArgs,
-  calendarEvents, reminders, addReminder, searchNotes, createNote, mailUnread, outlookUnread,
-  spotlight, open, runUserScript, today,
+  calendarEvents, requestCalendarAccess, reminders, addReminder, searchNotes, createNote, mailUnread, outlookUnread,
+  spotlight, open, runUserScript, today, todayPart,
 };

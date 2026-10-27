@@ -141,6 +141,15 @@ class WebTabs extends EventEmitter {
     }
   }
 
+  // Lädt eine Adresse derselben Website im Tab (z. B. einen bestimmten n8n-Workflow).
+  openUrl(id, url) {
+    const portal = this.store.get().portals.find((p) => p.id === id);
+    const entry = this.ensure(id);
+    if (!portal || !entry || !/^https?:\/\//.test(url) || new URL(url).origin !== new URL(portal.url).origin) return false;
+    entry.view.webContents.loadURL(url).catch(() => {});
+    return true;
+  }
+
   currentUrl(id) {
     const entry = this.views.get(id);
     return entry ? entry.view.webContents.getURL() : null;

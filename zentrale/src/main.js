@@ -1,5 +1,5 @@
 // Hauptprozess: öffnet das Fenster, startet Claude automatisch und hält alles synchron.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -12,9 +12,15 @@ const { TopicStore, groupByTopic, TOPICS } = require('./categories');
 const { desktopMeta } = require('./desktop-meta');
 const library = require('./library');
 const files = require('./files');
+const music = require('./music');
 const { PortalStore, PRESETS } = require('./portals');
 const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
+const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
+const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require('./n8n');
+const { startProxy, makeOps, socketPath: n8nSocketPath } = require('./n8n-proxy');
+const { BrowserControl, makeBrowserOps } = require('./browser-control');
+const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
 
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
@@ -23,6 +29,13 @@ const EXTERNAL_LINKS = new Set([
   'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
 ]);
+
+// Hinweis an Claude, wenn „Web-Tabs für Claude“ eingeschaltet ist.
+const WEB_HINT = 'Du läufst in der Zentrale des Nutzers. Webseiten (z. B. Meta Business, Shopify, Gmail, Instagram) bedienst du '
+  + 'mit den Werkzeugen zentrale_web_* in den Web-Tabs der Zentrale, wo der Nutzer angemeldet ist und live zusieht – nicht mit '
+  + 'Playwright und nicht mit einem separaten Chrome. Lies die Seite (zentrale_web_read) vor und nach jeder Aktion. '
+  + 'Passwörter, Karten- und Bankdaten gibt nur der Nutzer selbst ein. Vor allem, was Geld kostet oder etwas veröffentlicht, '
+  + 'fasst du zusammen, was passieren wird, und lässt den Nutzer entscheiden.';
 
 // So frisch geschriebene Gespräche benutzt vermutlich gerade ein anderes Claude-Fenster.
 const IN_USE_MS = 2 * 60 * 1000;
@@ -49,6 +62,12 @@ function setup() {
   let quitting = false;
   let cleanedUp = false;
   let macConfigFile = null;
+  let n8nConfigFile = null;
+  let n8nProxy = null;
+  let browserProxy = null;
+  let browser = null;
+  let browserConfigFile = null;
+  let n8nConfig = { url: 'http://localhost:5678', key: null };
   const taskChats = new Map(); // laufende Aufgaben-Chats → Name der Aufgabe
   const notified = new Set();
   const liveNotifications = new Set(); // Referenz halten, sonst geht der Klick auf die Mitteilung verloren
@@ -138,26 +157,96 @@ function setup() {
   function extraArgs() {
     const c = settings ? settings.get().connections : {};
     const args = [];
+    const allowed = [];
     if (c.mac && macConfigFile) {
       args.push(`--mcp-config=${macConfigFile}`);
-      args.push(`--allowedTools=${READ_ONLY_TOOLS.map((t) => `mcp__mac__${t}`).join(',')}`);
+      allowed.push(...READ_ONLY_TOOLS.map((t) => `mcp__mac__${t}`));
     }
+    if (n8nConfig.key && n8nConfigFile) {
+      args.push(`--mcp-config=${n8nConfigFile}`);
+      allowed.push(...N8N_READ_ONLY.map((t) => `mcp__n8n__${t}`));
+    }
+    if (c.web && browserConfigFile) {
+      args.push(`--mcp-config=${browserConfigFile}`);
+      allowed.push(...BROWSER_READ_ONLY.map((t) => `mcp__web__${t}`));
+      // Nicht mit Playwright oder einem separaten Chrome verwechseln: Webseiten gehören in die Tabs der Zentrale.
+      args.push('--append-system-prompt', WEB_HINT);
+    }
+    if (allowed.length) args.push(`--allowedTools=${allowed.join(',')}`);
     if (c.chrome) args.push('--chrome');
     return args;
   }
 
-  // Der Mac-Server läuft mit der Node-Laufzeit, die in Electron steckt.
-  function writeMacConfig() {
-    const server = path.join(__dirname, 'mcp', 'mac-server.js').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-    macConfigFile = path.join(app.getPath('userData'), 'mcp-mac.json');
-    const config = { mcpServers: { mac: { type: 'stdio', command: process.execPath, args: [server], env: { ELECTRON_RUN_AS_NODE: '1' } } } };
+
+  // Freigaben für Browser-Aktionen zeigen, welcher Knopf auf welcher Seite gemeint ist.
+  function approvalInfo(toolName, input) {
+    return browser ? browser.approvalInfo(toolName, input) : null;
+  }
+
+  // Die MCP-Server laufen mit der Node-Laufzeit, die in Electron steckt.
+  function writeMcpConfig(name, script, env = {}) {
+    const server = path.join(__dirname, 'mcp', script).replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+    const file = path.join(app.getPath('userData'), `mcp-${name}.json`);
+    const config = { mcpServers: { [name]: { type: 'stdio', command: process.execPath, args: [server], env: { ELECTRON_RUN_AS_NODE: '1', ...env } } } };
     try {
-      fs.mkdirSync(path.dirname(macConfigFile), { recursive: true });
-      fs.writeFileSync(macConfigFile, JSON.stringify(config, null, 2));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(config, null, 2));
+      return file;
     } catch {
-      macConfigFile = null;
+      return null;
     }
   }
+
+  function writeMacConfig() {
+    macConfigFile = writeMcpConfig('mac', 'mac-server.js');
+    // Der n8n-Server bekommt nur den Weg zur Vermittlung in der Zentrale – keinen Schlüssel.
+    n8nConfigFile = writeMcpConfig('n8n', 'n8n-server.js', { ZENTRALE_N8N_SOCKET: n8nSocketPath(app.getPath('userData')) });
+    browserConfigFile = writeMcpConfig('web', 'browser-server.js', { ZENTRALE_BROWSER_SOCKET: n8nSocketPath(app.getPath('userData'), 'browser') });
+  }
+
+  // ---------- n8n: Adresse und verschlüsselter Schlüssel (macOS-Schlüsselbund) ----------
+
+  function n8nFile() { return path.join(app.getPath('userData'), 'n8n.json'); }
+
+  function loadN8n() {
+    let raw = {};
+    try { raw = JSON.parse(fs.readFileSync(n8nFile(), 'utf8')); } catch {}
+    let key = null;
+    if (raw.key && safeStorage.isEncryptionAvailable()) {
+      try { key = safeStorage.decryptString(Buffer.from(raw.key, 'base64')); } catch { key = null; }
+    }
+    n8nConfig = { url: normalizeBase(raw.url) || N8N_DEFAULT_URL, key };
+  }
+
+  function saveN8n(next) {
+    if (next.key && !safeStorage.isEncryptionAvailable()) return false;
+    const data = { url: next.url, key: next.key ? safeStorage.encryptString(next.key).toString('base64') : null };
+    try {
+      fs.mkdirSync(path.dirname(n8nFile()), { recursive: true });
+      fs.writeFileSync(`${n8nFile()}.tmp`, JSON.stringify(data), { mode: 0o600 });
+      fs.renameSync(`${n8nFile()}.tmp`, n8nFile());
+    } catch { return false; }
+    n8nConfig = next;
+    // Claude startet vor der nächsten Nachricht neu und kennt dann die n8n-Werkzeuge.
+    if (chat) chat.needsRestart = true;
+    return true;
+  }
+
+  const n8nClient = () => new N8n({ baseUrl: n8nConfig.url, apiKey: n8nConfig.key });
+
+  // Rollen der Agenten (z. B. „Marketing“, „Recherche“) – nur für die Ordnung in der Zentrale.
+  const roles = {
+    file: () => path.join(app.getPath('userData'), 'agent-roles.json'),
+    get() { try { const r = JSON.parse(fs.readFileSync(this.file(), 'utf8')); return r && typeof r === 'object' ? r : {}; } catch { return {}; } },
+    write(map) { try { fs.writeFileSync(this.file(), JSON.stringify(map, null, 2)); return true; } catch { return false; } },
+    set(id, role) {
+      if (typeof id !== 'string' || !/^[\w.-]+\.md$/.test(id)) return false;
+      const r = String(role || '').trim().slice(0, 40);
+      const { [id]: _old, ...rest } = this.get();
+      return this.write(r ? { ...rest, [id]: r } : rest);
+    },
+    remove(id) { const { [id]: _old, ...rest } = this.get(); this.write(rest); },
+  };
 
   function findSession(id) {
     for (const p of projectsCache) {
@@ -176,7 +265,7 @@ function setup() {
     const old = chat;
     chatGen += 1;
     const gen = chatGen;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs });
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs, approvalInfo });
     chat = c;
     c.on('event', (ev) => send('chat-event', { ...ev, gen }));
     c.on('status', () => pushState());
@@ -336,19 +425,23 @@ function setup() {
   // launch: true nur, wenn du selbst aktualisierst – sonst öffnen sich keine Apps ungefragt.
   ipcMain.handle('mac-today', async (_e, args) => {
     if (process.platform !== 'darwin' || !settings.get().connections.mac) return null;
-    return mac.today({ launch: !!(args && args.launch === true) });
+    const part = args && typeof args.part === 'string' ? args.part : null;
+    const launch = !!(args && args.launch === true);
+    return part ? mac.todayPart(part, { launch }) : mac.today({ launch });
   });
 
   // Fragt die Mac-Rechte für Kalender und Erinnerungen einmal gezielt ab und schickt eine Probe-Mitteilung.
   ipcMain.handle('mac-test', async () => {
     if (process.platform !== 'darwin') return { error: 'Das geht nur auf dem Mac.' };
+    // Erst den vollen Kalenderzugriff anfragen (schneller Weg), dann alles einmal ausprobieren.
+    const access = await mac.requestCalendarAccess();
     const [calendar, reminders] = await Promise.all([mac.calendarEvents(1), mac.reminders()]);
     let notify = { ok: false, error: 'Mitteilungen sind ausgeschaltet. Erlaube sie unter Systemeinstellungen → Mitteilungen → Zentrale.' };
     if (Notification.isSupported()) {
       new Notification({ title: 'Zentrale', body: 'Die Verbindung zum Mac funktioniert.' }).show();
       notify = { ok: true };
     }
-    return { calendar, reminders, notify };
+    return { calendar, reminders, notify, access };
   });
 
   // ---------- Themen und Löschen ----------
@@ -417,6 +510,28 @@ function setup() {
 
   ipcMain.handle('agent-toggle', (_e, args) => library.setAgentActive(args && args.id, !!(args && args.active)));
 
+  // Agenten und Skills selbst anlegen, ändern, löschen (Löschen = Papierkorb).
+  const safely = (fn) => { try { return fn(); } catch (e) { return { ok: false, error: e.message }; } };
+  ipcMain.handle('agent-read', (_e, id) => safely(() => library.readAgent(id)));
+  ipcMain.handle('agent-save', (_e, input) => safely(() => library.saveAgent(input)));
+  ipcMain.handle('agent-trash', async (_e, id) => {
+    const found = safely(() => library.readAgent(id));
+    if (!found.ok) return found;
+    try { await shell.trashItem(library.agentFile(id, found.data.active)); } catch (e) { return { ok: false, error: e.message }; }
+    roles.remove(id);
+    return { ok: true };
+  });
+  ipcMain.handle('agent-roles', () => roles.get());
+  ipcMain.handle('agent-role-set', (_e, args) => roles.set(args && args.id, args && args.role));
+  ipcMain.handle('skill-read', (_e, file) => safely(() => library.readSkill(file)));
+  ipcMain.handle('skill-save', (_e, input) => safely(() => library.saveSkill(input)));
+  ipcMain.handle('skill-trash', async (_e, file) => {
+    const dir = library.ownSkillDir(file);
+    if (!dir || !fs.existsSync(dir)) return { ok: false, error: 'Nur eigene Skills lassen sich hier löschen.' };
+    try { await shell.trashItem(dir); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
+  });
+  ipcMain.handle('marketplace', () => safely(() => library.listMarketplace()));
+
   ipcMain.handle('running-work', () => {
     const work = library.runningWork((id) => { const s = findSession(id); return s ? s.title : null; });
     const ownId = chat && chat.sessionId;
@@ -466,6 +581,51 @@ function setup() {
   });
 
   ipcMain.handle('fs-search', (_e, q) => (typeof q === 'string' ? mac.spotlight(q, 60) : { ok: false, error: 'Suchbegriff fehlt.' }));
+
+  // ---------- Musik ----------
+
+  const musicAllowed = () => process.platform === 'darwin' && settings.get().connections.mac;
+  ipcMain.handle('music-now', () => (musicAllowed() ? music.nowPlaying() : null));
+  ipcMain.handle('music-control', (_e, args) => (musicAllowed() && args
+    ? music.control(String(args.app || ''), String(args.action || '')) : { ok: false, error: 'Die Verbindung „Mein Mac“ ist aus.' }));
+
+  // ---------- Automatisierungen (n8n) ----------
+
+  ipcMain.handle('n8n-status', async () => {
+    const health = await n8nClient().health();
+    return { url: n8nConfig.url, running: health.ok, hasKey: !!n8nConfig.key };
+  });
+  // Prüft den Schlüssel sofort an n8n, bevor er gespeichert wird.
+  ipcMain.handle('n8n-connect', async (_e, args) => {
+    const url = normalizeBase(args && args.url);
+    if (!url) return { ok: false, error: 'Das ist keine gültige Adresse (z. B. http://localhost:5678).' };
+    if (url.startsWith('http:') && !isLoopback(url)) return { ok: false, error: 'Für ein n8n außerhalb deines Macs bitte eine https-Adresse – sonst ginge der Schlüssel unverschlüsselt durchs Netz.' };
+    const key = args && typeof args.key === 'string' ? args.key.trim() : '';
+    if (!key || key.length > 4000) return { ok: false, error: 'Bitte den API-Schlüssel aus n8n einfügen.' };
+    const test = await new N8n({ baseUrl: url, apiKey: key }).listWorkflows();
+    if (!test.ok) return test;
+    if (!saveN8n({ url, key })) return { ok: false, error: 'Der Schlüssel konnte nicht sicher gespeichert werden (Schlüsselbund nicht verfügbar).' };
+    return { ok: true, count: test.data.length };
+  });
+  ipcMain.handle('n8n-disconnect', () => saveN8n({ url: n8nConfig.url, key: null }));
+  ipcMain.handle('n8n-workflows', () => n8nClient().listWorkflows());
+  ipcMain.handle('n8n-executions', () => n8nClient().listExecutions(50));
+  ipcMain.handle('n8n-set-active', (_e, args) => (args && typeof args.id === 'string'
+    ? n8nClient().setActive(args.id, args.active === true) : { ok: false, error: 'Workflow fehlt.' }));
+  // Öffnet den n8n-Editor als Tab im Bereich Web (die Anmeldung bei n8n bleibt dort gespeichert).
+  ipcMain.handle('n8n-open-editor', (_e, id) => {
+    const target = n8nClient().editorUrl(typeof id === 'string' ? id : null);
+    const origin = new URL(target).origin;
+    let portal = webTabs.store.get().portals.find((p) => new URL(p.url).origin === origin);
+    if (!portal) {
+      const res = webTabs.store.add('n8n', `${origin}/`);
+      if (!res.ok) return res;
+      portal = res.portal;
+    }
+    webTabs.show(portal.id);
+    webTabs.openUrl(portal.id, target);
+    return { ok: true, id: portal.id };
+  });
 
   // ---------- Web: Seiten mit dauerhaftem Login ----------
 
@@ -518,7 +678,13 @@ function setup() {
     topicStore = new TopicStore(path.join(app.getPath('userData'), 'topics.json'));
     webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
     webTabs.on('change', () => send('web-state', webState()));
+    // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
+    browser = new BrowserControl(webTabs);
+    browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));
+    browserProxy = startProxy(makeBrowserOps(browser), n8nSocketPath(app.getPath('userData'), 'browser'));
     nativeTheme.themeSource = settings.get().theme;
+    loadN8n();
+    n8nProxy = startProxy(makeOps(n8nClient), n8nSocketPath(app.getPath('userData')));
     writeMacConfig();
     refreshProjects();
     createWindow();
@@ -527,7 +693,7 @@ function setup() {
       if (!claude.bin) return Promise.resolve({ ok: false, text: 'Claude Code wurde nicht gefunden.' });
       const cwd = isDir(task.cwd) ? task.cwd : os.homedir();
       return runTask({
-        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs,
+        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs, approvalInfo,
         onApproval: (c) => {
           // Läuft die Aufgabe, merken wir uns ihren Chat, damit Freigaben zugeordnet werden können.
           if (!taskChats.has(c)) taskChats.set(c, task.name);
@@ -565,6 +731,8 @@ function setup() {
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];
     if (webTabs) jobs.push(webTabs.saveLogins());
+    if (n8nProxy) n8nProxy.close();
+    if (browserProxy) browserProxy.close();
     if (chat) jobs.push(chat.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });

@@ -7,6 +7,7 @@ const LIB_TABS = [
   { id: 'commands', label: 'Befehle' },
   { id: 'plugins', label: 'Plugins' },
   { id: 'connectors', label: 'Konnektoren' },
+  { id: 'discover', label: 'Entdecken' },
 ];
 
 const lib = { tab: 'agents', data: null, error: null, loading: false, filter: '', agentFilter: 'all', running: null, runningTimer: null };
@@ -31,8 +32,14 @@ function libMatches(item) {
 }
 
 // Ein Skill oder Befehl lässt sich direkt im Chat benutzen: der Name steht dann schon im Eingabefeld.
-function useInChat(text) {
-  if (!ui.state.chat) { alert('Öffne zuerst einen Chat in der Übersicht – dann geht es direkt los.'); return; }
+// Ist kein Chat offen, startet einer im zuletzt benutzten Projekt.
+async function useInChat(text) {
+  if (!ui.state.chat) {
+    const recent = projects().find((p) => p.path);
+    const res = await api.newSession({ cwd: recent ? recent.path : null });
+    if (!res || res.error || !res.chat) { alert((res && res.error) || 'Es konnte kein Chat gestartet werden.'); return; }
+    resetChat(res.chat.gen, []);
+  }
   ui.prefill = text;
   setView('chat');
 }
@@ -72,32 +79,10 @@ function renderRunning() {
     : h('div', { class: 'card empty', text: 'Gerade arbeitet kein Agent. Hier erscheinen Chats, Aufgaben und Unteragenten, sobald sie loslegen – auch aus anderen Claude-Fenstern.' }));
 }
 
-function renderAgents(list) {
-  const filtered = list.filter(libMatches).filter((a) => lib.agentFilter === 'all' || (lib.agentFilter === 'on') === a.active);
-  const on = list.filter((a) => a.active).length;
-  const filterBtn = (id, label) => h('button', { 'aria-pressed': String(lib.agentFilter === id), 'data-focus': `agent-filter:${id}`,
-    onClick: () => { lib.agentFilter = id; renderLibraryBody(); } }, label);
-  return [
-    h('div', { class: 'section-head' },
-      h('span', { class: 'sub', text: `${on} aktiv · ${list.length - on} ausgeschaltet` }), h('span', { class: 'spacer' }),
-      h('div', { class: 'segmented', role: 'group', 'aria-label': 'Agenten filtern' },
-        filterBtn('all', 'Alle'), filterBtn('on', 'Aktiv'), filterBtn('off', 'Aus'))),
-    h('p', { class: 'date', text: 'Ausgeschaltete Agenten kennt Claude nicht. Der Schalter verschiebt die Datei zwischen ~/.claude/agents und ~/.claude/agents-archiv – neue Gespräche sehen die Änderung sofort.' }),
-    h('div', { class: 'card list' }, filtered.length ? filtered.map((a) => itemRow(a,
-      a.id ? h('button', { class: 'switch', role: 'switch', 'aria-checked': String(a.active), 'aria-label': a.name, 'data-focus': `agent:${a.id}`,
-        onClick: async () => {
-          const res = await api.toggleAgent(a.id, !a.active);
-          if (res && !res.ok) alert(res.error);
-          await loadLibrary(true);
-        } }) : h('span', { class: 'pill green', text: 'über Plugin' })))
-      : h('div', { class: 'empty', text: 'Keine passenden Agenten.' })),
-  ];
-}
-
 function renderSkillList(list, prefix) {
   const filtered = list.filter(libMatches);
   return h('div', { class: 'card list' }, filtered.length ? filtered.map((x) => itemRow(x,
-    h('button', { class: 'link', onClick: () => useInChat(`${prefix}${x.name.replace(/^\//, '')} `) }, 'Im Chat nutzen')))
+    h('button', { class: 'link', 'aria-label': `${x.name} im Chat nutzen`, onClick: () => useInChat(`${prefix}${x.name.replace(/^\//, '')} `) }, 'Im Chat nutzen')))
     : h('div', { class: 'empty', text: 'Nichts gefunden.' }));
 }
 
@@ -135,14 +120,15 @@ function renderLibraryBody() {
   else if (lib.error) body = h('div', { class: 'card empty warn' }, `Die Liste konnte nicht gelesen werden: ${lib.error} `,
     h('button', { class: 'link', onClick: () => loadLibrary(true) }, 'Erneut versuchen'));
   else if (!d) body = h('div', { class: 'card empty', text: 'Lädt …' });
-  else if (lib.tab === 'agents') body = renderAgents(d.agents);
-  else if (lib.tab === 'skills') body = renderSkillList(d.skills, '/');
+  else if (lib.tab === 'agents') body = renderAgentsWorkshop(d.agents);
+  else if (lib.tab === 'skills') body = renderSkillsTable(d.skills);
+  else if (lib.tab === 'discover') body = renderDiscover();
   else if (lib.tab === 'commands') body = renderSkillList(d.commands, '/');
   else body = renderPlugins(d.plugins);
   const counts = d ? { agents: d.agents.length, skills: d.skills.length, commands: d.commands.length, plugins: d.plugins.length,
-    connectors: ui.connections ? ui.connections.length : null } : {};
+    connectors: ui.connections ? ui.connections.length : null, discover: ws.market ? ws.market.length : null } : {};
   keepFocus(() => fill($('#lib-tabs'), LIB_TABS.map((t) => h('button', { 'aria-pressed': String(lib.tab === t.id), 'data-focus': `lib-tab:${t.id}`,
-    onClick: () => { lib.tab = t.id; renderLibraryBody(); } }, t.label, counts[t.id] != null ? h('span', { class: 'count', text: String(counts[t.id]) }) : null))));
+    onClick: () => { lib.tab = t.id; ws.editor = null; ws.taskFor = null; renderLibraryBody(); } }, t.label, counts[t.id] != null ? h('span', { class: 'count', text: String(counts[t.id]) }) : null))));
   keepFocus(() => fill(box, body));
 }
 
@@ -153,13 +139,14 @@ function renderLibrary() {
   fill($('#main'),
     h('div', { class: 'section-head wrap' },
       h('h1', { text: 'Skills & Agenten' }), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn ghost', onClick: () => { loadLibrary(true); loadRunning(); } }, 'Aktualisieren')),
+      h('button', { class: 'btn ghost', onClick: () => { ws.market = null; loadLibrary(true); loadRunning(); } }, 'Aktualisieren')),
+    h('p', { class: 'date', text: 'Agenten sind Spezialisten, denen Claude Arbeit übergibt. Skills sind Anleitungen, die Claude bei passenden Aufgaben von selbst benutzt.' }),
     h('section', { class: 'section' },
       h('div', { class: 'section-head' }, h('h2', { text: 'Läuft gerade' })),
       h('div', { id: 'lib-running' })),
     h('section', { class: 'section' },
       h('div', { class: 'section-head wrap' }, h('div', { class: 'tabs', id: 'lib-tabs', role: 'group', 'aria-label': 'Bereich wählen' }), h('span', { class: 'spacer' }), filter),
-      h('div', { id: 'lib-body', class: 'section', 'aria-live': 'polite' })));
+      h('div', { id: 'lib-body', class: 'section' })));
   ui.sig.libRunning = null;
   renderRunning();
   renderLibraryBody();

@@ -169,7 +169,7 @@ test('Spotlight hört nach 30 Treffern auf und ignoriert führende Striche', asy
 // ---------- MCP-Server ----------
 
 test('MCP-Server: Lese-Werkzeuge ohne Rückfrage, Aktionen mit Rückfrage', () => {
-  assert.deepStrictEqual([...READ_ONLY_TOOLS].sort(), ['calendar_events', 'mail_unread', 'notes_search', 'outlook_unread', 'reminders_list', 'spotlight_search']);
+  assert.deepStrictEqual([...READ_ONLY_TOOLS].sort(), ['calendar_events', 'mail_unread', 'music_now_playing', 'notes_search', 'outlook_unread', 'reminders_list', 'spotlight_search']);
   for (const t of TOOLS) assert.ok(t.inputSchema && t.inputSchema.type === 'object', t.name);
 });
 
@@ -193,4 +193,75 @@ test('MCP-Server spricht JSON-RPC über stdin/stdout', async () => {
   assert.strictEqual(replies.get(3).result.isError, false);
   assert.strictEqual(replies.get(4).error.code, -32602);
   assert.strictEqual(replies.get(5).error.code, -32601);
+});
+
+test('Jährliche Serien mit Monat und Wochentag (echte Feiertagsregeln)', () => {
+  const { occurrences } = require('../src/recurrence');
+  const at = (rule, startIso, year) => occurrences({ start: startIso, end: startIso }, rule,
+    new Date(year, 0, 1), new Date(year + 1, 0, 1)).map((o) => `${o.start.getMonth() + 1}/${o.start.getDate()}`);
+  // Muttertag: 2. Sonntag im Mai
+  assert.deepStrictEqual(at('FREQ=YEARLY;INTERVAL=1;COUNT=6;BYMONTH=5;BYDAY=2SU', '2024-05-12T00:00:00', 2026), ['5/10']);
+  // Ende der Sommerzeit: letzter Sonntag im Oktober – 2026 der 25., nicht der 27.
+  assert.deepStrictEqual(at('FREQ=YEARLY;INTERVAL=1;COUNT=6;BYMONTH=10;BYDAY=-1SU', '2024-10-27T00:00:00', 2026), ['10/25']);
+  // Erntedank: 1. Sonntag im Oktober
+  assert.deepStrictEqual(at('FREQ=YEARLY;BYMONTH=10;BYDAY=1SU', '2024-10-06T00:00:00', 2026), ['10/4']);
+  // Ohne BYDAY bleibt es beim festen Datum
+  assert.deepStrictEqual(at('FREQ=YEARLY;INTERVAL=1;COUNT=6', '2024-12-25T00:00:00', 2026), ['12/25']);
+  // COUNT=6 ab 2024: 2030 gibt es nicht mehr
+  assert.deepStrictEqual(at('FREQ=YEARLY;COUNT=6;BYMONTH=5;BYDAY=2SU', '2024-05-12T00:00:00', 2030), []);
+  // Monatlich ohne Zahl: jeder Montag im Monat (Oktober 2026: 5., 12., 19., 26.)
+  assert.deepStrictEqual(at('FREQ=MONTHLY;BYDAY=MO', '2026-10-05T09:00:00', 2026).filter((d) => d.startsWith('10/')), ['10/5', '10/12', '10/19', '10/26']);
+});
+
+test('Kalender: mit vollem Zugriff der schnelle Weg über EventKit, sortiert', async () => {
+  process.env.FAKE_EK_ACCESS = '1';
+  try {
+    const cal = await mac.calendarEvents(1, { now: MONDAY });
+    assert.strictEqual(cal.ok, true);
+    assert.deepStrictEqual(cal.data.map((e) => e.title), ['Früh', 'Spät']);
+    assert.deepStrictEqual(await mac.requestCalendarAccess(), { ok: true, granted: true, status: 3 });
+  } finally {
+    delete process.env.FAKE_EK_ACCESS;
+  }
+  assert.deepStrictEqual(await mac.requestCalendarAccess(), { ok: true, granted: false, status: 4 });
+});
+
+test('Musik: was läuft, Länge in Sekunden, Steuern nur mit gültigen Angaben', async () => {
+  const music = require('../src/music');
+  const now = await music.nowPlaying();
+  assert.strictEqual(now.data.current.app, 'spotify');
+  assert.strictEqual(now.data.current.playing, true);
+  assert.strictEqual(Math.round(now.data.current.track.duration), 121); // Spotify liefert Millisekunden
+  assert.strictEqual(now.data.apps.find((a) => a.app === 'music').running, false);
+  assert.strictEqual((await music.control('spotify', 'next')).ok, true);
+  assert.strictEqual((await music.control('winamp', 'next')).ok, false);
+  assert.strictEqual((await music.control('spotify', 'rm -rf')).ok, false);
+  assert.match((await music.control('music', 'next')).error, /nicht geöffnet/);
+  process.env.FAKE_MUSIC_OFF = '1';
+  try { assert.strictEqual((await music.nowPlaying()).data.current, null); } finally { delete process.env.FAKE_MUSIC_OFF; }
+  assert.deepStrictEqual(music.normalize('music', { running: true, state: 'paused', track: { title: 'A', duration: 200 } }).track.duration, 200);
+});
+
+test('Musik-Werkzeuge: Abfragen ohne Rückfrage, Steuern mit Freigabe', () => {
+  const { READ_ONLY_TOOLS } = require('../src/mcp/mac-server');
+  const { describeApproval } = require('../src/claude');
+  assert.ok(READ_ONLY_TOOLS.includes('music_now_playing'));
+  assert.ok(!READ_ONLY_TOOLS.includes('music_control'));
+  const a = describeApproval('mcp__mac__music_control', { app: 'spotify', action: 'next' });
+  assert.strictEqual(a.title, 'Musik steuern');
+  assert.strictEqual(a.detail, 'Spotify: Nächster Titel');
+});
+
+test('Serien: mehrere Monate sortiert, BYSETPOS, ganztägig über die Zeitumstellung', () => {
+  const { occurrences } = require('../src/recurrence');
+  const days = (rule, start, end, from, to) => occurrences({ start, end }, rule, from, to).map((o) => `${o.start.getMonth() + 1}/${o.start.getDate()}`);
+  // Oktober und März, COUNT=3: Okt 2026, Mär 2027, Okt 2027 – in dieser Reihenfolge, nicht März 2026 zuerst
+  assert.deepStrictEqual(days('FREQ=YEARLY;BYMONTH=10,3;COUNT=3', '2026-10-01T09:00:00', '2026-10-01T10:00:00', new Date(2026, 0, 1), new Date(2028, 0, 1)), ['10/1', '3/1', '10/1']);
+  // Letzter Werktag im Monat
+  assert.deepStrictEqual(days('FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1', '2026-10-30T09:00:00', '2026-10-30T10:00:00', new Date(2026, 9, 1), new Date(2027, 0, 1)), ['10/30', '11/30', '12/31']);
+  // Ganztägiger Termin am Tag der Zeitumstellung (29.03.2026) endet am selben Tag um Mitternacht, nicht am 30. um 01:00
+  const [o] = occurrences({ start: '2025-03-29T00:00:00', end: '2025-03-30T00:00:00' }, 'FREQ=YEARLY', new Date(2026, 2, 29), new Date(2026, 2, 30));
+  assert.strictEqual(o.end.getDate(), 30);
+  assert.strictEqual(o.end.getHours(), 0);
+  assert.strictEqual(occurrences({ start: '2025-03-29T00:00:00', end: '2025-03-30T00:00:00' }, 'FREQ=YEARLY', new Date(2026, 2, 30), new Date(2026, 2, 31)).length, 0);
 });
