@@ -159,17 +159,28 @@ function renderTheme() {
   const dark = theme === 'dark' || (theme === 'system' && darkQuery.matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   document.querySelectorAll('.theme-switch button').forEach((b) => {
-    b.setAttribute('aria-checked', String(b.dataset.theme === theme));
+    b.setAttribute('aria-pressed', String(b.dataset.theme === theme));
   });
 }
 darkQuery.addEventListener('change', renderTheme);
 
+// Beim Wechsel landet der Fokus auf der Überschrift, damit Tastatur und Vorlesefunktion mitkommen.
+// Der Chat setzt seinen Fokus selbst ins Eingabefeld.
 function setView(view) {
   ui.view = view;
   ui.sig.main = null;
   renderNav();
   renderMain();
   if (ui.state) renderApprovals();
+  const heading = view !== 'chat' && $('#main h1');
+  if (heading) { heading.setAttribute('tabindex', '-1'); heading.focus({ preventScroll: true }); }
+}
+
+// Mülleimer-Symbol für Löschknöpfe (fester Inhalt, keine fremden Daten).
+function trashIcon() {
+  const span = h('span', { 'aria-hidden': 'true' });
+  span.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
+  return span;
 }
 
 // ---------- Freigaben ----------
@@ -191,7 +202,7 @@ function approvalCard(a, compact) {
     h('div', { class: 'approval-actions' },
       h('button', { class: 'btn ghost', 'data-focus': `deny:${a.id}`, onClick: () => decide('deny') }, 'Ablehnen'),
       a.canAlways ? h('button', { class: 'btn ghost always', 'data-focus': `always:${a.id}`,
-        title: 'Erlaubt genau diese Aktion mit genau diesen Angaben für den Rest des Gesprächs', onClick: () => decide('always') }, 'Immer erlauben') : null,
+        title: 'Erlaubt genau diese Aktion mit genau diesen Angaben, solange dieser Chat offen ist', onClick: () => decide('always') }, 'Immer erlauben') : null,
       a.truncated ? null : h('button', { class: 'btn', 'data-focus': `allow:${a.id}`, onClick: () => decide('allow') }, 'Erlauben')));
 }
 
@@ -316,21 +327,25 @@ function folderName(cwd) {
   return cwd ? cwd.split('/').filter(Boolean).pop() || cwd : '';
 }
 
+// Gibt zurück, ob alle Gespräche gelöscht wurden.
 async function trashSessions(list, label) {
-  if (!list.length) return;
+  if (!list.length) return false;
   const what = list.length === 1 ? `„${list[0].title}“` : `${list.length} Gespräche${label ? ` aus „${label}“` : ''}`;
   if (!confirm(`${what} in den Papierkorb legen?\n\nSolange du den Papierkorb nicht leerst, kannst du sie dort zurückholen.`)) return false;
   const res = await api.trashSessions(list.map((x) => x.id));
   if (res && res.skipped && res.skipped.length) {
     alert(`${plural(res.trashed, 'Gespräch', 'Gespräche')} gelöscht. Nicht gelöscht:\n\n${res.skipped.map((x) => `• ${x.title}: ${x.reason}`).join('\n')}`);
   }
-  return true;
+  return !!res && res.trashed === list.length;
 }
 
-// Projekt löschen: erst die Gespräche, auf Wunsch danach auch den Ordner selbst.
+// Löscht nur, was gerade zu sehen ist (die Suche filtert mit). Den Ordner gibt es nur dazu,
+// wenn wirklich alle Gespräche des Projekts weg sind.
 async function trashGroup(g) {
-  const done = await trashSessions(g.sessions, g.name);
-  if (!done || !g.path) return;
+  const shown = g.sessions.filter((x) => matches(x.title) || matches(g.name));
+  const all = shown.length === g.sessions.length;
+  const done = await trashSessions(shown, g.name);
+  if (!done || !all || !g.path) return;
   if (!confirm(`Soll auch der Projektordner selbst in den Papierkorb?\n\n${g.path}\n\nAbbrechen = Ordner bleibt, nur die Gespräche sind weg.`)) return;
   const res = await api.trashProjectFolder(g.path);
   if (res && !res.ok) alert(res.error);
@@ -346,7 +361,11 @@ function topicSelect(x) {
     sel.append(o);
   }
   if (!x.topicManual) sel.value = '';
-  sel.addEventListener('change', () => api.setTopic([x.id], sel.value || null));
+  sel.addEventListener('change', async () => {
+    await api.setTopic([x.id], sel.value || null);
+    sel.blur(); // erst danach darf die Übersicht neu zeichnen (siehe renderOverview)
+    renderOverview(true);
+  });
   return sel;
 }
 
@@ -355,16 +374,16 @@ function sessionRow(x, s, showFolder) {
   const busy = isChat && s.chat.status === 'busy';
   const sub = isChat ? (busy ? 'Claude arbeitet gerade daran' : 'Im Chat geöffnet')
     : [x.archived ? 'archiviert' : null, showFolder ? folderName(x.cwd) : null].filter(Boolean).join(' · ') || null;
-  return h('div', { class: 'row' },
+  return h('div', { class: 'row session-row' },
     h('span', { class: `dot ${busy ? 'amber pulse' : isChat ? 'green' : ''}` }),
     h('div', { class: 'grow' },
-      h('div', { class: 'title', text: x.title }),
+      h('div', { class: 'title', text: x.title, title: x.title }),
       sub ? h('div', { class: 'sub', text: sub }) : null),
     h('span', { class: 'when', text: formatWhen(x.updatedAt) }),
     topicSelect(x),
     h('button', { class: 'link', 'data-focus': `open:${x.id}`, onClick: () => openSession(x) }, 'Öffnen'),
     h('button', { class: 'icon-btn', 'aria-label': `„${x.title}“ löschen`, title: 'In den Papierkorb', 'data-focus': `trash:${x.id}`,
-      disabled: busy, onClick: () => trashSessions([x]) }, '🗑'));
+      disabled: busy, onClick: () => trashSessions([x]) }, trashIcon()));
 }
 
 function renderOverview(force) {
@@ -377,6 +396,9 @@ function renderOverview(force) {
   const chat = s.chat ? { id: s.chat.sessionId, status: s.chat.status } : null;
   const enabledTasks = s.tasks.filter((t) => t.enabled).length;
   const minute = Math.floor(Date.now() / 60000);
+  // Ist gerade ein Auswahlfeld offen, nicht neu zeichnen – sonst klappt es unter der Maus zu.
+  const picking = document.activeElement && document.activeElement.tagName === 'SELECT' && $('#main').contains(document.activeElement);
+  if (picking && !force) return;
   if (!changed('main', ['overview', list, chat, enabledTasks, s.claude, ui.search, sel && sel.key, ui.groupMode, ui.showArchived, minute, settings().connections]) && !force) return;
   loadToday(false);
 
@@ -408,7 +430,7 @@ function renderOverview(force) {
     const rows = sel.sessions.filter((x) => matches(x.title) || matches(sel.name)).map((x) => sessionRow(x, s, ui.groupMode !== 'folder'));
     sessionsBox = h('div', { class: 'card list' }, rows.length ? rows : h('div', { class: 'empty', text: 'Keine passenden Gespräche.' }));
   }
-  const modeBtn = (mode, label) => h('button', { role: 'radio', 'aria-checked': String(ui.groupMode === mode), 'data-focus': `mode:${mode}`,
+  const modeBtn = (mode, label) => h('button', { 'aria-pressed': String(ui.groupMode === mode), 'data-focus': `mode:${mode}`,
     onClick: () => { ui.groupMode = mode; ui.selected = null; renderOverview(); } }, label);
   const newCwd = sel && sel.path ? sel.path : null;
 
@@ -424,13 +446,13 @@ function renderOverview(force) {
     h('div', { class: 'stats' },
       stat('Projekte', list.length), stat('Gespräche', totalSessions), stat('Tägliche Aufgaben', enabledTasks)),
     h('section', { class: 'section' },
-      h('div', { class: 'section-head' }, h('h2', { text: ui.groupMode === 'folder' ? 'Meine Projektordner' : 'Meine Themen' }),
+      h('div', { class: 'section-head wrap' }, h('h2', { text: ui.groupMode === 'folder' ? 'Meine Projektordner' : 'Meine Themen' }),
         h('span', { class: 'spacer' }),
         archivedCount ? h('label', { class: 'toggle-line' },
-          h('button', { class: 'switch', role: 'switch', 'aria-checked': String(ui.showArchived), 'aria-label': 'Archivierte Gespräche zeigen',
+          h('button', { class: 'switch', role: 'switch', 'aria-checked': String(ui.showArchived), 'aria-label': `Archivierte zeigen (${archivedCount})`,
             'data-focus': 'show-archived', onClick: () => { ui.showArchived = !ui.showArchived; renderOverview(); } }),
           `Archivierte zeigen (${archivedCount})`) : null,
-        h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Gespräche sortieren' },
+        h('div', { class: 'segmented', role: 'group', 'aria-label': 'Gespräche sortieren' },
           modeBtn('topic', 'Nach Thema'), modeBtn('folder', 'Nach Ordner'))),
       h('div', { class: 'projects' }, groupCards)),
     h('section', { class: 'section' },
@@ -493,11 +515,11 @@ function renderChat() {
   const s = ui.state;
   const main = $('#main');
   if (!s.chat) {
-    const list = projects();
+    const recent = projects().find((p) => p.path);
     fill(main, h('div', { class: 'card empty chat-empty' },
       h('p', { text: s.claude.found ? 'Gerade ist kein Chat offen.' : 'Claude Code wurde nicht gefunden.' }),
       s.claude.found ? h('div', { class: 'actions center' },
-        list[0] ? h('button', { class: 'btn', onClick: () => newSession(list[0].path) }, `Neuer Chat in ${list[0].name}`) : null,
+        recent ? h('button', { class: 'btn', onClick: () => newSession(recent.path) }, `Neuer Chat in ${recent.name}`) : null,
         h('button', { class: 'btn ghost', onClick: addProject }, 'Ordner wählen …')) : null));
     return;
   }
@@ -676,6 +698,8 @@ function renderMain() {
 function applyState(s) {
   const firstLoad = !ui.state;
   ui.state = s;
+  // Chat geschlossen (z. B. sein Gespräch gelöscht): alter Verlauf weg, damit die nächste Nachricht stehen bleibt.
+  if (!s.chat && ui.chatGen !== null) resetChat(null, []);
   // Neuer Chat (auch der beim Start): ab jetzt gehören seine Ereignisse zu uns,
   // egal welche Ansicht gerade offen ist.
   const newChat = !!s.chat && ui.chatGen !== s.chat.gen;

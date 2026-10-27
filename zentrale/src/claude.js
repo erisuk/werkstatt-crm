@@ -160,10 +160,14 @@ function describeApproval(toolName, input, description) {
   } else if (/draft/i.test(name)) {
     title = 'Einen Mail-Entwurf anlegen';
   } else {
+    // Der Titel kommt nie von Claude selbst, sonst könnte eine Aktion harmloser klingen, als sie ist.
     const label = name.startsWith('mcp__') ? name.split('__').slice(1).join(' · ') : name;
-    title = description ? String(description).slice(0, 140) : `Werkzeug „${label}“ benutzen`;
+    title = `Werkzeug „${label}“ benutzen`;
+    if (description) summary = `Claude sagt dazu: ${String(description).slice(0, 300)}`;
   }
-  let detail = summary ? `${summary}${moreFields(i, shown)}` : (Object.keys(i).length ? JSON.stringify(i, null, 2) : '');
+  const fallbackDetail = Object.keys(i).length ? JSON.stringify(i, null, 2) : '';
+  let detail = summary && shown.length ? `${summary}${moreFields(i, shown)}`
+    : [summary, fallbackDetail].filter(Boolean).join('\n\n');
   const truncated = detail.length > MAX_DETAIL;
   if (truncated) detail = `${detail.slice(0, MAX_DETAIL)}\n\n… zu lang, um alles anzuzeigen. Deshalb kann das nur abgelehnt werden.`;
   return { title, detail, canAlways: canAlways && !truncated, truncated };
@@ -186,10 +190,14 @@ function approvalKey(toolName, input) {
 function permissionModeFor(cwd, home = os.homedir()) {
   const dir = path.resolve(String(cwd || '/'));
   const h = path.resolve(home);
+  const rel = dir.startsWith(h + path.sep) ? dir.slice(h.length + 1).split(path.sep) : [];
   const unsafe = dir === path.parse(dir).root
     || dir === h
     || h.startsWith(dir + path.sep)
     || dir === path.join(h, 'Library') || dir.startsWith(path.join(h, 'Library') + path.sep)
+    // Sammelordner selbst (nicht ihre Unterordner) und versteckte Ordner wie ~/.claude oder ~/.ssh
+    || (rel.length === 1 && /^(desktop|documents|downloads|pictures|movies|music|public)$/i.test(rel[0]))
+    || rel.some((part) => part.startsWith('.'))
     || /^\/(System|Library|Applications|usr|bin|sbin|etc|private|var|opt|Volumes)(\/|$)/.test(dir) && !dir.startsWith(h + path.sep);
   return unsafe ? 'default' : 'acceptEdits';
 }
@@ -197,24 +205,39 @@ function permissionModeFor(cwd, home = os.homedir()) {
 // Die Erlaubnisliste in ~/.claude/settings.json (z. B. "Bash(python3 *)") würde sonst an der Zentrale
 // vorbeilaufen. "ask"-Regeln schlagen "allow"-Regeln: so landet jeder Befehl in der Zentrale.
 // Im Projektordner bleiben Dateiänderungen ohne Rückfrage, sonst fragt auch jede Änderung.
+// WebSearch gehört dazu: Eine Suchanfrage kann sonst gelesene Geheimnisse unbemerkt nach außen tragen.
+const EDIT_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
 function safetySettings(permissionMode) {
-  const ask = ['Bash', 'WebFetch', 'mcp__claude-in-chrome', 'mcp__Claude_in_Chrome'];
-  if (permissionMode !== 'acceptEdits') ask.push('Write', 'Edit', 'MultiEdit', 'NotebookEdit');
+  const ask = ['Bash', 'WebFetch', 'WebSearch', 'mcp__claude-in-chrome', 'mcp__Claude_in_Chrome'];
+  if (permissionMode !== 'acceptEdits') ask.push(...EDIT_TOOLS);
+  // Auch im Projektordner: Einstellungen, Hooks und Git-Interna nie ohne Rückfrage ändern.
+  else for (const t of EDIT_TOOLS) ask.push(`${t}(**/.claude/**)`, `${t}(**/.git/**)`, `${t}(**/.mcp.json)`);
   return JSON.stringify({ permissions: { ask } });
 }
 
 // Reine Lese-Befehle winkt die Zentrale selbst durch. Streng: ein einziger Befehl aus der Liste,
 // ohne Verkettung, Umleitung oder eingebettete Befehle.
-const READ_ONLY_COMMANDS = new Set(['ls', 'pwd', 'whoami', 'date', 'cat', 'head', 'tail', 'wc', 'grep', 'rg',
-  'stat', 'file', 'which', 'echo', 'du', 'df', 'tree', 'basename', 'dirname', 'realpath', 'uname', 'sw_vers']);
-const READ_ONLY_GIT = new Set(['status', 'log', 'diff', 'show']);
+// Bewusst nicht dabei: rg (--pre startet Programme), tree (-o schreibt), file (-C schreibt),
+// date (stellt die Uhr) und git (führt Befehle aus der Repo-Konfiguration aus).
+const READ_ONLY_COMMANDS = new Set(['ls', 'pwd', 'whoami', 'cat', 'head', 'tail', 'wc', 'grep',
+  'stat', 'which', 'echo', 'du', 'df', 'basename', 'dirname', 'realpath', 'uname', 'sw_vers']);
 
-function isReadOnlyCommand(command) {
+// true nur für einen einzelnen Lese-Befehl, dessen Pfade alle im Projektordner cwd liegen –
+// so liest Claude ohne Rückfrage nie ~/.ssh, Tokens oder andere Projekte.
+function isReadOnlyCommand(command, cwd) {
   const c = String(command || '').trim();
-  if (!c || /[;&|<>`$(){}\\\n\r]/.test(c)) return false;
-  const [bin, sub, ...rest] = c.split(/\s+/);
-  if (bin === 'git') return READ_ONLY_GIT.has(sub) && ![sub, ...rest].some((a) => /^--(output|ext-diff)/.test(a));
-  return READ_ONLY_COMMANDS.has(bin);
+  if (!cwd || !c || c.length > 2000 || /[;&|<>`$(){}\\\n\r~*?[\]'"]/.test(c) || /[^\x20-\x7E -ɏ]/.test(c)) return false;
+  const [bin, ...args] = c.split(/\s+/);
+  if (!READ_ONLY_COMMANDS.has(bin)) return false;
+  let root;
+  try { root = fs.realpathSync.native(path.resolve(cwd)); } catch { return false; }
+  const inside = (p) => p === root || p.startsWith(root + path.sep);
+  return args.filter((a) => !a.startsWith('-')).every((a) => {
+    const p = path.resolve(root, a);
+    if (!inside(p) || p.slice(root.length).split(path.sep).some((part) => part.length > 1 && part.startsWith('.'))) return false;
+    // Verknüpfungen, die aus dem Projekt herauszeigen, zählen nicht als „im Projekt“.
+    try { return inside(fs.realpathSync.native(p)); } catch { return true; }
+  });
 }
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
@@ -288,7 +311,8 @@ class ClaudeChat extends EventEmitter {
       return;
     }
     const key = approvalKey(req.tool_name, req.input);
-    const readOnly = req.tool_name === 'Bash' && isReadOnlyCommand(req.input && req.input.command);
+    const readOnly = req.tool_name === 'Bash' && this.permissionMode === 'acceptEdits'
+      && isReadOnlyCommand(req.input && req.input.command, this.cwd);
     if (readOnly || this.alwaysAllow.has(key)) {
       this.write({ type: 'control_response', response: { subtype: 'success', request_id: ev.request_id,
         response: { behavior: 'allow', updatedInput: req.input || {} } } });
@@ -365,7 +389,8 @@ class ClaudeChat extends EventEmitter {
       this.emit('event', { kind: 'error', text: 'Claude konnte nicht starten.', details: err.message });
       this.setStatus('error');
     });
-    proc.on('exit', (code, signal) => {
+    // "close" statt "exit": erst wenn auch die letzte Ausgabe gelesen ist, sonst gingen Meldungen beim Absturz verloren.
+    proc.on('close', (code, signal) => {
       if (!current()) return;
       this.proc = null;
       this.clearApprovals();
@@ -381,6 +406,12 @@ class ClaudeChat extends EventEmitter {
     if (this.exiting) await this.exiting;
     // Wurde der Chat inzwischen ersetzt, darf er nicht wieder starten.
     if (this.disposed) return false;
+    // Neue Verbindungen (MCP, Chrome) gelten erst nach einem Neustart des Prozesses.
+    if (this.needsRestart && this.alive && this.status !== 'busy') {
+      this.needsRestart = false;
+      await this.stop();
+      if (this.disposed) return false;
+    }
     if (!this.alive || !this.proc.stdin.writable) this.start();
     if (!this.write({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } })) return false;
     this.pending += 1;

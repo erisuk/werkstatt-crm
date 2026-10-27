@@ -173,15 +173,27 @@ function setup() {
     const old = chat;
     chatGen += 1;
     const gen = chatGen;
-    chat = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs });
-    chat.on('event', (ev) => send('chat-event', { ...ev, gen }));
-    chat.on('status', () => pushState());
-    chat.on('approvals', onApprovalsChanged);
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs });
+    chat = c;
+    c.on('event', (ev) => send('chat-event', { ...ev, gen }));
+    c.on('status', () => pushState());
+    c.on('approvals', onApprovalsChanged);
     if (old) await old.dispose();
-    if (gen !== chatGen) return chatInfo();
-    chat.start();
+    // Inzwischen ersetzt oder gelöscht: nicht mehr starten.
+    if (gen !== chatGen || chat !== c) return chatInfo();
+    c.start();
     pushState();
     return chatInfo();
+  }
+
+  // Löst den offenen Chat (z. B. weil sein Gespräch gelöscht wird) und beendet ihn.
+  async function detachChat() {
+    const c = chat;
+    if (!c) return;
+    chat = null;
+    chatGen += 1;
+    pushState();
+    await c.dispose();
   }
 
   function defaultCwd() {
@@ -260,6 +272,7 @@ function setup() {
     if (!chat) await openChat({ cwd: defaultCwd() });
     const c = chat;
     const gen = chatGen;
+    if (!c) return { ok: false, error: 'Der Chat wurde geschlossen, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     if (!c.title) { c.title = shortTitle(t); pushState(); }
     const ok = await c.send(t);
     if (c !== chat) return { ok: false, error: 'Der Chat wurde gewechselt, bevor die Nachricht ankam. Bitte noch einmal senden.' };
@@ -302,7 +315,8 @@ function setup() {
     const changed = Object.keys(next.connections).some((k) => next.connections[k] !== before[k]);
     const turnedOff = Object.keys(next.connections).some((k) => before[k] && !next.connections[k]);
     if (changed && chat) {
-      if (chat.status === 'busy' && !turnedOff) applied = false;
+      // Arbeitet Claude, startet der Chat vor der nächsten Nachricht neu und liest dann die neuen Verbindungen.
+      if (chat.status === 'busy' && !turnedOff) { applied = false; chat.needsRestart = true; }
       else { const c = chat; await c.stop(); if (c === chat) c.start(); }
     }
     pushState();
@@ -359,7 +373,7 @@ function setup() {
         result.skipped.push({ title: s.title, reason: 'Wird gerade in einem anderen Claude-Fenster benutzt.' });
         continue;
       }
-      if (ours) { const c = chat; chat = null; await c.dispose(); }
+      if (ours) await detachChat();
       try {
         await shell.trashItem(s.file);
         const extra = s.file.replace(/\.jsonl$/, '');
@@ -380,12 +394,13 @@ function setup() {
   ipcMain.handle('project-folder-trash', async (_e, dir) => {
     if (!isDir(dir)) return { ok: false, error: 'Diesen Ordner gibt es nicht.' };
     const p = path.resolve(dir);
-    if (files.isProtected(p) || permissionModeFor(p) !== 'acceptEdits') {
+    const known = projectsCache.some((x) => x.path && files.canonical(x.path) === files.canonical(p));
+    if (!known || files.isProtected(p) || permissionModeFor(fs.realpathSync.native(p)) !== 'acceptEdits') {
       return { ok: false, error: 'Dieser Ordner ist geschützt und kann über die Zentrale nicht gelöscht werden.' };
     }
     if (chat && (chat.cwd === p || chat.cwd.startsWith(p + path.sep))) {
       if (chat.status === 'busy') return { ok: false, error: 'Claude arbeitet gerade in diesem Ordner.' };
-      const c = chat; chat = null; await c.dispose();
+      await detachChat();
     }
     try { await shell.trashItem(p); } catch (e) { return { ok: false, error: e.message }; }
     pushState();
@@ -418,10 +433,8 @@ function setup() {
     return url;
   }
 
-  ipcMain.handle('mac-apps', async () => {
-    const list = files.listApps();
-    return Promise.all(list.map(async (a) => ({ ...a, icon: await iconFor(a.path) })));
-  });
+  // Ohne Symbole, damit die Liste sofort da ist; die holt die Oberfläche einzeln über fs-icon.
+  ipcMain.handle('mac-apps', () => files.listApps().map((a) => (iconCache.has(a.path) ? { ...a, icon: iconCache.get(a.path) } : a)));
 
   ipcMain.handle('fs-favorites', () => {
     const temp = /^\/(private\/)?(tmp|var\/folders)\//;

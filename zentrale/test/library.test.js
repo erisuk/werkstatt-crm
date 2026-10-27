@@ -6,9 +6,9 @@ const os = require('os');
 const path = require('path');
 const { categorize, emojiCategory, groupByTopic, TopicStore } = require('../src/categories');
 const { listSkills, listCommands, listPlugins, listAgents, setAgentActive, runningWork, frontmatter } = require('../src/library');
-const { listDir, isProtected, listApps } = require('../src/files');
+const { listDir, isProtected, listApps, needsRunConfirm } = require('../src/files');
 const { desktopMeta } = require('../src/desktop-meta');
-const { continuationTitle } = require('../src/sessions');
+const { continuationTitle, isRealPrompt } = require('../src/sessions');
 
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), `zentrale-${p}`));
 const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
@@ -29,6 +29,8 @@ test('Themen: Stichwörter in Titel und erster Nachricht', () => {
   assert.strictEqual(categorize({ title: 'ESA-Dienstleistung Rechnung 85 Stunden' }), 'garten');
   assert.strictEqual(categorize({ title: 'Neues Projekt', snippet: 'Bau mir eine Roblox-Map' }), 'game');
   assert.strictEqual(categorize({ title: 'Flüge nach Ohrid' }), 'div');
+  assert.strictEqual(categorize({ title: 'Workshop planen' }), 'div');
+  assert.strictEqual(categorize({ title: 'Ideen', snippet: 'I recommend you become better' }), 'div');
 });
 
 test('Themen: geplante Läufe und Testaufträge landen in der Automatik, Fortsetzungen nicht', () => {
@@ -80,6 +82,7 @@ function fakeClaudeDir() {
 test('frontmatter liest einfache Kopfzeilen', () => {
   assert.deepStrictEqual(frontmatter('---\nname: x\ndescription: "a: b"\n---\nrest'), { name: 'x', description: 'a: b' });
   assert.deepStrictEqual(frontmatter('kein Kopf'), {});
+  assert.strictEqual(frontmatter('---\nname: x\ndescription: >\n  erste Zeile\n  zweite Zeile\nmodel: opus\n---\n').description, 'erste Zeile zweite Zeile');
 });
 
 test('Bibliothek: Skills, Befehle, Plugins und Agenten', () => {
@@ -145,6 +148,12 @@ test('Geschützte Ordner können nicht in den Papierkorb', () => {
     assert.strictEqual(isProtected(p), true, p);
   }
   assert.strictEqual(isProtected(path.join(home, 'Desktop', 'altes-projekt')), false);
+  // macOS unterscheidet Groß/klein nicht; Verknüpfungen zählen als ihr Ziel.
+  assert.strictEqual(isProtected(path.join(home, 'documents')), true);
+  const dir = tmp('link-');
+  fs.symlinkSync(home, path.join(dir, 'heim'));
+  assert.strictEqual(isProtected(path.join(dir, 'heim')), true);
+  assert.strictEqual(isProtected(path.join(dir, 'heim', 'Documents')), true);
 });
 
 test('Apps werden aus allen Programme-Ordnern gesammelt, doppelte nur einmal', () => {
@@ -166,4 +175,28 @@ test('Claude-App-Daten: Titel, Archiv und geplante Läufe je Gespräch', () => {
   assert.deepStrictEqual(m.get('s1'), { id: 's1', title: 'Shop-Projekt', archived: true, scheduled: false });
   assert.strictEqual(m.get('s2').scheduled, true);
   assert.strictEqual(m.size, 2);
+});
+
+test('Skripte und fremde Programme brauchen eine Rückfrage, Apps aus Programme nicht', () => {
+  for (const p of ['/Users/x/Rechnung.pdf.command', '/Users/x/a.sh', '/Users/x/tool.workflow', '/Users/x/Downloads/Fremd.app']) {
+    assert.strictEqual(needsRunConfirm(p), true, p);
+  }
+  for (const p of ['/Applications/Safari.app', '/System/Applications/Notes.app', '/Users/x/Rechnung.pdf', '/Users/x/bild.png']) {
+    assert.strictEqual(needsRunConfirm(p), false, p);
+  }
+});
+
+test('Eigene Nachrichten mit "<" bleiben, Systemhinweise nicht', () => {
+  assert.strictEqual(isRealPrompt('<div>Mach das hübscher</div>'), true);
+  assert.strictEqual(isRealPrompt('<command-name>/clear</command-name>'), false);
+  assert.strictEqual(isRealPrompt('<system-reminder>x</system-reminder>'), false);
+});
+
+test('Ein Skill ohne Namen legt die Liste nicht lahm', () => {
+  const root = tmp('claude-');
+  write(path.join(root, 'skills', 'SKILL.md'), 'kein Kopf');
+  write(path.join(root, 'skills', 'b', 'SKILL.md'), '---\nname: b\n---\n');
+  const names = listSkills(root).map((x) => x.name);
+  assert.strictEqual(names.length, 2);
+  assert.ok(names.every((n) => typeof n === 'string' && n));
 });

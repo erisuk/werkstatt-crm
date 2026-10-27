@@ -1,7 +1,7 @@
 // Ansicht „Mein Mac“: Apps starten, Ordner durchblättern, Dateien finden und öffnen.
 // Nutzt die Helfer aus app.js (h, fill, ui, api …).
 
-const macv = { tab: 'apps', apps: null, filter: '', places: null, dir: null, listing: null, hidden: false, query: '', results: null, searching: false };
+const macv = { tab: 'apps', apps: null, appsError: null, filter: '', places: null, dir: null, listing: null, hidden: false, query: '', results: null, searching: false };
 
 const FILE_ICONS = [
   [/\.(png|jpe?g|gif|heic|webp|svg|tiff?)$/i, '🖼'], [/\.(mp4|mov|m4v|webm|mkv|avi)$/i, '🎞'], [/\.(mp3|wav|m4a|aac|flac)$/i, '🎵'],
@@ -40,17 +40,33 @@ async function trashItem(item) {
 async function loadApps() {
   if (macv.apps) return;
   macv.apps = [];
-  try { macv.apps = await api.macApps(); } catch {}
+  try { macv.apps = (await api.macApps()) || []; macv.appsError = null; } catch (e) { macv.appsError = e.message || 'Unbekannter Fehler'; }
   if (ui.view === 'mac') renderMacBody();
+  loadAppIcons();
+}
+
+// Symbole kommen nach und nach, damit die Liste sofort erscheint.
+async function loadAppIcons() {
+  for (const a of macv.apps) {
+    if (a.icon !== undefined) continue;
+    try { a.icon = await api.fsIcon(a.path); } catch { a.icon = null; }
+    const img = document.querySelector(`.app-tile[data-focus="app:${CSS.escape(a.path)}"] .app-icon`);
+    if (img && a.icon) { const el = h('img', { class: 'app-icon', src: a.icon, alt: '', width: '48', height: '48' }); img.replaceWith(el); }
+  }
 }
 
 function renderApps() {
   if (!macv.apps) { loadApps(); return h('div', { class: 'card empty', text: 'Lädt …' }); }
+  if (macv.appsError) {
+    return h('div', { class: 'card empty warn' }, `Die Apps konnten nicht gelesen werden: ${macv.appsError} `,
+      h('button', { class: 'link', onClick: () => { macv.apps = null; macv.appsError = null; renderMacBody(); } }, 'Erneut versuchen'));
+  }
   const list = macv.apps.filter((a) => !macv.filter || a.name.toLowerCase().includes(macv.filter));
-  if (!list.length) return h('div', { class: 'card empty', text: macv.apps.length ? 'Keine passende App.' : 'Lädt …' });
+  if (!list.length) return h('div', { class: 'card empty', text: macv.apps.length ? 'Keine passende App.' : 'Keine Apps gefunden.' });
   return h('div', { class: 'app-grid' }, list.map((a) => h('button', { class: 'app-tile', title: a.path, 'data-focus': `app:${a.path}`,
     onClick: () => openItem(a.path) },
-    a.icon ? h('img', { src: a.icon, alt: '', width: '48', height: '48' }) : h('span', { class: 'app-fallback', text: a.name.charAt(0) }),
+    a.icon ? h('img', { class: 'app-icon', src: a.icon, alt: '', width: '48', height: '48' })
+      : h('span', { class: 'app-fallback app-icon', 'aria-hidden': 'true', text: a.name.charAt(0) }),
     h('span', { class: 'app-name', text: a.name }))));
 }
 
@@ -94,7 +110,7 @@ function fileRow(item) {
     h('span', { class: 'when', text: formatWhen(item.modified) }),
     item.dir ? h('button', { class: 'link', title: 'Claude in diesem Ordner starten', onClick: () => newSession(item.path) }, 'Chat hier') : null,
     h('button', { class: 'link', onClick: () => api.fsReveal(item.path) }, 'Im Finder'),
-    h('button', { class: 'icon-btn', 'aria-label': `„${item.name}“ löschen`, title: 'In den Papierkorb', onClick: () => trashItem(item) }, '🗑'));
+    h('button', { class: 'icon-btn', 'aria-label': `„${item.name}“ löschen`, title: 'In den Papierkorb', onClick: () => trashItem(item) }, trashIcon()));
 }
 
 function renderFolders() {
@@ -114,7 +130,7 @@ function renderFolders() {
     list = h('div', { class: 'card list' }, items.length ? items.map(fileRow) : h('div', { class: 'empty', text: 'Dieser Ordner ist leer.' }),
       l.truncated ? h('div', { class: 'empty', text: 'Es werden nur die ersten 2000 Einträge gezeigt.' }) : null);
   }
-  const hiddenToggle = h('button', { class: 'switch', role: 'switch', 'aria-checked': String(macv.hidden), 'aria-label': 'Versteckte Dateien zeigen',
+  const hiddenToggle = h('button', { class: 'switch', role: 'switch', 'aria-checked': String(macv.hidden), 'aria-label': 'Versteckte Dateien zeigen', 'data-focus': 'show-hidden',
     onClick: () => { macv.hidden = !macv.hidden; goTo(macv.dir); } });
   return h('div', { class: 'folders' }, side,
     h('div', { class: 'folder-main' },
@@ -145,7 +161,6 @@ function renderSearch() {
   const input = h('input', { type: 'search', class: 'filter wide', placeholder: 'Datei- oder Ordnername, z. B. Rechnung Oktober', 'aria-label': 'Auf dem Mac suchen', 'data-focus': 'mac-search' });
   input.value = macv.query;
   input.addEventListener('input', () => { macv.query = input.value; });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(); });
   const r = macv.results;
   let body = null;
   if (macv.searching) body = h('div', { class: 'card empty', text: 'Sucht …' });
@@ -158,7 +173,7 @@ function renderSearch() {
         h('button', { class: 'plain file-main', title: p, onClick: () => openItem(p) },
           h('span', { class: 'file-icon', 'aria-hidden': 'true', text: fileIcon({ name, dir: !/\.[a-z0-9]{1,5}$/i.test(name) }) }),
           h('span', { class: 'grow' }, h('span', { class: 'title', text: name }), h('span', { class: 'sub block', text: parent }))),
-        h('button', { class: 'link', onClick: () => { macv.tab = 'folders'; goTo(parent); renderMacTabs(); } }, 'Ordner zeigen'),
+        h('button', { class: 'link', onClick: () => { macv.tab = 'folders'; macv.filter = ''; renderMac(); goTo(parent); } }, 'Ordner zeigen'),
         h('button', { class: 'link', onClick: () => api.fsReveal(p) }, 'Im Finder'));
     }) : h('div', { class: 'empty', text: 'Nichts gefunden.' }));
   }
@@ -172,8 +187,8 @@ function renderSearch() {
 const MAC_TABS = [{ id: 'apps', label: 'Apps' }, { id: 'folders', label: 'Ordner' }, { id: 'search', label: 'Suchen' }];
 
 function renderMacTabs() {
-  fill($('#mac-tabs'), MAC_TABS.map((t) => h('button', { role: 'tab', 'aria-selected': String(macv.tab === t.id),
-    onClick: () => { macv.tab = t.id; macv.filter = ''; renderMac(); } }, t.label)));
+  keepFocus(() => fill($('#mac-tabs'), MAC_TABS.map((t) => h('button', { 'aria-pressed': String(macv.tab === t.id), 'data-focus': `mac-tab:${t.id}`,
+    onClick: () => { macv.tab = t.id; macv.filter = ''; renderMac(); } }, t.label))));
 }
 
 function renderMacBody() {
@@ -190,11 +205,11 @@ function renderMac() {
     filter.value = macv.filter;
     filter.addEventListener('input', () => { macv.filter = filter.value.trim().toLowerCase(); renderMacBody(); });
   }
-  fill($('#main'),
+  keepFocus(() => fill($('#main'),
     h('div', { class: 'section-head wrap' }, h('h1', { text: 'Mein Mac' })),
-    h('div', { class: 'section-head wrap' }, h('div', { class: 'tabs', id: 'mac-tabs', role: 'tablist' }), h('span', { class: 'spacer' }), filter),
-    h('div', { id: 'mac-body', class: 'section' }));
+    h('div', { class: 'section-head wrap' }, h('div', { class: 'tabs', id: 'mac-tabs', role: 'group', 'aria-label': 'Bereich wählen' }), h('span', { class: 'spacer' }), filter),
+    h('div', { id: 'mac-body', class: 'section', 'aria-live': 'polite' })));
   renderMacTabs();
   renderMacBody();
-  if (filter && macv.tab === 'apps') filter.focus();
+  if (filter && macv.tab === 'apps' && !(document.activeElement && document.activeElement.dataset.focus)) filter.focus();
 }

@@ -19,14 +19,21 @@ function readText(file, max = 16 * 1024) {
   } catch { return ''; }
 }
 
-// Einfacher Kopfbereich zwischen "---"-Zeilen: nur "schlüssel: wert" in einer Zeile.
+// Einfacher Kopfbereich zwischen "---"-Zeilen: "schlüssel: wert", auch mehrzeilig mit ">" oder "|".
 function frontmatter(text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
   if (!m) return {};
   const out = {};
-  for (const line of m[1].split('\n')) {
+  let block = null; // Schlüssel eines mehrzeiligen Werts
+  for (const line of m[1].split(/\r?\n/)) {
     const kv = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(line);
-    if (kv) out[kv[1]] = kv[2].trim().replace(/^["']|["']$/g, '');
+    if (kv) {
+      const value = kv[2].trim();
+      block = /^[>|][+-]?$/.test(value) ? kv[1] : null;
+      out[kv[1]] = block ? '' : value.replace(/^["']|["']$/g, '');
+    } else if (block && /^\s+\S/.test(line)) {
+      out[block] = `${out[block]} ${line.trim()}`.trim();
+    }
   }
   return out;
 }
@@ -48,7 +55,8 @@ function findFiles(dir, test, depth = 0, out = []) {
 
 function describe(file, fallbackName) {
   const fm = frontmatter(readText(file));
-  return { name: fm.name || fallbackName, description: (fm.description || '').slice(0, 400), model: fm.model || null, file };
+  const name = String(fm.name || fallbackName || path.basename(path.dirname(file)) || path.basename(file, '.md'));
+  return { name, description: String(fm.description || '').slice(0, 400), model: fm.model || null, file };
 }
 
 // Installierte Plugins liegen bei dir unter ~/.claude/plugins/synced/<konto>/<plugin>.
