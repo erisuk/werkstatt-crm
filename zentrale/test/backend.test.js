@@ -84,7 +84,8 @@ test('shortTitle kürzt am Wort mit Auslassungszeichen', () => {
 });
 
 test('isRealPrompt filtert Befehle', () => {
-  assert.strictEqual(isRealPrompt('<x>'), false);
+  assert.strictEqual(isRealPrompt('<command-name>/clear</command-name>'), false);
+  assert.strictEqual(isRealPrompt('<b>fett</b> machen'), true);
   assert.strictEqual(isRealPrompt('  '), false);
   assert.strictEqual(isRealPrompt('Hallo'), true);
 });
@@ -349,10 +350,11 @@ test('approvalKey: "immer erlauben" gilt nur für genau dieselbe Aktion', () => 
 
 test('permissionModeFor: ohne Rückfrage nur in echten Projektordnern', () => {
   const home = '/Users/eris';
-  for (const d of [home, '/Users', '/', `${home}/Library`, `${home}/Library/LaunchAgents`, '/etc', '/Applications/X']) {
+  for (const d of [home, '/Users', '/', `${home}/Library`, `${home}/Library/LaunchAgents`, '/etc', '/Applications/X',
+    `${home}/Desktop`, `${home}/Documents`, `${home}/downloads`, `${home}/.claude`, `${home}/.ssh`, `${home}/projekt/.git`]) {
     assert.strictEqual(permissionModeFor(d, home), 'default', d);
   }
-  for (const d of [`${home}/werkstatt-crm`, `${home}/Desktop/projekt`]) assert.strictEqual(permissionModeFor(d, home), 'acceptEdits', d);
+  for (const d of [`${home}/werkstatt-crm`, `${home}/Desktop/projekt`, `${home}/Documents/Claude-Vault`]) assert.strictEqual(permissionModeFor(d, home), 'acceptEdits', d);
 });
 
 async function waitFor(fn, ms = 3000) {
@@ -362,7 +364,9 @@ async function waitFor(fn, ms = 3000) {
 }
 
 test('Chat: Freigabe erlauben, ablehnen und "immer erlauben"', async () => {
-  const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir() });
+  const project = tmp('projekt-');
+  fs.writeFileSync(path.join(project, 'README.md'), 'x');
+  const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: project, permissionMode: 'acceptEdits' });
   const events = collect(chat);
   const texts = () => events.filter((e) => e.kind === 'text').map((e) => e.text);
   try {
@@ -389,10 +393,14 @@ test('Chat: Freigabe erlauben, ablehnen und "immer erlauben"', async () => {
     assert.ok(await waitFor(() => texts().filter((t) => t === 'erlaubt:mkdir b').length === 2));
     assert.strictEqual(chat.pendingApprovals().length, 0);
 
-    // Reine Lese-Befehle laufen ohne Rückfrage durch.
-    await chat.send('FREIGABE:ls -la');
-    assert.ok(await waitFor(() => texts().includes('erlaubt:ls -la')));
+    // Reine Lese-Befehle im Projektordner laufen ohne Rückfrage durch …
+    await chat.send('FREIGABE:cat README.md');
+    assert.ok(await waitFor(() => texts().includes('erlaubt:cat README.md')));
     assert.strictEqual(chat.pendingApprovals().length, 0);
+    // … außerhalb des Projekts nicht.
+    await chat.send('FREIGABE:cat /etc/hosts');
+    assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
+    chat.respond(chat.pendingApprovals()[0].id, 'deny');
   } finally {
     await chat.stop();
   }
@@ -441,19 +449,33 @@ test('Chat: im Benutzerordner fragt Claude vor Dateiänderungen', async () => {
 
 test('safetySettings: Befehle fragen immer, Dateiänderungen nur außerhalb von Projektordnern', () => {
   const project = JSON.parse(safetySettings('acceptEdits')).permissions.ask;
-  assert.ok(project.includes('Bash') && project.includes('WebFetch') && project.includes('mcp__claude-in-chrome'));
+  assert.ok(project.includes('Bash') && project.includes('WebFetch') && project.includes('WebSearch') && project.includes('mcp__claude-in-chrome'));
   assert.ok(!project.includes('Edit'));
+  assert.ok(project.includes('Edit(**/.claude/**)') && project.includes('Write(**/.git/**)'));
   assert.ok(JSON.parse(safetySettings('default')).permissions.ask.includes('Edit'));
 });
 
-test('isReadOnlyCommand: nur einzelne Lese-Befehle ohne Tricks', () => {
-  for (const c of ['ls', 'ls -la ~/Desktop', 'cat README.md', 'grep -n foo src/a.js', 'git status', 'git log --oneline -5', 'whoami']) {
-    assert.strictEqual(isReadOnlyCommand(c), true, c);
+test('isReadOnlyCommand: nur einzelne Lese-Befehle im Projektordner, ohne Tricks', () => {
+  const project = tmp('projekt-');
+  fs.mkdirSync(path.join(project, 'src'));
+  fs.writeFileSync(path.join(project, 'src', 'a.js'), 'x');
+  fs.symlinkSync(os.homedir(), path.join(project, 'heim'));
+  for (const c of ['ls', 'ls -la', 'ls src', 'cat src/a.js', 'grep -n foo src/a.js', 'whoami', 'wc -l src/a.js']) {
+    assert.strictEqual(isReadOnlyCommand(c, project), true, c);
   }
-  for (const c of ['rm x', 'python3 -c "print(1)"', 'ls; rm -rf ~', 'ls && rm x', 'cat a > b', 'echo $(rm x)', 'echo `rm x`',
-    'ls | sh', 'git push', 'git diff --output=/tmp/x', 'find . -delete', 'curl -s http://x', '', 'ls\nrm x']) {
-    assert.strictEqual(isReadOnlyCommand(c), false, c);
+  for (const c of ['rm x', 'python3 -c "print(1)"', 'ls; rm -rf x', 'ls && rm x', 'cat a > b', 'echo $(rm x)', 'echo `rm x`',
+    'ls | sh', 'git status', 'git log', 'rg --pre sh x', 'tree -o x', 'file -C x', 'date 0101', 'find . -delete', 'curl -s http://x',
+    '', 'ls\nrm x', 'cat ~/.ssh/id_rsa', 'cat /etc/hosts', 'cat ../x', 'cat .env', 'ls heim', 'cat heim/.zshrc', 'ls *']) {
+    assert.strictEqual(isReadOnlyCommand(c, project), false, c);
   }
+  assert.strictEqual(isReadOnlyCommand('ls', null), false);
+});
+
+test('describeApproval: unbekannte Werkzeuge tragen nie Claudes eigenen Titel', () => {
+  const a = describeApproval('mcp__x__do_thing', { a: 1 }, 'Nur eine harmlose Datei lesen');
+  assert.strictEqual(a.title, 'Werkzeug „x · do_thing“ benutzen');
+  assert.match(a.detail, /Claude sagt dazu: Nur eine harmlose Datei lesen/);
+  assert.match(a.detail, /"a": 1/);
 });
 
 test('Chat: zusätzliche Startoptionen werden beim (Neu-)Start gelesen', async () => {

@@ -1,0 +1,151 @@
+// Ansicht „Web“: eigene Webseiten als Tabs, dauerhaft angemeldet. Die Seite selbst zeichnet der
+// Hauptprozess als eingebettete Browser-Ansicht über den Platzhalter #web-host; diese Datei meldet,
+// wo der Platz ist. Nutzt die Helfer aus app.js (h, fill, ui, api …).
+
+const webv = { state: null, adding: false, renaming: false, addError: null, observer: null };
+
+function activePortal() {
+  const s = webv.state;
+  return s && s.portals.find((p) => p.id === s.active) || null;
+}
+
+// Gesamtzahl der Ungelesenen neben „Web“ in der Seitenleiste.
+function renderWebBadge() {
+  const btn = document.querySelector('.nav-item[data-view="web"]');
+  if (!btn || !webv.state) return;
+  const total = webv.state.portals.reduce((n, p) => n + (p.unread || 0), 0);
+  let badge = btn.querySelector('.nav-badge');
+  if (!total) { if (badge) badge.remove(); return; }
+  if (!badge) { badge = h('span', { class: 'nav-badge' }); btn.append(badge); }
+  badge.textContent = total > 99 ? '99+' : String(total);
+  badge.setAttribute('aria-label', `${total} ungelesen`);
+}
+
+// Wo die eingebettete Seite liegen soll; ohne aktive Seite oder mit offenem Formular ist sie unsichtbar.
+function sendWebBounds() {
+  const host = $('#web-host');
+  const show = ui.view === 'web' && !!host && !!activePortal() && !webv.adding;
+  if (show) {
+    const r = host.getBoundingClientRect();
+    api.webBounds({ x: r.left, y: r.top, width: r.width, height: r.height });
+  }
+  api.webVisible(show);
+}
+
+async function addPortal(name, url) {
+  const res = await api.webAdd(name, url);
+  if (!res || !res.ok) { webv.addError = (res && res.error) || 'Das hat nicht geklappt.'; renderWebChrome(); return; }
+  webv.adding = false;
+  webv.addError = null;
+}
+
+function renderAddForm() {
+  const s = webv.state;
+  const used = new Set(s.portals.map((p) => p.url));
+  const name = h('input', { id: 'web-name', type: 'text', placeholder: 'z. B. Outlook', 'aria-label': 'Name der Seite' });
+  const url = h('input', { id: 'web-url', type: 'text', placeholder: 'Adresse, z. B. outlook.com', 'aria-label': 'Webadresse' });
+  const form = h('form', { class: 'card form web-add', onSubmit: (e) => { e.preventDefault(); addPortal(name.value, url.value); } },
+    h('h2', { class: 'full', text: 'Seite hinzufügen' }),
+    h('div', { class: 'field full' }, h('span', { class: 'label', text: 'Vorschläge' }),
+      h('div', { class: 'quick-actions' }, s.presets.filter((p) => !used.has(p.url)).map((p) =>
+        h('button', { type: 'button', class: 'chip', 'data-focus': `preset:${p.name}`, onClick: () => addPortal(p.name, p.url) }, p.name)))),
+    h('div', { class: 'field' }, h('label', { for: 'web-name', text: 'Name' }), name),
+    h('div', { class: 'field' }, h('label', { for: 'web-url', text: 'Adresse' }), url),
+    webv.addError ? h('div', { class: 'full sub warn', role: 'alert', text: webv.addError }) : null,
+    h('div', { class: 'actions full' },
+      h('span', { class: 'hint', text: 'Du meldest dich einmal auf der Seite an – die Zentrale merkt sich die Anmeldung. Passwörter gibst nur du ein.' }),
+      h('span', { class: 'spacer' }),
+      s.portals.length ? h('button', { type: 'button', class: 'btn ghost', onClick: () => { webv.adding = false; webv.addError = null; renderWebChrome(); } }, 'Abbrechen') : null,
+      h('button', { type: 'submit', class: 'btn' }, 'Hinzufügen')));
+  return form;
+}
+
+function webTab(p, active) {
+  return h('div', { class: `web-tab${active ? ' active' : ''}` },
+    h('button', { class: 'web-tab-main', 'aria-pressed': String(active), 'data-focus': `web-tab:${p.id}`, title: p.title || p.url,
+      onClick: () => { webv.adding = false; api.webShow(p.id); } },
+    p.loading ? h('span', { class: 'dot amber pulse', 'aria-hidden': 'true' }) : null,
+    h('span', { class: 'web-tab-name', text: p.name }),
+    p.unread ? h('span', { class: 'count', 'aria-label': `${p.unread} ungelesen`, text: p.unread > 99 ? '99+' : String(p.unread) }) : null),
+    h('button', { class: 'web-tab-close', 'aria-label': `${p.name} schließen`, title: 'Tab entfernen', 'data-focus': `web-close:${p.id}`,
+      onClick: async () => {
+        if (!confirm(`„${p.name}“ aus der Zentrale entfernen?\n\nDeine Anmeldung bei der Seite bleibt gespeichert.`)) return;
+        await api.webClose(p.id);
+      } }, '×'));
+}
+
+function renderToolbar(p) {
+  if (!p) return null;
+  const nav = (action, label, icon, disabled) => h('button', { class: 'icon-btn plain-icon', 'aria-label': label, title: label,
+    'data-focus': `web-nav:${action}`, disabled, onClick: () => api.webNav(p.id, action) }, icon);
+  let middle;
+  if (webv.renaming) {
+    const input = h('input', { class: 'filter wide', 'aria-label': 'Neuer Name', 'data-focus': 'web-rename' });
+    input.value = p.name;
+    const done = async (save) => { webv.renaming = false; if (save) await api.webRename(p.id, input.value); renderWebChrome(); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); });
+    input.addEventListener('blur', () => { if (webv.renaming) done(true); });
+    setTimeout(() => input.select(), 0);
+    middle = input;
+  } else {
+    middle = h('div', { class: 'web-url', title: p.current },
+      p.error ? h('span', { class: 'warn', text: p.error }) : h('span', { text: p.current.replace(/^https:\/\//, '') }));
+  }
+  return h('div', { class: 'web-bar' },
+    nav('back', 'Zurück', '←', !p.canGoBack), nav('forward', 'Vor', '→', !p.canGoForward),
+    nav('reload', 'Neu laden', '↻', false), nav('home', 'Startseite der Seite', '⌂', false),
+    middle,
+    h('button', { class: 'link', 'data-focus': 'web-rename-btn', onClick: () => { webv.renaming = true; renderWebChrome(); } }, 'Umbenennen'),
+    h('button', { class: 'link', 'data-focus': 'web-browser', onClick: () => api.webOpenBrowser(p.id) }, 'Im Browser öffnen'));
+}
+
+// Alles außer der eingebetteten Seite: Tabs, Leiste, Formular.
+function renderWebChrome() {
+  const box = $('#web-chrome');
+  if (!box) return;
+  const s = webv.state;
+  if (!s) { fill(box, h('div', { class: 'card empty', text: 'Lädt …' })); return; }
+  const p = activePortal();
+  const showForm = webv.adding || !s.portals.length;
+  keepFocus(() => fill(box,
+    s.portals.length ? h('div', { class: 'web-tabs', role: 'group', 'aria-label': 'Webseiten' },
+      s.portals.map((x) => webTab(x, x.id === s.active && !showForm)),
+      h('button', { class: 'web-tab-add', 'aria-label': 'Seite hinzufügen', title: 'Seite hinzufügen', 'data-focus': 'web-add',
+        onClick: () => { webv.adding = true; renderWebChrome(); } }, '+')) : null,
+    showForm ? renderAddForm() : renderToolbar(p)));
+  $('#web-host').hidden = showForm || !p;
+  sendWebBounds();
+}
+
+async function renderWeb() {
+  fill($('#main'),
+    h('div', { class: 'section-head wrap' }, h('h1', { text: 'Web' }), h('span', { class: 'spacer' }),
+      h('button', { class: 'btn ghost', title: 'Löscht die gespeicherten Anmeldungen aller Tabs', onClick: () => api.webClearLogins() }, 'Überall abmelden')),
+    h('div', { id: 'web-chrome', class: 'web-chrome' }),
+    h('div', { id: 'web-host', class: 'web-host', 'aria-label': 'Webseite' }));
+  $('#main').classList.add('web-mode');
+  if (!webv.observer) {
+    webv.observer = new ResizeObserver(() => { if (ui.view === 'web') sendWebBounds(); });
+    window.addEventListener('resize', () => { if (ui.view === 'web') sendWebBounds(); });
+  }
+  webv.observer.disconnect();
+  webv.observer.observe($('#web-host'));
+  webv.observer.observe($('#main'));
+  renderWebChrome();
+  if (!webv.state) { webv.state = await api.webState(); renderWebChrome(); renderWebBadge(); }
+}
+
+// Beim Verlassen der Ansicht die Seite ausblenden (sie läuft im Hintergrund weiter).
+function leaveWeb() {
+  $('#main').classList.remove('web-mode');
+  webv.renaming = false;
+  api.webVisible(false);
+}
+
+// Läuft vor app.js: deshalb hier window.zentrale statt api.
+window.zentrale.onWebState((s) => {
+  webv.state = s;
+  renderWebBadge();
+  if (ui.view === 'web' && !webv.renaming) renderWebChrome();
+});
+window.zentrale.webState().then((s) => { webv.state = s; renderWebBadge(); }).catch(() => {});

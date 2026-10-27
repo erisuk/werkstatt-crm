@@ -6,13 +6,19 @@ function findConnection(re) {
   return (ui.connections || []).filter((c) => re.test(c.name));
 }
 
-async function loadConnections() {
-  if (ui.connectionsLoading) return;
+// Läuft schon eine Prüfung, warten alle auf dieselbe – egal welche Ansicht sie gestartet hat.
+let connectionsPromise = null;
+function loadConnections() {
+  if (connectionsPromise) return connectionsPromise;
   ui.connectionsLoading = true;
   if (ui.view === 'connections') renderConnections();
-  try { ui.connections = (await api.listConnections()) || []; } catch { ui.connections = []; }
-  ui.connectionsLoading = false;
-  if (ui.view === 'connections') renderConnections();
+  connectionsPromise = (async () => {
+    try { ui.connections = (await api.listConnections()) || []; } catch { ui.connections = []; }
+    ui.connectionsLoading = false;
+    connectionsPromise = null;
+    if (ui.view === 'connections') renderConnections();
+  })();
+  return connectionsPromise;
 }
 
 async function setConnection(key, value) {

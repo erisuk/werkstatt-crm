@@ -12,6 +12,8 @@ const { TopicStore, groupByTopic, TOPICS } = require('./categories');
 const { desktopMeta } = require('./desktop-meta');
 const library = require('./library');
 const files = require('./files');
+const { PortalStore, PRESETS } = require('./portals');
+const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 
 // Links, die die Oberfläche öffnen darf.
@@ -40,6 +42,7 @@ function setup() {
   let scheduler = null;
   let settings = null;
   let topicStore = null;
+  let webTabs = null;
   const iconCache = new Map();
   let sessionWatcher = null;
   let projectsCache = [];
@@ -173,15 +176,27 @@ function setup() {
     const old = chat;
     chatGen += 1;
     const gen = chatGen;
-    chat = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs });
-    chat.on('event', (ev) => send('chat-event', { ...ev, gen }));
-    chat.on('status', () => pushState());
-    chat.on('approvals', onApprovalsChanged);
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs });
+    chat = c;
+    c.on('event', (ev) => send('chat-event', { ...ev, gen }));
+    c.on('status', () => pushState());
+    c.on('approvals', onApprovalsChanged);
     if (old) await old.dispose();
-    if (gen !== chatGen) return chatInfo();
-    chat.start();
+    // Inzwischen ersetzt oder gelöscht: nicht mehr starten.
+    if (gen !== chatGen || chat !== c) return chatInfo();
+    c.start();
     pushState();
     return chatInfo();
+  }
+
+  // Löst den offenen Chat (z. B. weil sein Gespräch gelöscht wird) und beendet ihn.
+  async function detachChat() {
+    const c = chat;
+    if (!c) return;
+    chat = null;
+    chatGen += 1;
+    pushState();
+    await c.dispose();
   }
 
   function defaultCwd() {
@@ -211,6 +226,7 @@ function setup() {
       },
     });
     win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    if (webTabs) webTabs.attach(win);
     win.once('ready-to-show', () => win.show());
 
     // Links öffnen im Browser, nie im App-Fenster.
@@ -260,6 +276,7 @@ function setup() {
     if (!chat) await openChat({ cwd: defaultCwd() });
     const c = chat;
     const gen = chatGen;
+    if (!c) return { ok: false, error: 'Der Chat wurde geschlossen, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     if (!c.title) { c.title = shortTitle(t); pushState(); }
     const ok = await c.send(t);
     if (c !== chat) return { ok: false, error: 'Der Chat wurde gewechselt, bevor die Nachricht ankam. Bitte noch einmal senden.' };
@@ -302,7 +319,8 @@ function setup() {
     const changed = Object.keys(next.connections).some((k) => next.connections[k] !== before[k]);
     const turnedOff = Object.keys(next.connections).some((k) => before[k] && !next.connections[k]);
     if (changed && chat) {
-      if (chat.status === 'busy' && !turnedOff) applied = false;
+      // Arbeitet Claude, startet der Chat vor der nächsten Nachricht neu und liest dann die neuen Verbindungen.
+      if (chat.status === 'busy' && !turnedOff) { applied = false; chat.needsRestart = true; }
       else { const c = chat; await c.stop(); if (c === chat) c.start(); }
     }
     pushState();
@@ -359,7 +377,7 @@ function setup() {
         result.skipped.push({ title: s.title, reason: 'Wird gerade in einem anderen Claude-Fenster benutzt.' });
         continue;
       }
-      if (ours) { const c = chat; chat = null; await c.dispose(); }
+      if (ours) await detachChat();
       try {
         await shell.trashItem(s.file);
         const extra = s.file.replace(/\.jsonl$/, '');
@@ -380,12 +398,13 @@ function setup() {
   ipcMain.handle('project-folder-trash', async (_e, dir) => {
     if (!isDir(dir)) return { ok: false, error: 'Diesen Ordner gibt es nicht.' };
     const p = path.resolve(dir);
-    if (files.isProtected(p) || permissionModeFor(p) !== 'acceptEdits') {
+    const known = projectsCache.some((x) => x.path && files.canonical(x.path) === files.canonical(p));
+    if (!known || files.isProtected(p) || permissionModeFor(fs.realpathSync.native(p)) !== 'acceptEdits') {
       return { ok: false, error: 'Dieser Ordner ist geschützt und kann über die Zentrale nicht gelöscht werden.' };
     }
     if (chat && (chat.cwd === p || chat.cwd.startsWith(p + path.sep))) {
       if (chat.status === 'busy') return { ok: false, error: 'Claude arbeitet gerade in diesem Ordner.' };
-      const c = chat; chat = null; await c.dispose();
+      await detachChat();
     }
     try { await shell.trashItem(p); } catch (e) { return { ok: false, error: e.message }; }
     pushState();
@@ -418,10 +437,8 @@ function setup() {
     return url;
   }
 
-  ipcMain.handle('mac-apps', async () => {
-    const list = files.listApps();
-    return Promise.all(list.map(async (a) => ({ ...a, icon: await iconFor(a.path) })));
-  });
+  // Ohne Symbole, damit die Liste sofort da ist; die holt die Oberfläche einzeln über fs-icon.
+  ipcMain.handle('mac-apps', () => files.listApps().map((a) => (iconCache.has(a.path) ? { ...a, icon: iconCache.get(a.path) } : a)));
 
   ipcMain.handle('fs-favorites', () => {
     const temp = /^\/(private\/)?(tmp|var\/folders)\//;
@@ -450,6 +467,42 @@ function setup() {
 
   ipcMain.handle('fs-search', (_e, q) => (typeof q === 'string' ? mac.spotlight(q, 60) : { ok: false, error: 'Suchbegriff fehlt.' }));
 
+  // ---------- Web: Seiten mit dauerhaftem Login ----------
+
+  const webState = () => ({ ...webTabs.info(), presets: PRESETS });
+  ipcMain.handle('web-state', () => webState());
+  ipcMain.handle('web-add', (_e, args) => {
+    const res = webTabs.store.add(args && args.name, args && args.url);
+    if (res.ok) webTabs.show(res.portal.id);
+    return res.ok ? { ok: true, id: res.portal.id } : res;
+  });
+  ipcMain.handle('web-show', (_e, id) => typeof id === 'string' && webTabs.show(id));
+  ipcMain.handle('web-close', (_e, id) => { if (typeof id === 'string') webTabs.close(id); });
+  ipcMain.handle('web-rename', (_e, args) => {
+    const ok = !!args && typeof args.id === 'string' && webTabs.store.rename(args.id, args.name);
+    webTabs.emit('change');
+    return ok;
+  });
+  ipcMain.handle('web-nav', (_e, args) => {
+    if (args && typeof args.id === 'string' && ['back', 'forward', 'reload', 'home'].includes(args.action)) webTabs.navigate(args.id, args.action);
+  });
+  ipcMain.handle('web-bounds', (_e, rect) => webTabs.setBounds(rect));
+  ipcMain.handle('web-visible', (_e, on) => webTabs.setVisible(on === true));
+  ipcMain.handle('web-open-browser', (_e, id) => {
+    const url = typeof id === 'string' && webTabs.currentUrl(id);
+    if (url && /^https?:\/\//.test(url)) shell.openExternal(url);
+  });
+  ipcMain.handle('web-clear-logins', async () => {
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'warning', buttons: ['Abbrechen', 'Überall abmelden'], defaultId: 0, cancelId: 0,
+      message: 'Bei allen Web-Seiten der Zentrale abmelden?',
+      detail: 'Das löscht die gespeicherten Anmeldungen und Seitendaten aller Tabs. Die Tabs selbst bleiben.',
+    });
+    if (response !== 1) return false;
+    await webTabs.clearLogins();
+    return true;
+  });
+
   ipcMain.handle('open-external', (_e, url) => {
     if (typeof url === 'string' && EXTERNAL_LINKS.has(url)) shell.openExternal(url);
   });
@@ -463,6 +516,8 @@ function setup() {
   app.whenReady().then(async () => {
     settings = new Settings(path.join(app.getPath('userData'), 'settings.json'));
     topicStore = new TopicStore(path.join(app.getPath('userData'), 'topics.json'));
+    webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
+    webTabs.on('change', () => send('web-state', webState()));
     nativeTheme.themeSource = settings.get().theme;
     writeMacConfig();
     refreshProjects();
@@ -509,6 +564,7 @@ function setup() {
     if (scheduler) scheduler.stop();
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];
+    if (webTabs) jobs.push(webTabs.saveLogins());
     if (chat) jobs.push(chat.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });

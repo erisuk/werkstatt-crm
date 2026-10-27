@@ -7,7 +7,7 @@ const path = require('path');
 // der erste Treffer gewinnt (z. B. „TikTok Shop“ landet bei Shop, nicht bei Media).
 const CATEGORIES = [
   { id: 'trading', emoji: '📈', label: 'Trading', words: /trading|daytrad|gold-?desk|\bgold\b|xau|\bmt5\b|metatrader|börse|aktie|krypto|bitcoin|memecoin|forex|vantage|qanat|\bbot\b/ },
-  { id: 'shop', emoji: '🛒', label: 'Shop', words: /shop|shopify|muris|sol[eé]va|dropship|e-?commerce|ecom|meta ads|produkt/ },
+  { id: 'shop', emoji: '🛒', label: 'Shop', words: /\bshop|muris|sol[eé]va|dropship|\be-?commerce|\becom\b|meta ads|produkt/ },
   { id: 'media', emoji: '🎬', label: 'Media · TikTok & Videos', words: /tiktok|instagram|\breel|youtube|shorts|video|clip|higgsfield|magnific|bit ai|ki-kanal|influencer|social media|viral|kurzfilm|werbefilm|\bspot\b|elevenlabs|\bnoa\b|beat/ },
   { id: 'werkstatt', emoji: '🏭', label: 'Werkstatt', words: /werkstatt|\bcrm\b|kfz|autohaus/ },
   { id: 'garten', emoji: '🌿', label: 'Garten · ESA & Büro', words: /\besa\b|reinigung|wisag|angebot|rechnung|minijob|büro|buero|steuer|garten|lohn/ },

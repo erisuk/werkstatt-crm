@@ -68,9 +68,35 @@ function listDir(dir, { hidden = false } = {}) {
   return { ok: true, path: p, parent: path.dirname(p) !== p ? path.dirname(p) : null, items, truncated: entries.length > items.length && items.length >= MAX_ENTRIES };
 }
 
-function isProtected(p) {
-  const r = path.resolve(p);
-  return r === path.parse(r).root || PROTECTED.some((x) => x === r || x.startsWith(r + path.sep));
+// Echter Pfad ohne Verknüpfungen, klein geschrieben: macOS unterscheidet Groß/klein nicht,
+// „~/documents“ ist also derselbe Ordner wie „~/Documents“.
+function canonical(p) {
+  let r = path.resolve(p);
+  try { r = fs.realpathSync.native(r); } catch {}
+  return r.toLowerCase();
 }
 
-module.exports = { listApps, favorites, listDir, isProtected, validPath, isDir, APP_DIRS, HOME };
+function isProtected(p) {
+  const r = canonical(p);
+  return r === path.parse(r).root || PROTECTED.some((x) => {
+    const c = canonical(x);
+    return c === r || c.startsWith(r + path.sep);
+  });
+}
+
+// Skripte und Programme, die macOS beim Öffnen ausführen würde.
+const RUNNABLE = /\.(command|tool|terminal|sh|zsh|bash|scpt|applescript|workflow|action|jar|pkg|mpkg)$/i;
+const SYSTEM_APP_DIRS = APP_DIRS.map((d) => d.toLowerCase());
+
+// true, wenn Öffnen etwas ausführen würde, das nicht aus einem Programme-Ordner stammt.
+// Apps zählen über ihren sichtbaren Ort (Safari liegt intern in einem System-Bereich unter /System/Volumes/…).
+function needsRunConfirm(p) {
+  const shown = path.resolve(p).toLowerCase();
+  const r = canonical(p);
+  if (RUNNABLE.test(shown) || RUNNABLE.test(r)) return true;
+  if (!/\.app$/.test(shown)) return false;
+  const inAppDir = (x) => SYSTEM_APP_DIRS.includes(path.dirname(x));
+  return !(inAppDir(shown) && (inAppDir(r) || r.startsWith('/system/')));
+}
+
+module.exports = { listApps, favorites, listDir, isProtected, needsRunConfirm, canonical, validPath, isDir, APP_DIRS, HOME };

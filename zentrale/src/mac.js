@@ -241,7 +241,8 @@ async function outlookUnread(limit = 10) {
 function spotlight(query, limit = 30) {
   return new Promise((resolve) => {
     if (!AVAILABLE) { resolve({ ok: false, error: 'Das geht nur auf dem Mac.' }); return; }
-    const q = String(query || '').replace(/^-+/, '').trim();
+    // Erst kürzen, dann Striche entfernen – sonst würde aus " -interpret" eine mdfind-Option.
+    const q = String(query || '').trim().replace(/^[-\s]+/, '');
     if (!q) { resolve({ ok: false, error: 'Suchbegriff fehlt.' }); return; }
     const found = [];
     let done = false;

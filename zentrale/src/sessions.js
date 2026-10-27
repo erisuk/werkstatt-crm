@@ -48,10 +48,12 @@ function textOf(content) {
   return '';
 }
 
-// Befehle und Systemhinweise beginnen mit "<" und sind keine echten Fragen.
+// Befehle und Systemhinweise von Claude Code (<command-name>, <system-reminder> …) sind keine echten Fragen.
+// Ein eigener Text, der mit "<" anfängt (z. B. HTML), zählt dagegen schon.
+const SYSTEM_PROMPT = /^<(command-|local-command|system-reminder|user-prompt|bash-|task-notification|ide_|persisted-output)/;
 function isRealPrompt(text) {
   const t = (text || '').trim();
-  return !!t && !t.startsWith('<') && !t.startsWith('Caveat:');
+  return !!t && !SYSTEM_PROMPT.test(t) && !t.startsWith('Caveat:');
 }
 
 // Erste Zeile als Titel; zu lange Titel enden am Wort mit "…".
