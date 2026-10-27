@@ -1,0 +1,41 @@
+{
+  "name": "zentrale",
+  "productName": "Zentrale",
+  "version": "0.2.0",
+  "description": "Deine Kommandozentrale für Claude Code und deinen Mac: Projekte, Gespräche, Agenten, Mail, Kalender und tägliche Aufgaben im Milchglas-Look.",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "dist": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "44.9.1",
+    "electron-builder": "26.17.0"
+  },
+  "build": {
+    "appId": "de.werkstatt.zentrale",
+    "productName": "Zentrale",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "src/mac.js",
+      "src/recurrence.js",
+      "src/mcp/**"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg"
+      ],
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "Die Zentrale steuert auf deinen Wunsch Kalender, Erinnerungen, Notizen, Mail und Outlook."
+      },
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    }
+  }
+}
