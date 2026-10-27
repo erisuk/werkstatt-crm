@@ -75,7 +75,7 @@ function serverRow(s) {
       h('div', { class: 'title' }, s.title || s.project || s.proc, ...badges.map(([t, c]) => h('span', { class: `pill ${c}`, text: t }))),
       h('div', { class: 'sub', title: s.cmd, text: [s.project && s.project !== s.title ? s.project : null, s.uptime ? `läuft seit ${s.uptime}` : null,
         s.cwd ? s.cwd.replace(/^\/Users\/[^/]+/, '~') : null].filter(Boolean).join(' · ') })),
-    s.system ? null : h('button', { class: 'link', 'aria-label': `Port ${s.port} in der Zentrale öffnen`, onClick: async () => { const r = await api.openInTab(s.url); if (r.ok) setView('web'); else alert(r.error); } }, 'Öffnen'),
+    s.system ? null : h('button', { class: 'link', 'aria-label': `Port ${s.port} in der Zentrale öffnen`, onClick: async () => { const r = await api.openInTab(s.url); if (r.ok) setView('local'); else alert(r.error); } }, 'Öffnen'),
     s.started ? h('button', { class: 'link', 'aria-label': `Log von Port ${s.port}`, onClick: async () => {
       const r = await api.serversLog(s.started.id); pv.log = { port: s.port, text: r.ok ? r.data : r.error }; renderProjectsBody();
     } }, 'Log') : null,

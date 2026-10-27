@@ -2,21 +2,27 @@
 // Hauptprozess als eingebettete Browser-Ansicht über den Platzhalter #web-host; diese Datei meldet,
 // wo der Platz ist. Nutzt die Helfer aus app.js (h, fill, ui, api …).
 
-const webv = { state: null, adding: false, renaming: false, addError: null, observer: null, activity: null, profile: 'standard' };
+const webv = { state: null, adding: false, renaming: false, addError: null, observer: null, activity: null, profile: 'standard',
+  mode: 'web', lastActive: {}, localServers: null };
+
+// Zwei Bereiche links: „Web“ (Internetseiten) und „Localhost“ (lokale Projekte) – getrennte Tab-Leisten.
+const isLocalUrl = (u) => { try { return /^(localhost|127\.0\.0\.1|\[::1\]|.+\.localhost)$/.test(new URL(u).hostname); } catch { return false; } };
+const inWebView = () => ui.view === 'web' || ui.view === 'local';
+const modePortals = () => (webv.state ? webv.state.portals.filter((p) => (webv.mode === 'local') === isLocalUrl(p.url)) : []);
 
 const profileLabel = (p) => (p === 'standard' ? 'Standard-Konto' : `Konto ${(/(\d+)$/.exec(p) || [])[1] || p}`);
 const ACTIVITY_MS = 20000; // so lange gilt „Claude bedient gerade …“ nach der letzten Aktion
 
 function activePortal() {
   const s = webv.state;
-  return s && s.portals.find((p) => p.id === s.active) || null;
+  return s && modePortals().find((p) => p.id === s.active) || null;
 }
 
 // Gesamtzahl der Ungelesenen neben „Web“ in der Seitenleiste.
 function renderWebBadge() {
   const btn = document.querySelector('.nav-item[data-view="web"]');
   if (!btn || !webv.state) return;
-  const total = webv.state.portals.reduce((n, p) => n + (p.unread || 0), 0);
+  const total = webv.state.portals.filter((p) => !isLocalUrl(p.url)).reduce((n, p) => n + (p.unread || 0), 0);
   let badge = btn.querySelector('.nav-badge');
   if (!total) { if (badge) badge.remove(); return; }
   if (!badge) { badge = h('span', { class: 'nav-badge' }); btn.append(badge); }
@@ -27,7 +33,7 @@ function renderWebBadge() {
 // Wo die eingebettete Seite liegen soll; ohne aktive Seite oder mit offenem Formular ist sie unsichtbar.
 function sendWebBounds() {
   const host = $('#web-host');
-  const show = ui.view === 'web' && !!host && !!activePortal() && !webv.adding;
+  const show = inWebView() && !!host && !!activePortal() && !webv.adding;
   if (show) {
     const r = host.getBoundingClientRect();
     api.webBounds({ x: r.left, y: r.top, width: r.width, height: r.height });
@@ -42,7 +48,35 @@ async function addPortal(name, url) {
   webv.addError = null;
 }
 
+// Localhost: laufende Server mit einem Klick als Tab, oder eine eigene Adresse.
+function renderLocalAddForm() {
+  const s = webv.state;
+  const used = new Set(s.portals.map((p) => new URL(p.url).origin));
+  if (!webv.localServers) api.serversList(false).then((l) => { webv.localServers = l || []; renderWebChrome(); }).catch(() => { webv.localServers = []; });
+  const url = h('input', { id: 'web-url', type: 'text', placeholder: 'z. B. localhost:3000', 'aria-label': 'Lokale Adresse' });
+  const free = (webv.localServers || []).filter((x) => !used.has(new URL(x.url).origin));
+  return h('form', { class: 'card form web-add', onSubmit: (e) => {
+    e.preventDefault();
+    let u = url.value.trim();
+    if (/^\d+$/.test(u)) u = `localhost:${u}`;
+    if (!/^https?:\/\//.test(u)) u = `http://${u}`;
+    if (!isLocalUrl(u)) { webv.addError = 'Hier nur lokale Adressen (localhost). Internetseiten gehören in den Bereich „Web“.'; renderWebChrome(); return; }
+    addPortal('', u);
+  } },
+  h('h2', { class: 'full', text: 'Lokalen Server öffnen' }),
+  h('div', { class: 'field full', role: 'group', 'aria-label': 'Laufende Server' }, h('span', { class: 'label', 'aria-hidden': 'true', text: 'Laufen gerade' }),
+    h('div', { class: 'quick-actions' }, !webv.localServers ? h('span', { class: 'sub', text: 'Sucht …' })
+      : free.length ? free.map((x) => h('button', { type: 'button', class: 'chip', onClick: () => addPortal(`${x.project || x.title || 'localhost'} :${x.port}`, x.url) },
+        `${x.title || x.project || 'Server'} · :${x.port}`)) : h('span', { class: 'sub', text: 'Kein weiterer Server läuft. Starte einen unter „Projekte & Server“.' }))),
+  h('div', { class: 'field full' }, h('label', { for: 'web-url', text: 'Oder Adresse / Port' }), url),
+  webv.addError ? h('div', { class: 'full sub warn', role: 'alert', text: webv.addError }) : null,
+  h('div', { class: 'actions full' }, h('span', { class: 'spacer' }),
+    modePortals().length ? h('button', { type: 'button', class: 'btn ghost', onClick: () => { webv.adding = false; webv.addError = null; renderWebChrome(); } }, 'Abbrechen') : null,
+    h('button', { type: 'submit', class: 'btn' }, 'Öffnen')));
+}
+
 function renderAddForm() {
+  if (webv.mode === 'local') return renderLocalAddForm();
   const s = webv.state;
   const used = new Set(s.portals.map((p) => p.url));
   const name = h('input', { id: 'web-name', type: 'text', placeholder: 'z. B. Outlook', 'aria-label': 'Name der Seite' });
@@ -54,7 +88,11 @@ function renderAddForm() {
     options.map((p) => h('option', { value: p }, p === s.nextProfile ? `+ Neues Konto (${profileLabel(p)})` : profileLabel(p))));
   profile.value = webv.profile;
   profile.addEventListener('change', () => { webv.profile = profile.value; });
-  const form = h('form', { class: 'card form web-add', onSubmit: (e) => { e.preventDefault(); addPortal(name.value, url.value); } },
+  const form = h('form', { class: 'card form web-add', onSubmit: (e) => {
+    e.preventDefault();
+    if (isLocalUrl(/^https?:/.test(url.value) ? url.value : `http://${url.value}`)) { webv.addError = 'Lokale Adressen gehören in den Bereich „Localhost“.'; renderWebChrome(); return; }
+    addPortal(name.value, url.value);
+  } },
     h('h2', { class: 'full', text: 'Seite hinzufügen' }),
     h('div', { class: 'field full' }, h('label', { for: 'web-profile', text: 'Konto' }), profile,
       h('span', { class: 'hint', text: 'Jedes Konto hat eine eigene Anmeldung. Für ein zweites Gmail oder Outlook: „Neues Konto“ wählen und dann Gmail anklicken.' })),
@@ -71,7 +109,7 @@ function renderAddForm() {
     h('div', { class: 'actions full' },
       h('span', { class: 'hint', text: 'Du meldest dich einmal auf der Seite an – die Zentrale merkt sich die Anmeldung. Passwörter gibst nur du ein.' }),
       h('span', { class: 'spacer' }),
-      s.portals.length ? h('button', { type: 'button', class: 'btn ghost', onClick: () => { webv.adding = false; webv.addError = null; renderWebChrome(); } }, 'Abbrechen') : null,
+      modePortals().length ? h('button', { type: 'button', class: 'btn ghost', onClick: () => { webv.adding = false; webv.addError = null; renderWebChrome(); } }, 'Abbrechen') : null,
       h('button', { type: 'submit', class: 'btn' }, 'Hinzufügen')));
   return form;
 }
@@ -123,14 +161,20 @@ function activityBanner() {
   return h('div', { class: 'web-activity', role: 'status' },
     h('span', { class: 'dot blue pulse', 'aria-hidden': 'true' }),
     h('span', { class: 'grow', text: `Claude bedient gerade „${a.name || 'Web-Tab'}“ (${a.action})` }),
-    ui.view !== 'web' ? h('button', { class: 'link', onClick: () => setView('web') }, 'Ansehen') : null,
+    !inWebView() ? h('button', { class: 'link', onClick: () => setView(viewForTab(a.id)) }, 'Ansehen') : null,
     h('button', { class: 'btn ghost', onClick: () => api.stopChat() }, 'Stopp'));
 }
 
 function renderActivityHint() {
   const box = $('#web-activity-hint');
   if (!box) return;
-  fill(box, ui.view === 'web' ? null : activityBanner());
+  fill(box, inWebView() ? null : activityBanner());
+}
+
+// In welchem Bereich ein Tab liegt (Web oder Localhost).
+function viewForTab(id) {
+  const p = webv.state && webv.state.portals.find((x) => x.id === id);
+  return p && isLocalUrl(p.url) ? 'local' : 'web';
 }
 
 // Alles außer der eingebetteten Seite: Tabs, Leiste, Formular.
@@ -139,12 +183,19 @@ function renderWebChrome() {
   if (!box) return;
   const s = webv.state;
   if (!s) { fill(box, h('div', { class: 'card empty', text: 'Lädt …' })); return; }
+  const list = modePortals();
+  // Der angezeigte Tab gehört zu diesem Bereich – sonst den zuletzt hier benutzten (oder den ersten) zeigen.
+  if (list.length && !list.some((x) => x.id === s.active)) {
+    const back = list.find((x) => x.id === webv.lastActive[webv.mode]) || list[0];
+    api.webShow(back.id);
+  }
+  if (list.some((x) => x.id === s.active)) webv.lastActive[webv.mode] = s.active;
   const p = activePortal();
-  const showForm = webv.adding || !s.portals.length;
+  const showForm = webv.adding || !list.length;
   keepFocus(() => fill(box,
     activityBanner(),
-    s.portals.length ? h('div', { class: 'web-tabs', role: 'group', 'aria-label': 'Webseiten' },
-      s.portals.map((x) => webTab(x, x.id === s.active && !showForm)),
+    list.length ? h('div', { class: 'web-tabs', role: 'group', 'aria-label': webv.mode === 'local' ? 'Lokale Server' : 'Webseiten' },
+      list.map((x) => webTab(x, x.id === s.active && !showForm)),
       h('button', { class: 'web-tab-add', 'aria-label': 'Seite hinzufügen', title: 'Seite hinzufügen', 'data-focus': 'web-add',
         onClick: () => { webv.adding = true; renderWebChrome(); } }, '+')) : null,
     showForm ? renderAddForm() : renderToolbar(p)));
@@ -152,16 +203,21 @@ function renderWebChrome() {
   sendWebBounds();
 }
 
-async function renderWeb() {
+async function renderWeb(mode = 'web') {
+  webv.mode = mode;
+  webv.adding = false;
+  webv.addError = null;
+  webv.localServers = null;
   fill($('#main'),
-    h('div', { class: 'section-head wrap' }, h('h1', { text: 'Web' }), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn ghost', title: 'Löscht die gespeicherten Anmeldungen aller Tabs', onClick: () => api.webClearLogins() }, 'Überall abmelden')),
+    h('div', { class: 'section-head wrap' }, h('h1', { text: mode === 'local' ? 'Localhost' : 'Web' }), h('span', { class: 'spacer' }),
+      mode === 'local' ? h('button', { class: 'btn ghost', onClick: () => setView('projects') }, 'Projekte & Server')
+        : h('button', { class: 'btn ghost', title: 'Löscht die gespeicherten Anmeldungen aller Tabs', onClick: () => api.webClearLogins() }, 'Überall abmelden')),
     h('div', { id: 'web-chrome', class: 'web-chrome' }),
     h('div', { id: 'web-host', class: 'web-host', 'aria-label': 'Webseite' }));
   $('#main').classList.add('web-mode');
   if (!webv.observer) {
-    webv.observer = new ResizeObserver(() => { if (ui.view === 'web') sendWebBounds(); });
-    window.addEventListener('resize', () => { if (ui.view === 'web') sendWebBounds(); });
+    webv.observer = new ResizeObserver(() => { if (inWebView()) sendWebBounds(); });
+    window.addEventListener('resize', () => { if (inWebView()) sendWebBounds(); });
   }
   webv.observer.disconnect();
   webv.observer.observe($('#web-host'));
@@ -181,15 +237,16 @@ function leaveWeb() {
 window.zentrale.onWebState((s) => {
   webv.state = s;
   renderWebBadge();
-  if (ui.view === 'web' && !webv.renaming) renderWebChrome();
+  if (inWebView() && !webv.renaming) renderWebChrome();
 });
 window.zentrale.webState().then((s) => { webv.state = s; renderWebBadge(); }).catch(() => {});
 window.zentrale.onWebActivity((a) => {
   // Beim ersten Schritt einer neuen Browser-Arbeit in den Web-Bereich wechseln, damit du zusiehst.
   const fresh = !webv.activity || a.at - webv.activity.at > ACTIVITY_MS;
   webv.activity = a;
-  if (fresh && ui.view !== 'web') setView('web');
-  const redraw = () => { if (ui.view === 'web') renderWebChrome(); else renderActivityHint(); };
+  const target = viewForTab(a.id);
+  if (fresh && ui.view !== target) setView(target);
+  const redraw = () => { if (inWebView()) renderWebChrome(); else renderActivityHint(); };
   redraw();
   setTimeout(redraw, ACTIVITY_MS + 200);
 });
