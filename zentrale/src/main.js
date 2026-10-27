@@ -14,6 +14,7 @@ const library = require('./library');
 const files = require('./files');
 const music = require('./music');
 const vault = require('./vault');
+const servers = require('./servers');
 const { PortalStore, PRESETS } = require('./portals');
 const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
@@ -612,6 +613,103 @@ function setup() {
   });
 
   ipcMain.handle('fs-search', (_e, q) => (typeof q === 'string' ? mac.spotlight(q, 60) : { ok: false, error: 'Suchbegriff fehlt.' }));
+
+  // ---------- Projekte & Server ----------
+
+  // Kleine JSON-Speicher in userData (von der Zentrale gestartete Server, selbst hinzugefügte/ausgeblendete Projekte).
+  const store = (name, fallback) => ({
+    file: () => path.join(app.getPath('userData'), name),
+    get() { try { const v = JSON.parse(fs.readFileSync(this.file(), 'utf8')); return v && typeof v === 'object' ? v : fallback; } catch { return fallback; } },
+    set(v) { try { fs.writeFileSync(`${this.file()}.tmp`, JSON.stringify(v, null, 2)); fs.renameSync(`${this.file()}.tmp`, this.file()); return true; } catch { return false; } },
+  });
+  const startedStore = store('servers.json', []);
+  const projectStore = store('projects.json', { added: [], hidden: [] });
+  const isTemp = (p) => /^\/(private\/)?(tmp|var\/folders)\//.test(`${p}/`);
+
+  async function currentServers(all = false) {
+    // Nur noch laufende, von der Zentrale gestartete Server merken.
+    const started = startedStore.get().filter((s) => { try { process.kill(s.pid, 0); return true; } catch { return false; } });
+    startedStore.set(started);
+    return servers.listServers({ all, selfPids: [process.pid], started });
+  }
+
+  ipcMain.handle('servers-list', async (_e, args) => {
+    const list = await currentServers(!!(args && args.all));
+    const started = new Map(startedStore.get().map((s) => [s.pid, s]));
+    return list.map((s) => ({ ...s, started: started.get(s.pid) ? { id: started.get(s.pid).id, command: started.get(s.pid).command } : null }));
+  });
+
+  // Gestoppt wird nur, was gerade wirklich auf diesem Port mit dieser Prozess-ID lauscht.
+  ipcMain.handle('servers-stop', async (_e, args) => {
+    const pid = Number(args && args.pid);
+    const port = Number(args && args.port);
+    const match = (await currentServers(true)).find((s) => s.pid === pid && s.port === port);
+    if (!match) return { ok: false, error: 'Dieser Server läuft nicht mehr.' };
+    const res = await servers.stopServer(match, { force: !!(args && args.force), selfPids: [process.pid] });
+    if (res.ok) startedStore.set(startedStore.get().filter((s) => s.pid !== pid));
+    return res;
+  });
+
+  ipcMain.handle('servers-suggest', (_e, dir) => (isDir(dir) ? servers.suggestCommands(dir) : []));
+
+  ipcMain.handle('servers-start', (_e, args) => {
+    const res = servers.startServer({ dir: args && args.dir, command: args && args.command, port: args && args.port,
+      env: claude.env, logDir: path.join(app.getPath('userData'), 'server-logs') });
+    if (res.ok) startedStore.set([...startedStore.get(), res.data]);
+    return res.ok ? { ok: true, data: { pid: res.data.pid, id: res.data.id } } : res;
+  });
+
+  ipcMain.handle('servers-log', (_e, id) => {
+    const s = startedStore.get().find((x) => x.id === id);
+    return s ? servers.readLog(s.log) : { ok: false, error: 'Für diesen Server gibt es kein Log (er wurde nicht von der Zentrale gestartet).' };
+  });
+
+  // Projekte = Ordner aus den Gesprächen + selbst hinzugefügte, ohne ausgeblendete; mit laufenden Servern.
+  ipcMain.handle('projects-list', async () => {
+    const { added, hidden } = projectStore.get();
+    const byPath = new Map();
+    for (const p of projectsCache) {
+      if (!p.path || !isDir(p.path) || p.path === os.homedir() || isTemp(p.path)) continue;
+      byPath.set(p.path, { path: p.path, name: p.name, sessions: p.sessions.length, added: false, updatedAt: p.updatedAt });
+    }
+    for (const dir of added) if (isDir(dir) && !byPath.has(dir)) byPath.set(dir, { path: dir, name: path.basename(dir), sessions: 0, added: true, updatedAt: 0 });
+    for (const dir of added) if (byPath.has(dir)) byPath.get(dir).added = true;
+    let running = [];
+    try { running = await currentServers(false); } catch {}
+    // Ordner mit laufendem Server sind auch Projekte, selbst wenn es dazu kein Gespräch gibt.
+    for (const sv of running) {
+      const dir = sv.projectDir;
+      if (dir && isDir(dir) && dir !== os.homedir() && !isTemp(dir) && !byPath.has(dir)) {
+        byPath.set(dir, { path: dir, name: path.basename(dir), sessions: 0, added: false, fromServer: true, updatedAt: 0 });
+      }
+    }
+    return [...byPath.values()].filter((p) => !hidden.includes(p.path)).map((p) => ({
+      ...p, servers: running.filter((s) => s.projectDir && (s.projectDir === p.path || s.projectDir.startsWith(p.path + path.sep)))
+        .map((s) => ({ port: s.port, url: s.url, title: s.title })) }))
+      .sort((a, b) => (b.servers.length - a.servers.length) || (b.updatedAt - a.updatedAt) || a.name.localeCompare(b.name, 'de'));
+  });
+  ipcMain.handle('projects-add', (_e, dir) => {
+    if (!isDir(dir) || dir === os.homedir() || files.isProtected(dir)) return { ok: false, error: 'Diesen Ordner kann man nicht als Projekt hinzufügen.' };
+    const { added, hidden } = projectStore.get();
+    projectStore.set({ added: [...new Set([...added, dir])], hidden: hidden.filter((x) => x !== dir) });
+    return { ok: true };
+  });
+  // Entfernt nur aus der Liste – der Ordner selbst bleibt unangetastet.
+  ipcMain.handle('projects-remove', (_e, dir) => {
+    if (typeof dir !== 'string') return { ok: false };
+    const { added, hidden } = projectStore.get();
+    projectStore.set({ added: added.filter((x) => x !== dir), hidden: [...new Set([...hidden, dir])] });
+    return { ok: true };
+  });
+  ipcMain.handle('open-in-tab', (_e, url) => {
+    let u;
+    try { u = new URL(String(url)); } catch { return { ok: false, error: 'Ungültige Adresse.' }; }
+    if (!['localhost', '127.0.0.1'].includes(u.hostname)) return { ok: false, error: 'Nur lokale Adressen.' };
+    let portal = webTabs.store.get().portals.find((p) => new URL(p.url).origin === u.origin);
+    if (!portal) { const r = webTabs.store.add(`localhost:${u.port}`, u.origin); if (!r.ok) return r; portal = r.portal; }
+    webTabs.show(portal.id);
+    return { ok: true };
+  });
 
   // ---------- Gehirn (Obsidian) ----------
 

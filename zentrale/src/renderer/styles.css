@@ -492,3 +492,9 @@ h2 { font-size: 16px; font-weight: 600; }
 .note-view h2 { margin: 0; font-size: 18px; }
 .note-text { margin: 0; white-space: pre-wrap; word-wrap: break-word; font-family: inherit; font-size: 13px; line-height: 1.55; max-height: 60vh; overflow-y: auto; user-select: text; }
 @container (max-width: 640px) { .brain-grid { grid-template-columns: 1fr; } .note-list { max-height: 260px; } }
+
+/* Projekte & Server */
+.server-row .port { min-width: 56px; padding: 4px 8px; border-radius: 8px; background: var(--fill); font-family: ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; text-align: center; }
+.server-row .title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; white-space: normal; }
+.server-row .title .pill, .row .title .pill { font-size: 11px; padding: 2px 8px; font-weight: 500; }
+.log-box { margin: 0; padding: 12px 14px; max-height: 280px; overflow: auto; font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre-wrap; user-select: text; }
