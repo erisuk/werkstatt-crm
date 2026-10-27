@@ -498,3 +498,6 @@ h2 { font-size: 16px; font-weight: 600; }
 .server-row .title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; white-space: normal; }
 .server-row .title .pill, .row .title .pill { font-size: 11px; padding: 2px 8px; font-weight: 500; }
 .log-box { margin: 0; padding: 12px 14px; max-height: 280px; overflow: auto; font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre-wrap; user-select: text; }
+
+.profile-dot { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--pill-blue-bg); color: var(--pill-blue); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+#web-profile { border: 1px solid var(--border-strong); border-radius: 10px; background: var(--card-strong); padding: 9px 10px; color: var(--text); font-size: 14px; }

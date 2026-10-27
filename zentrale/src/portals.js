@@ -10,6 +10,8 @@ const PRESETS = [
   { group: 'Mail & Büro', name: 'Outlook (Firma)', url: 'https://outlook.office.com/mail/' },
   { group: 'Mail & Büro', name: 'Google Kalender', url: 'https://calendar.google.com/' },
   { group: 'Mail & Büro', name: 'Google Drive', url: 'https://drive.google.com/' },
+  { group: 'Mail & Büro', name: 'web.de', url: 'https://web.de/' },
+  { group: 'Mail & Büro', name: 'GMX', url: 'https://www.gmx.net/' },
   { group: 'Social Media', name: 'WhatsApp', url: 'https://web.whatsapp.com/' },
   { group: 'Social Media', name: 'Instagram', url: 'https://www.instagram.com/' },
   { group: 'Social Media', name: 'TikTok', url: 'https://www.tiktok.com/' },
@@ -17,6 +19,7 @@ const PRESETS = [
   { group: 'Social Media', name: 'Messenger', url: 'https://www.messenger.com/' },
   { group: 'Social Media', name: 'Reddit', url: 'https://www.reddit.com/' },
   { group: 'Social Media', name: 'YouTube', url: 'https://www.youtube.com/' },
+  { group: 'Social Media', name: 'YouTube Studio', url: 'https://studio.youtube.com/' },
   { group: 'Social Media', name: 'X', url: 'https://x.com/' },
   { group: 'Social Media', name: 'LinkedIn', url: 'https://www.linkedin.com/' },
   { group: 'Social Media', name: 'Telegram', url: 'https://web.telegram.org/' },
@@ -26,7 +29,11 @@ const PRESETS = [
   { group: 'Sonstiges', name: 'Spotify', url: 'https://open.spotify.com/' },
 ];
 
-const MAX_PORTALS = 30;
+const MAX_PORTALS = 40;
+// Jedes Konto hat seinen eigenen Anmelde-Speicher; „standard“ ist der bisherige gemeinsame.
+const PROFILE = /^[a-z0-9-]{1,24}$/;
+const profileOf = (v) => (typeof v === 'string' && PROFILE.test(v) ? v : 'standard');
+const partitionFor = (profile) => (profileOf(profile) === 'standard' ? 'persist:portale' : `persist:portale-${profileOf(profile)}`);
 
 // Nur echte Webadressen; ohne "https://" ergänzen wir es. Gibt null bei ungültiger Eingabe.
 function normalizeUrl(input) {
@@ -66,6 +73,7 @@ function sanitize(list) {
       name: String(p.name || new URL(url).hostname).trim().slice(0, 40) || new URL(url).hostname,
       url,
       lastUrl: last && new URL(last).origin === new URL(url).origin ? last : null,
+      profile: profileOf(p.profile),
     });
     if (out.length >= MAX_PORTALS) break;
   }
@@ -86,11 +94,25 @@ class PortalStore {
     return { portals: this.list.map((p) => ({ ...p })), active: this.active };
   }
 
-  add(name, url) {
+  // Alle Konten, die gerade benutzt werden (für Speichern/Abmelden), plus ein freier Name für ein neues.
+  profiles() {
+    return [...new Set(['standard', ...this.list.map((p) => p.profile)])];
+  }
+
+  nextProfile() {
+    const used = new Set(this.profiles());
+    for (let n = 2; n < 100; n += 1) if (!used.has(`konto-${n}`)) return `konto-${n}`;
+    return `konto-${Date.now()}`;
+  }
+
+  add(name, url, profile = 'standard') {
     const clean = normalizeUrl(url);
     if (!clean) return { ok: false, error: 'Das ist keine gültige Webadresse (z. B. https://outlook.com).' };
     if (this.list.length >= MAX_PORTALS) return { ok: false, error: `Höchstens ${MAX_PORTALS} Seiten.` };
-    const portal = sanitize([{ name: String(name || '').trim() || new URL(clean).hostname, url: clean }])[0];
+    const pr = profileOf(profile);
+    // Das Konto zeigt der Tab als kleine Nummer – der Name bleibt, wie er ist.
+    const label = String(name || '').trim() || new URL(clean).hostname;
+    const portal = sanitize([{ name: label, url: clean, profile: pr }])[0];
     this.list = [...this.list, portal];
     this.active = portal.id;
     this.save();
@@ -139,4 +161,4 @@ class PortalStore {
   }
 }
 
-module.exports = { PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, sanitize, MAX_PORTALS };
+module.exports = { PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, sanitize, MAX_PORTALS, partitionFor, profileOf };

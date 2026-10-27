@@ -2,7 +2,9 @@
 // Hauptprozess als eingebettete Browser-Ansicht über den Platzhalter #web-host; diese Datei meldet,
 // wo der Platz ist. Nutzt die Helfer aus app.js (h, fill, ui, api …).
 
-const webv = { state: null, adding: false, renaming: false, addError: null, observer: null, activity: null };
+const webv = { state: null, adding: false, renaming: false, addError: null, observer: null, activity: null, profile: 'standard' };
+
+const profileLabel = (p) => (p === 'standard' ? 'Standard-Konto' : `Konto ${(/(\d+)$/.exec(p) || [])[1] || p}`);
 const ACTIVITY_MS = 20000; // so lange gilt „Claude bedient gerade …“ nach der letzten Aktion
 
 function activePortal() {
@@ -34,7 +36,7 @@ function sendWebBounds() {
 }
 
 async function addPortal(name, url) {
-  const res = await api.webAdd(name, url);
+  const res = await api.webAdd(name, url, webv.profile);
   if (!res || !res.ok) { webv.addError = (res && res.error) || 'Das hat nicht geklappt.'; renderWebChrome(); return; }
   webv.adding = false;
   webv.addError = null;
@@ -45,10 +47,20 @@ function renderAddForm() {
   const used = new Set(s.portals.map((p) => p.url));
   const name = h('input', { id: 'web-name', type: 'text', placeholder: 'z. B. Outlook', 'aria-label': 'Name der Seite' });
   const url = h('input', { id: 'web-url', type: 'text', placeholder: 'Adresse, z. B. outlook.com', 'aria-label': 'Webadresse' });
+  // Konto: Standard, ein schon benutztes weiteres Konto oder ein neues (eigene Anmeldung, z. B. zweites Gmail).
+  const options = [...s.profiles, s.nextProfile];
+  if (!options.includes(webv.profile)) webv.profile = 'standard';
+  const profile = h('select', { id: 'web-profile', 'data-focus': 'web-profile' },
+    options.map((p) => h('option', { value: p }, p === s.nextProfile ? `+ Neues Konto (${profileLabel(p)})` : profileLabel(p))));
+  profile.value = webv.profile;
+  profile.addEventListener('change', () => { webv.profile = profile.value; });
   const form = h('form', { class: 'card form web-add', onSubmit: (e) => { e.preventDefault(); addPortal(name.value, url.value); } },
     h('h2', { class: 'full', text: 'Seite hinzufügen' }),
+    h('div', { class: 'field full' }, h('label', { for: 'web-profile', text: 'Konto' }), profile,
+      h('span', { class: 'hint', text: 'Jedes Konto hat eine eigene Anmeldung. Für ein zweites Gmail oder Outlook: „Neues Konto“ wählen und dann Gmail anklicken.' })),
     [...new Set(s.presets.map((p) => p.group))].map((group) => {
-      const items = s.presets.filter((p) => p.group === group && !used.has(p.url));
+      // Im Standard-Konto nur, was es noch nicht gibt; in einem weiteren Konto alles (z. B. zweites Gmail).
+      const items = s.presets.filter((p) => p.group === group && (webv.profile !== 'standard' || !used.has(p.url)));
       return items.length ? h('div', { class: 'field full', role: 'group', 'aria-label': group }, h('span', { class: 'label', 'aria-hidden': 'true', text: group }),
         h('div', { class: 'quick-actions' }, items.map((p) =>
           h('button', { type: 'button', class: 'chip', 'data-focus': `preset:${p.name}`, onClick: () => addPortal(p.name, p.url) }, p.name)))) : null;
@@ -70,6 +82,7 @@ function webTab(p, active) {
       onClick: () => { webv.adding = false; api.webShow(p.id); } },
     p.loading ? h('span', { class: 'dot amber pulse', 'aria-hidden': 'true' }) : null,
     h('span', { class: 'web-tab-name', text: p.name }),
+    p.profile && p.profile !== 'standard' ? h('span', { class: 'profile-dot', title: profileLabel(p.profile), 'aria-label': profileLabel(p.profile), text: (/(\d+)$/.exec(p.profile) || [])[1] || '•' }) : null,
     p.unread ? h('span', { class: 'count', 'aria-label': `${p.unread} ungelesen`, text: p.unread > 99 ? '99+' : String(p.unread) }) : null),
     h('button', { class: 'web-tab-close', 'aria-label': `${p.name} schließen`, title: 'Tab entfernen', 'data-focus': `web-close:${p.id}`,
       onClick: async () => {

@@ -68,7 +68,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   musicNow: () => ipcRenderer.invoke('music-now'),
   musicControl: (app, action) => ipcRenderer.invoke('music-control', { app, action }),
   webState: () => ipcRenderer.invoke('web-state'),
-  webAdd: (name, url) => ipcRenderer.invoke('web-add', { name, url }),
+  webAdd: (name, url, profile) => ipcRenderer.invoke('web-add', { name, url, profile }),
   webShow: (id) => ipcRenderer.invoke('web-show', id),
   webClose: (id) => ipcRenderer.invoke('web-close', id),
   webRename: (id, name) => ipcRenderer.invoke('web-rename', { id, name }),

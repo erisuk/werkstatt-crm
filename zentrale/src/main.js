@@ -63,7 +63,9 @@ const WEB_HINT = 'Du läufst in der Zentrale des Nutzers. Webseiten (z. B. Meta 
   + 'mit den Werkzeugen zentrale_web_* in den Web-Tabs der Zentrale, wo der Nutzer angemeldet ist und live zusieht – nicht mit '
   + 'Playwright und nicht mit einem separaten Chrome. Lies die Seite (zentrale_web_read) vor und nach jeder Aktion. '
   + 'Passwörter, Karten- und Bankdaten gibt nur der Nutzer selbst ein. Vor allem, was Geld kostet oder etwas veröffentlicht, '
-  + 'fasst du zusammen, was passieren wird, und lässt den Nutzer entscheiden.';
+  + 'fasst du zusammen, was passieren wird, und lässt den Nutzer entscheiden. '
+  + 'Bei Social Media (YouTube, Instagram, TikTok, Facebook, Meta) prüfst du vor jeder Aktion, welches Konto angemeldet ist, und nennst es. '
+  + 'Konten von MURIS (z. B. @shop.muris) bearbeitest du nie. Dateien wie Videos lädst du mit zentrale_web_upload hoch.';
 
 // So frisch geschriebene Gespräche benutzt vermutlich gerade ein anderes Claude-Fenster.
 const IN_USE_MS = 2 * 60 * 1000;
@@ -812,10 +814,10 @@ function setup() {
 
   // ---------- Web: Seiten mit dauerhaftem Login ----------
 
-  const webState = () => ({ ...webTabs.info(), presets: PRESETS });
+  const webState = () => ({ ...webTabs.info(), presets: PRESETS, profiles: webTabs.store.profiles(), nextProfile: webTabs.store.nextProfile() });
   ipcMain.handle('web-state', () => webState());
   ipcMain.handle('web-add', (_e, args) => {
-    const res = webTabs.store.add(args && args.name, args && args.url);
+    const res = webTabs.store.add(args && args.name, args && args.url, args && args.profile);
     if (res.ok) webTabs.show(res.portal.id);
     return res.ok ? { ok: true, id: res.portal.id } : res;
   });

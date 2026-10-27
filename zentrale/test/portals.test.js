@@ -72,3 +72,20 @@ test('Kaputte oder fremde Daten in der Datei richten keinen Schaden an', () => {
   fs.writeFileSync(file, '{kaputt');
   assert.deepStrictEqual(new PortalStore(file).get(), { portals: [], active: null });
 });
+
+test('Mehrere Konten: eigener Speicher je Konto, alte Tabs bleiben im Standard-Konto', () => {
+  const { partitionFor, profileOf } = require('../src/portals');
+  assert.strictEqual(partitionFor('standard'), 'persist:portale');
+  assert.strictEqual(partitionFor('konto-2'), 'persist:portale-konto-2');
+  assert.strictEqual(profileOf('../böse'), 'standard');
+  const file = tmpFile();
+  fs.writeFileSync(file, JSON.stringify({ portals: [{ id: 'alt', name: 'Gmail', url: 'https://mail.google.com/' }] }));
+  const store = new PortalStore(file);
+  assert.strictEqual(store.get().portals[0].profile, 'standard');
+  assert.strictEqual(store.nextProfile(), 'konto-2');
+  const res = store.add('Gmail', 'https://mail.google.com/', 'konto-2');
+  assert.strictEqual(res.portal.profile, 'konto-2');
+  assert.strictEqual(res.portal.name, 'Gmail');
+  assert.deepStrictEqual(store.profiles(), ['standard', 'konto-2']);
+  assert.strictEqual(store.nextProfile(), 'konto-3');
+});
