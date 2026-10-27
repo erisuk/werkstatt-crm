@@ -474,3 +474,6 @@ h2 { font-size: 16px; font-weight: 600; }
 .web-activity { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 12px; background: var(--pill-blue-bg); color: var(--pill-blue); font-size: 13px; font-weight: 500; }
 .web-activity .grow { flex: 1; min-width: 0; }
 #web-activity-hint:empty { display: none; }
+
+.auto-connect { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 12px; background: var(--pill-blue-bg); }
+.auto-connect .sub { color: var(--pill-blue); margin: 0; }

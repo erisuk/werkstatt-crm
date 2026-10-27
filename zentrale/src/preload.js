@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld('zentrale', {
   fsSearch: (q) => ipcRenderer.invoke('fs-search', q),
   n8nStatus: () => ipcRenderer.invoke('n8n-status'),
   n8nConnect: (url, key) => ipcRenderer.invoke('n8n-connect', { url, key }),
+  n8nConnectClipboard: (url) => ipcRenderer.invoke('n8n-connect-clipboard', { url }),
+  n8nAutoConnect: (url) => ipcRenderer.invoke('n8n-auto-connect', { url }),
   n8nDisconnect: () => ipcRenderer.invoke('n8n-disconnect'),
   n8nWorkflows: () => ipcRenderer.invoke('n8n-workflows'),
   n8nExecutions: () => ipcRenderer.invoke('n8n-executions'),

@@ -1,5 +1,5 @@
 // Hauptprozess: öffnet das Fenster, startet Claude automatisch und hält alles synchron.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -29,6 +29,27 @@ const EXTERNAL_LINKS = new Set([
   'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
 ]);
+
+// Läuft im angemeldeten n8n-Tab (eigene, isolierte Skriptwelt) und legt dort einen API-Schlüssel an.
+// n8n verlangt bei Anfragen mit Anmelde-Cookie die browser-id aus dem localStorage der Seite.
+const N8N_WORLD = 1730;
+const N8N_CREATE_KEY = `(async () => {
+  const headers = { 'Content-Type': 'application/json', 'browser-id': localStorage.getItem('n8n-browserId') || '' };
+  const me = await fetch('/rest/login', { headers, credentials: 'include' });
+  if (!me.ok) return { error: 'login' };
+  let scopes = null;
+  try { const r = await fetch('/rest/api-keys/scopes', { headers, credentials: 'include' }); if (r.ok) { const j = await r.json(); if (Array.isArray(j.data)) scopes = j.data; } } catch (e) {}
+  const body = { label: 'Zentrale ' + new Date().toISOString().slice(0, 10), expiresAt: null };
+  if (scopes) body.scopes = scopes;
+  const r = await fetch('/rest/api-keys', { method: 'POST', headers, credentials: 'include', body: JSON.stringify(body) });
+  const text = await r.text();
+  let j = null;
+  try { j = JSON.parse(text); } catch (e) {}
+  if (!r.ok) return { error: 'http', status: r.status, message: (j && j.message) || text.slice(0, 160) };
+  const d = (j && j.data) || {};
+  const key = d.rawApiKey || (typeof d.apiKey === 'string' && !d.apiKey.includes('*') ? d.apiKey : null);
+  return key ? { key } : { error: 'nokey' };
+})()`;
 
 // Hinweis an Claude, wenn „Web-Tabs für Claude“ eingeschaltet ist.
 const WEB_HINT = 'Du läufst in der Zentrale des Nutzers. Webseiten (z. B. Meta Business, Shopify, Gmail, Instagram) bedienst du '
@@ -595,18 +616,51 @@ function setup() {
     const health = await n8nClient().health();
     return { url: n8nConfig.url, running: health.ok, hasKey: !!n8nConfig.key };
   });
-  // Prüft den Schlüssel sofort an n8n, bevor er gespeichert wird.
-  ipcMain.handle('n8n-connect', async (_e, args) => {
-    const url = normalizeBase(args && args.url);
+  // Prüft Adresse und Schlüssel an n8n und speichert erst dann (verschlüsselt). Der Schlüssel geht nie zurück an die Oberfläche.
+  async function connectN8n(rawUrl, rawKey) {
+    const url = normalizeBase(rawUrl);
     if (!url) return { ok: false, error: 'Das ist keine gültige Adresse (z. B. http://localhost:5678).' };
     if (url.startsWith('http:') && !isLoopback(url)) return { ok: false, error: 'Für ein n8n außerhalb deines Macs bitte eine https-Adresse – sonst ginge der Schlüssel unverschlüsselt durchs Netz.' };
-    const key = args && typeof args.key === 'string' ? args.key.trim() : '';
+    const key = typeof rawKey === 'string' ? rawKey.trim() : '';
     if (!key || key.length > 4000) return { ok: false, error: 'Bitte den API-Schlüssel aus n8n einfügen.' };
     const test = await new N8n({ baseUrl: url, apiKey: key }).listWorkflows();
     if (!test.ok) return test;
     if (!saveN8n({ url, key })) return { ok: false, error: 'Der Schlüssel konnte nicht sicher gespeichert werden (Schlüsselbund nicht verfügbar).' };
     return { ok: true, count: test.data.length };
+  }
+
+  // „Aus Zwischenablage verbinden“: Die Zentrale liest den kopierten Schlüssel selbst und leert danach die Zwischenablage.
+  ipcMain.handle('n8n-connect-clipboard', async (_e, args) => {
+    // Seit Electron 44 liefert readText ein Promise.
+    const read = async () => String((await clipboard.readText()) || '').trim();
+    const text = await read();
+    if (!text || /\s/.test(text) || text.length < 20) return { ok: false, error: 'In der Zwischenablage ist kein API-Schlüssel. Kopiere ihn in n8n mit „Copy“ und versuch es noch einmal.' };
+    const res = await connectN8n(args && args.url, text);
+    if (res.ok && (await read()) === text) await clipboard.clear();
+    return res;
   });
+
+  // „Automatisch verbinden“: Im angemeldeten n8n-Tab legt die Zentrale selbst einen Schlüssel an –
+  // er geht direkt in den Schlüsselbund, niemand bekommt ihn zu sehen.
+  ipcMain.handle('n8n-auto-connect', async (_e, args) => {
+    const url = normalizeBase(args && args.url) || n8nConfig.url;
+    if (url.startsWith('http:') && !isLoopback(url)) return { ok: false, error: 'Automatisch verbinden geht nur mit https oder dem n8n auf deinem Mac.' };
+    let portal = webTabs.store.get().portals.find((p) => new URL(p.url).origin === url);
+    if (!portal) { const r = webTabs.store.add('n8n', `${url}/`); if (!r.ok) return r; portal = r.portal; }
+    const entry = webTabs.ensure(portal.id);
+    if (!entry) return { ok: false, error: 'Der n8n-Tab ließ sich nicht öffnen.' };
+    const wc = entry.view.webContents;
+    if (wc.isLoading()) await new Promise((r) => { const t = setTimeout(r, 15000); wc.once('did-stop-loading', () => { clearTimeout(t); r(); }); });
+    if (new URL(wc.getURL() || portal.url).origin !== url) return { ok: false, needLogin: true, id: portal.id, error: 'Bitte melde dich zuerst im n8n-Tab an.' };
+    let res;
+    try { res = await wc.executeJavaScriptInIsolatedWorld(N8N_WORLD, [{ code: N8N_CREATE_KEY }]); } catch (e) { res = { error: 'script', message: e.message }; }
+    if (!res || res.error === 'login') return { ok: false, needLogin: true, id: portal.id, error: 'Bitte melde dich zuerst im n8n-Tab an – danach noch einmal „Automatisch verbinden“.' };
+    if (res.error) return { ok: false, error: `n8n hat keinen Schlüssel erstellt${res.status ? ` (Fehler ${res.status})` : ''}${res.message ? `: ${res.message}` : ''}. Nimm dann den Weg über „Aus Zwischenablage verbinden“.` };
+    return connectN8n(url, res.key);
+  });
+
+  ipcMain.handle('n8n-connect', async (_e, args) => connectN8n(args && args.url, args && args.key));
+
   ipcMain.handle('n8n-disconnect', () => saveN8n({ url: n8nConfig.url, key: null }));
   ipcMain.handle('n8n-workflows', () => n8nClient().listWorkflows());
   ipcMain.handle('n8n-executions', () => n8nClient().listExecutions(50));

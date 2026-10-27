@@ -66,7 +66,23 @@ function connectForm() {
     await loadAutomations();
   } },
   h('h2', { class: 'full', text: 'n8n verbinden' }),
-  h('p', { class: 'full sub', text: 'Damit die Zentrale (und Claude) deine Workflows sieht, braucht sie einen API-Schlüssel. In n8n: Einstellungen → n8n API → „Create an API key“. Der Schlüssel wird verschlüsselt im macOS-Schlüsselbund gespeichert – bitte nie in den Chat kopieren.' }),
+  h('div', { class: 'full auto-connect' },
+    h('p', { class: 'sub', text: 'Am einfachsten: Melde dich einmal im n8n-Tab an und klick dann auf „Automatisch verbinden“. Die Zentrale legt den Schlüssel selbst an und speichert ihn verschlüsselt im Schlüsselbund – niemand bekommt ihn zu sehen.' }),
+    h('div', { class: 'actions' },
+      h('button', { type: 'button', class: 'btn', 'data-focus': 'n8n-auto', onClick: async () => {
+        auto.connectError = null;
+        const res = await api.n8nAutoConnect(url.value);
+        if (res && res.needLogin) { auto.connectError = res.error; renderAutomationsBody(); openN8nEditor(); return; }
+        if (!res.ok) { auto.connectError = res.error; renderAutomationsBody(); return; }
+        await loadAutomations();
+      } }, 'Automatisch verbinden'),
+      h('button', { type: 'button', class: 'btn ghost', 'data-focus': 'n8n-clip', onClick: async () => {
+        auto.connectError = null;
+        const res = await api.n8nConnectClipboard(url.value);
+        if (!res.ok) { auto.connectError = res.error; renderAutomationsBody(); return; }
+        await loadAutomations();
+      } }, 'Aus Zwischenablage verbinden'))),
+  h('p', { class: 'full sub', text: 'Oder von Hand: In n8n unter Einstellungen → n8n API einen Schlüssel erstellen und hier einfügen. Bitte nie in den Chat kopieren.' }),
   h('div', { class: 'field' }, h('label', { for: 'n8n-url', text: 'Adresse' }), url),
   h('div', { class: 'field' }, h('label', { for: 'n8n-key', text: 'API-Schlüssel' }), key),
   auto.connectError ? h('div', { class: 'full sub warn', role: 'alert', text: auto.connectError }) : null,
