@@ -194,3 +194,34 @@ test('MCP-Server spricht JSON-RPC über stdin/stdout', async () => {
   assert.strictEqual(replies.get(4).error.code, -32602);
   assert.strictEqual(replies.get(5).error.code, -32601);
 });
+
+test('Jährliche Serien mit Monat und Wochentag (echte Feiertagsregeln)', () => {
+  const { occurrences } = require('../src/recurrence');
+  const at = (rule, startIso, year) => occurrences({ start: startIso, end: startIso }, rule,
+    new Date(year, 0, 1), new Date(year + 1, 0, 1)).map((o) => `${o.start.getMonth() + 1}/${o.start.getDate()}`);
+  // Muttertag: 2. Sonntag im Mai
+  assert.deepStrictEqual(at('FREQ=YEARLY;INTERVAL=1;COUNT=6;BYMONTH=5;BYDAY=2SU', '2024-05-12T00:00:00', 2026), ['5/10']);
+  // Ende der Sommerzeit: letzter Sonntag im Oktober – 2026 der 25., nicht der 27.
+  assert.deepStrictEqual(at('FREQ=YEARLY;INTERVAL=1;COUNT=6;BYMONTH=10;BYDAY=-1SU', '2024-10-27T00:00:00', 2026), ['10/25']);
+  // Erntedank: 1. Sonntag im Oktober
+  assert.deepStrictEqual(at('FREQ=YEARLY;BYMONTH=10;BYDAY=1SU', '2024-10-06T00:00:00', 2026), ['10/4']);
+  // Ohne BYDAY bleibt es beim festen Datum
+  assert.deepStrictEqual(at('FREQ=YEARLY;INTERVAL=1;COUNT=6', '2024-12-25T00:00:00', 2026), ['12/25']);
+  // COUNT=6 ab 2024: 2030 gibt es nicht mehr
+  assert.deepStrictEqual(at('FREQ=YEARLY;COUNT=6;BYMONTH=5;BYDAY=2SU', '2024-05-12T00:00:00', 2030), []);
+  // Monatlich ohne Zahl: jeder Montag im Monat (Oktober 2026: 5., 12., 19., 26.)
+  assert.deepStrictEqual(at('FREQ=MONTHLY;BYDAY=MO', '2026-10-05T09:00:00', 2026).filter((d) => d.startsWith('10/')), ['10/5', '10/12', '10/19', '10/26']);
+});
+
+test('Kalender: mit vollem Zugriff der schnelle Weg über EventKit, sortiert', async () => {
+  process.env.FAKE_EK_ACCESS = '1';
+  try {
+    const cal = await mac.calendarEvents(1, { now: MONDAY });
+    assert.strictEqual(cal.ok, true);
+    assert.deepStrictEqual(cal.data.map((e) => e.title), ['Früh', 'Spät']);
+    assert.deepStrictEqual(await mac.requestCalendarAccess(), { ok: true, granted: true, status: 3 });
+  } finally {
+    delete process.env.FAKE_EK_ACCESS;
+  }
+  assert.deepStrictEqual(await mac.requestCalendarAccess(), { ok: true, granted: false, status: 4 });
+});

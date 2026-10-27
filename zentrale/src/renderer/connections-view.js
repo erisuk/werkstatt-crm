@@ -57,7 +57,11 @@ function macTestResult() {
   if (!r) return null;
   if (r.error) return h('div', { class: 'sub warn', text: r.error });
   const line = (label, x) => h('li', { class: x && x.ok ? '' : 'warn' }, `${label}: `, x && x.ok ? 'funktioniert' : (x ? x.error : '…'));
-  return h('ul', { class: 'today-list' }, line('Kalender', r.calendar), line('Erinnerungen', r.reminders), line('Mitteilungen', r.notify));
+  const fast = r.access && r.access.ok && r.access.granted
+    ? { ok: true }
+    : { ok: false, error: 'nicht erlaubt – der Kalender funktioniert, aber langsamer. Erlauben unter Systemeinstellungen → Datenschutz & Sicherheit → Kalender → Zentrale: „Voller Zugriff“.' };
+  return h('ul', { class: 'today-list' }, line('Kalender', r.calendar), line('Kalender, schneller Zugriff', r.access ? fast : null),
+    line('Erinnerungen', r.reminders), line('Mitteilungen', r.notify));
 }
 
 function renderConnections() {

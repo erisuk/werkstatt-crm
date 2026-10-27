@@ -336,19 +336,23 @@ function setup() {
   // launch: true nur, wenn du selbst aktualisierst – sonst öffnen sich keine Apps ungefragt.
   ipcMain.handle('mac-today', async (_e, args) => {
     if (process.platform !== 'darwin' || !settings.get().connections.mac) return null;
-    return mac.today({ launch: !!(args && args.launch === true) });
+    const part = args && typeof args.part === 'string' ? args.part : null;
+    const launch = !!(args && args.launch === true);
+    return part ? mac.todayPart(part, { launch }) : mac.today({ launch });
   });
 
   // Fragt die Mac-Rechte für Kalender und Erinnerungen einmal gezielt ab und schickt eine Probe-Mitteilung.
   ipcMain.handle('mac-test', async () => {
     if (process.platform !== 'darwin') return { error: 'Das geht nur auf dem Mac.' };
+    // Erst den vollen Kalenderzugriff anfragen (schneller Weg), dann alles einmal ausprobieren.
+    const access = await mac.requestCalendarAccess();
     const [calendar, reminders] = await Promise.all([mac.calendarEvents(1), mac.reminders()]);
     let notify = { ok: false, error: 'Mitteilungen sind ausgeschaltet. Erlaube sie unter Systemeinstellungen → Mitteilungen → Zentrale.' };
     if (Notification.isSupported()) {
       new Notification({ title: 'Zentrale', body: 'Die Verbindung zum Mac funktioniert.' }).show();
       notify = { ok: true };
     }
-    return { calendar, reminders, notify };
+    return { calendar, reminders, notify, access };
   });
 
   // ---------- Themen und Löschen ----------
