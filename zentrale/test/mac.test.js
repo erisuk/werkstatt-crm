@@ -169,7 +169,7 @@ test('Spotlight hört nach 30 Treffern auf und ignoriert führende Striche', asy
 // ---------- MCP-Server ----------
 
 test('MCP-Server: Lese-Werkzeuge ohne Rückfrage, Aktionen mit Rückfrage', () => {
-  assert.deepStrictEqual([...READ_ONLY_TOOLS].sort(), ['calendar_events', 'mail_unread', 'notes_search', 'outlook_unread', 'reminders_list', 'spotlight_search']);
+  assert.deepStrictEqual([...READ_ONLY_TOOLS].sort(), ['calendar_events', 'mail_unread', 'music_now_playing', 'notes_search', 'outlook_unread', 'reminders_list', 'spotlight_search']);
   for (const t of TOOLS) assert.ok(t.inputSchema && t.inputSchema.type === 'object', t.name);
 });
 
@@ -224,4 +224,30 @@ test('Kalender: mit vollem Zugriff der schnelle Weg über EventKit, sortiert', a
     delete process.env.FAKE_EK_ACCESS;
   }
   assert.deepStrictEqual(await mac.requestCalendarAccess(), { ok: true, granted: false, status: 4 });
+});
+
+test('Musik: was läuft, Länge in Sekunden, Steuern nur mit gültigen Angaben', async () => {
+  const music = require('../src/music');
+  const now = await music.nowPlaying();
+  assert.strictEqual(now.data.current.app, 'spotify');
+  assert.strictEqual(now.data.current.playing, true);
+  assert.strictEqual(Math.round(now.data.current.track.duration), 121); // Spotify liefert Millisekunden
+  assert.strictEqual(now.data.apps.find((a) => a.app === 'music').running, false);
+  assert.strictEqual((await music.control('spotify', 'next')).ok, true);
+  assert.strictEqual((await music.control('winamp', 'next')).ok, false);
+  assert.strictEqual((await music.control('spotify', 'rm -rf')).ok, false);
+  assert.match((await music.control('music', 'next')).error, /nicht geöffnet/);
+  process.env.FAKE_MUSIC_OFF = '1';
+  try { assert.strictEqual((await music.nowPlaying()).data.current, null); } finally { delete process.env.FAKE_MUSIC_OFF; }
+  assert.deepStrictEqual(music.normalize('music', { running: true, state: 'paused', track: { title: 'A', duration: 200 } }).track.duration, 200);
+});
+
+test('Musik-Werkzeuge: Abfragen ohne Rückfrage, Steuern mit Freigabe', () => {
+  const { READ_ONLY_TOOLS } = require('../src/mcp/mac-server');
+  const { describeApproval } = require('../src/claude');
+  assert.ok(READ_ONLY_TOOLS.includes('music_now_playing'));
+  assert.ok(!READ_ONLY_TOOLS.includes('music_control'));
+  const a = describeApproval('mcp__mac__music_control', { app: 'spotify', action: 'next' });
+  assert.strictEqual(a.title, 'Musik steuern');
+  assert.strictEqual(a.detail, 'Spotify: Nächster Titel');
 });

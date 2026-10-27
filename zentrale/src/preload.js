@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('zentrale', {
   fsReveal: (p) => ipcRenderer.invoke('fs-reveal', p),
   fsTrash: (p) => ipcRenderer.invoke('fs-trash', p),
   fsSearch: (q) => ipcRenderer.invoke('fs-search', q),
+  musicNow: () => ipcRenderer.invoke('music-now'),
+  musicControl: (app, action) => ipcRenderer.invoke('music-control', { app, action }),
   webState: () => ipcRenderer.invoke('web-state'),
   webAdd: (name, url) => ipcRenderer.invoke('web-add', { name, url }),
   webShow: (id) => ipcRenderer.invoke('web-show', id),

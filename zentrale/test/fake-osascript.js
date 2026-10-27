@@ -11,6 +11,11 @@ process.stdin.on('end', () => {
     process.stderr.write('execution error: Not authorized to send Apple events to Calendar. (-1743)\n');
     process.exit(1);
   }
+  if (script.includes('playerState')) {
+    if (params[0] === 'Music' || process.env.FAKE_MUSIC_OFF) return out({ running: false });
+    return out({ running: true, state: params[1] === 'playpause' ? 'kPSP' : 'playing',
+      track: { title: 'Marseille', artist: 'Saliou', album: 'X', duration: 121443 }, position: 35.2 });
+  }
   if (script.includes('EKEventStore')) {
     if (script.includes('requestFullAccess')) return out({ granted: !!process.env.FAKE_EK_ACCESS, status: process.env.FAKE_EK_ACCESS ? 3 : 4 });
     if (!process.env.FAKE_EK_ACCESS) return out({ noAccess: true, status: 4 });

@@ -46,9 +46,12 @@ function renderAddForm() {
   const url = h('input', { id: 'web-url', type: 'text', placeholder: 'Adresse, z. B. outlook.com', 'aria-label': 'Webadresse' });
   const form = h('form', { class: 'card form web-add', onSubmit: (e) => { e.preventDefault(); addPortal(name.value, url.value); } },
     h('h2', { class: 'full', text: 'Seite hinzufügen' }),
-    h('div', { class: 'field full' }, h('span', { class: 'label', text: 'Vorschläge' }),
-      h('div', { class: 'quick-actions' }, s.presets.filter((p) => !used.has(p.url)).map((p) =>
-        h('button', { type: 'button', class: 'chip', 'data-focus': `preset:${p.name}`, onClick: () => addPortal(p.name, p.url) }, p.name)))),
+    [...new Set(s.presets.map((p) => p.group))].map((group) => {
+      const items = s.presets.filter((p) => p.group === group && !used.has(p.url));
+      return items.length ? h('div', { class: 'field full' }, h('span', { class: 'label', text: group }),
+        h('div', { class: 'quick-actions' }, items.map((p) =>
+          h('button', { type: 'button', class: 'chip', 'data-focus': `preset:${p.name}`, onClick: () => addPortal(p.name, p.url) }, p.name)))) : null;
+    }),
     h('div', { class: 'field' }, h('label', { for: 'web-name', text: 'Name' }), name),
     h('div', { class: 'field' }, h('label', { for: 'web-url', text: 'Adresse' }), url),
     webv.addError ? h('div', { class: 'full sub warn', role: 'alert', text: webv.addError }) : null,

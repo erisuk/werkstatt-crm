@@ -400,3 +400,20 @@ h2 { font-size: 16px; font-weight: 600; }
 .web-add .quick-actions { margin-top: 4px; }
 .actions .hint { font-size: 12px; color: var(--text-2); }
 .web-bar .link { margin-left: 12px; white-space: nowrap; }
+
+/* Musik-Player in der Seitenleiste */
+.player { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.player .top { display: flex; align-items: center; gap: 10px; }
+.player .cover { width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: var(--fill); font-size: 18px; }
+.player .cover.spotify { background: #1db954; color: #fff; }
+.player .cover.music { background: linear-gradient(135deg, #fa233b, #fb5c74); color: #fff; }
+.player .grow { flex: 1; min-width: 0; }
+.player .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player .where { font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player .bar { height: 4px; border-radius: 999px; background: var(--fill); overflow: hidden; }
+.player .bar span { display: block; height: 100%; background: var(--accent); }
+.player .controls { display: flex; justify-content: center; gap: 8px; }
+.player .controls button { width: 38px; height: 38px; border: 0; border-radius: 999px; background: var(--fill); color: var(--text); font-size: 15px; }
+.player .controls button.main { width: 44px; height: 44px; background: var(--accent); color: var(--on-accent); }
+.player .controls button:hover { filter: brightness(1.08); }
+.player .actions { justify-content: center; }

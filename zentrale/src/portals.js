@@ -5,14 +5,25 @@ const path = require('path');
 const crypto = require('crypto');
 
 const PRESETS = [
-  { name: 'Gmail', url: 'https://mail.google.com/' },
-  { name: 'Outlook', url: 'https://outlook.live.com/mail/' },
-  { name: 'Outlook (Firma)', url: 'https://outlook.office.com/mail/' },
-  { name: 'Google Kalender', url: 'https://calendar.google.com/' },
-  { name: 'WhatsApp', url: 'https://web.whatsapp.com/' },
-  { name: 'Shopify', url: 'https://admin.shopify.com/' },
-  { name: 'ChatGPT', url: 'https://chatgpt.com/' },
-  { name: 'Google Drive', url: 'https://drive.google.com/' },
+  { group: 'Mail & Büro', name: 'Gmail', url: 'https://mail.google.com/' },
+  { group: 'Mail & Büro', name: 'Outlook', url: 'https://outlook.live.com/mail/' },
+  { group: 'Mail & Büro', name: 'Outlook (Firma)', url: 'https://outlook.office.com/mail/' },
+  { group: 'Mail & Büro', name: 'Google Kalender', url: 'https://calendar.google.com/' },
+  { group: 'Mail & Büro', name: 'Google Drive', url: 'https://drive.google.com/' },
+  { group: 'Social Media', name: 'WhatsApp', url: 'https://web.whatsapp.com/' },
+  { group: 'Social Media', name: 'Instagram', url: 'https://www.instagram.com/' },
+  { group: 'Social Media', name: 'TikTok', url: 'https://www.tiktok.com/' },
+  { group: 'Social Media', name: 'Facebook', url: 'https://www.facebook.com/' },
+  { group: 'Social Media', name: 'Messenger', url: 'https://www.messenger.com/' },
+  { group: 'Social Media', name: 'Reddit', url: 'https://www.reddit.com/' },
+  { group: 'Social Media', name: 'YouTube', url: 'https://www.youtube.com/' },
+  { group: 'Social Media', name: 'X', url: 'https://x.com/' },
+  { group: 'Social Media', name: 'LinkedIn', url: 'https://www.linkedin.com/' },
+  { group: 'Social Media', name: 'Telegram', url: 'https://web.telegram.org/' },
+  { group: 'Sonstiges', name: 'Shopify', url: 'https://admin.shopify.com/' },
+  { group: 'Sonstiges', name: 'Meta Business', url: 'https://business.facebook.com/' },
+  { group: 'Sonstiges', name: 'ChatGPT', url: 'https://chatgpt.com/' },
+  { group: 'Sonstiges', name: 'Spotify', url: 'https://open.spotify.com/' },
 ];
 
 const MAX_PORTALS = 30;

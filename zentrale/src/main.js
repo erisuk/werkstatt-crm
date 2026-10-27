@@ -12,6 +12,7 @@ const { TopicStore, groupByTopic, TOPICS } = require('./categories');
 const { desktopMeta } = require('./desktop-meta');
 const library = require('./library');
 const files = require('./files');
+const music = require('./music');
 const { PortalStore, PRESETS } = require('./portals');
 const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
@@ -470,6 +471,13 @@ function setup() {
   });
 
   ipcMain.handle('fs-search', (_e, q) => (typeof q === 'string' ? mac.spotlight(q, 60) : { ok: false, error: 'Suchbegriff fehlt.' }));
+
+  // ---------- Musik ----------
+
+  const musicAllowed = () => process.platform === 'darwin' && settings.get().connections.mac;
+  ipcMain.handle('music-now', () => (musicAllowed() ? music.nowPlaying() : null));
+  ipcMain.handle('music-control', (_e, args) => (musicAllowed() && args
+    ? music.control(String(args.app || ''), String(args.action || '')) : { ok: false, error: 'Die Verbindung „Mein Mac“ ist aus.' }));
 
   // ---------- Web: Seiten mit dauerhaftem Login ----------
 

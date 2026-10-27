@@ -3,6 +3,7 @@
 // Mitteilungen schickt die Zentrale selbst; per osascript erschienen sie als "Skripteditor".
 const readline = require('readline');
 const mac = require('../mac');
+const music = require('../music');
 
 const str = (description) => ({ type: 'string', description });
 const num = (description) => ({ type: 'number', description });
@@ -42,6 +43,16 @@ const TOOLS = [
     description: 'Sucht Dateien auf dem Mac mit Spotlight und gibt bis zu 30 Pfade zurück.',
     inputSchema: { type: 'object', required: ['query'], properties: { query: str('Suchbegriff oder Spotlight-Abfrage') } },
     run: (a) => mac.spotlight(a.query) },
+  { name: 'music_now_playing', readOnly: true,
+    description: 'Was gerade in Spotify oder Apple Music läuft (Titel, Interpret, spielt/pausiert). Öffnet keine App.',
+    inputSchema: { type: 'object', properties: {} },
+    run: () => music.nowPlaying() },
+  { name: 'music_control', readOnly: false,
+    description: 'Steuert Spotify oder Apple Music: abspielen/pausieren, nächster oder vorheriger Titel. Die App muss geöffnet sein.',
+    inputSchema: { type: 'object', required: ['app', 'action'], properties: {
+      app: { type: 'string', enum: ['spotify', 'music'], description: 'spotify oder music (Apple Music)' },
+      action: { type: 'string', enum: ['playpause', 'play', 'pause', 'next', 'previous'], description: 'Was passieren soll' } } },
+    run: (a) => music.control(a.app, a.action) },
   { name: 'open', readOnly: false,
     description: 'Öffnet eine Webadresse, eine Datei (Pfad) oder eine App (App-Name) auf dem Mac.',
     inputSchema: { type: 'object', required: ['target'], properties: { target: str('URL, Pfad oder App-Name, z. B. "Microsoft Outlook"') } },

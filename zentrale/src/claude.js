@@ -143,6 +143,9 @@ function describeApproval(toolName, input, description) {
     title = 'Etwas auf dem Mac öffnen'; summary = field('target'); shown = ['target'];
   } else if (name === 'mcp__mac__reminders_add') {
     title = 'Eine Erinnerung anlegen'; summary = `${field('title')}${i.due ? ` · fällig ${field('due')}` : ''}`; shown = ['title', 'due'];
+  } else if (name === 'mcp__mac__music_control') {
+    const what = { playpause: 'Abspielen/Pausieren', play: 'Abspielen', pause: 'Pausieren', next: 'Nächster Titel', previous: 'Vorheriger Titel' };
+    title = 'Musik steuern'; summary = `${i.app === 'music' ? 'Apple Music' : 'Spotify'}: ${what[i.action] || field('action')}`; shown = ['app', 'action'];
   } else if (name === 'mcp__mac__notes_create') {
     title = 'Eine Notiz anlegen'; summary = `${field('title')}\n\n${field('body')}`.trim(); shown = ['title', 'body'];
   } else if (/chrome/i.test(name)) {
