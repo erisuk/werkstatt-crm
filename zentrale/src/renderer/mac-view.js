@@ -184,7 +184,88 @@ function renderSearch() {
 
 // ---------- Gerüst ----------
 
-const MAC_TABS = [{ id: 'apps', label: 'Apps' }, { id: 'folders', label: 'Ordner' }, { id: 'search', label: 'Suchen' }];
+const MAC_TABS = [{ id: 'apps', label: 'Apps' }, { id: 'folders', label: 'Ordner' }, { id: 'search', label: 'Suchen' },
+  { id: 'health', label: 'Gesundheit' }, { id: 'shortcuts', label: 'Kurzbefehle' }, { id: 'watch', label: 'Ordner-Wächter' }];
+
+// ---------- Gesundheit ----------
+
+async function loadHealth(refreshFolders) {
+  try { macv.health = await api.macHealth(); } catch (e) { macv.health = { error: e.message }; }
+  if (ui.view === 'mac' && macv.tab === 'health') renderMacBody();
+  macv.foldersLoading = true;
+  try { macv.big = (await api.macBigFolders(refreshFolders === true)).data; } catch { macv.big = []; }
+  macv.foldersLoading = false;
+  if (ui.view === 'mac' && macv.tab === 'health') renderMacBody();
+}
+
+function meter(label, value, max, unit, warnAt) {
+  const pct = max ? Math.min(100, Math.round((value / max) * 100)) : 0;
+  return h('div', { class: 'card meter' },
+    h('div', { class: 'label', text: label }),
+    h('div', { class: 'value', text: `${value} ${unit}` }),
+    h('div', { class: `bar${pct >= warnAt ? ' warn' : ''}`, role: 'progressbar', 'aria-label': label, 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(pct) },
+      h('span', { style: { width: `${pct}%` } })),
+    h('div', { class: 'sub', text: `${pct} % von ${max} ${unit}` }));
+}
+
+function renderHealth() {
+  const s = macv.health;
+  if (!s) { loadHealth(false); return h('div', { class: 'card empty', text: 'Misst …' }); }
+  if (s.error) return h('div', { class: 'card empty warn', text: s.error });
+  const usedDisk = s.disk.ok ? Math.round((s.disk.total - s.disk.free) * 10) / 10 : 0;
+  return [
+    s.hints.length ? h('div', { class: 'notice', role: 'status' }, s.hints.map((t) => h('div', { text: t }))) : null,
+    h('div', { class: 'stats health-stats' },
+      s.disk.ok ? meter('Speicherplatz belegt', usedDisk, s.disk.total, 'GB', 85) : null,
+      s.memory.ok ? meter('Arbeitsspeicher belegt', s.memory.used, s.memory.total, 'GB', 85) : null,
+      h('div', { class: 'card meter' }, h('div', { class: 'label', text: 'Akku' }),
+        h('div', { class: 'value', text: s.battery.present ? `${s.battery.percent} %` : '–' }),
+        h('div', { class: 'sub', text: s.battery.present ? (s.battery.onPower ? 'am Strom' : 'im Akkubetrieb') : 'kein Akku' }),
+        h('div', { class: 'sub', text: `Auslastung ${s.load} bei ${s.cpus} Kernen` }))),
+    h('section', { class: 'section' },
+      h('div', { class: 'section-head' }, h('h2', { text: 'Programme mit dem meisten Arbeitsspeicher' })),
+      h('div', { class: 'card list' }, s.processes.map((p) => h('div', { class: 'row' },
+        h('div', { class: 'grow' }, h('div', { class: 'title', text: p.name })), h('span', { class: 'when', text: `${p.gb} GB` }))))),
+    h('section', { class: 'section' },
+      h('div', { class: 'section-head wrap' }, h('h2', { text: 'Größte Ordner' }), h('span', { class: 'spacer' }),
+        h('button', { class: 'btn ghost', disabled: macv.foldersLoading, onClick: () => { macv.big = null; loadHealth(true); } }, macv.foldersLoading ? 'Misst …' : 'Neu messen')),
+      h('p', { class: 'date', text: 'Nur zum Anschauen – die Zentrale löscht hier nichts. Projektordner nie blind löschen; Hinweise stehen bei den bekannten Platzfressern.' }),
+      h('div', { class: 'card list' }, !macv.big ? h('div', { class: 'empty', text: 'Misst die Ordner … (kann eine Minute dauern)' })
+        : macv.big.map((d) => h('div', { class: 'row' },
+          h('div', { class: 'grow' }, h('div', { class: 'title', text: d.name }),
+            h('div', { class: 'sub', text: d.hint || d.path.replace(/^\/Users\/[^/]+/, '~') })),
+          h('span', { class: 'when', text: `${d.gb} GB` }),
+          d.name === 'Papierkorb' ? h('button', { class: 'btn ghost danger-text', onClick: async () => {
+            const r = await api.macEmptyTrash(); if (r && r.ok) { macv.big = null; loadHealth(true); } else if (r && !r.cancelled) alert(r.error);
+          } }, 'Leeren') : h('button', { class: 'link', 'aria-label': `${d.name} im Finder zeigen`, onClick: () => api.fsReveal(d.path) }, 'Im Finder'))))),
+  ];
+}
+
+// ---------- Kurzbefehle ----------
+
+async function loadShortcuts() {
+  try { const r = await api.shortcutsList(); macv.shortcuts = r.ok ? r.data : []; macv.shortcutsError = r.ok ? null : r.error; } catch (e) { macv.shortcuts = []; macv.shortcutsError = e.message; }
+  if (ui.view === 'mac' && macv.tab === 'shortcuts') renderMacBody();
+}
+
+function renderShortcuts() {
+  if (!macv.shortcuts) { loadShortcuts(); return h('div', { class: 'card empty', text: 'Lädt …' }); }
+  const list = macv.shortcuts.filter((n) => !macv.filter || n.toLowerCase().includes(macv.filter));
+  return [
+    h('p', { class: 'date', text: 'Kurzbefehle steuern fast alles am Mac und im Smart Home. Claude kann sie auf deinen Wunsch auch ausführen – mit Freigabe.' }),
+    macv.shortcutsError ? h('div', { class: 'card empty warn', text: macv.shortcutsError }) : null,
+    h('div', { class: 'card list' }, list.length ? list.map((n) => h('div', { class: 'row' },
+      h('div', { class: 'grow' }, h('div', { class: 'title', text: n })),
+      h('button', { class: 'btn ghost', 'aria-label': `Kurzbefehl ${n} ausführen`, onClick: async () => {
+        macv.message = `„${n}“ läuft …`; renderMacBody();
+        const r = await api.shortcutsRun(n);
+        macv.message = r.ok ? `„${n}“: ${r.data}` : r.error; renderMacBody();
+      } }, 'Ausführen')))
+      : h('div', { class: 'empty' }, macv.shortcuts.length ? 'Nichts gefunden.' : 'Du hast noch keine Kurzbefehle. ',
+        h('button', { class: 'link', onClick: () => api.fsOpen('/System/Applications/Shortcuts.app') }, 'Kurzbefehle-App öffnen'))),
+    macv.message ? h('div', { class: 'notice', role: 'status', text: macv.message }) : null,
+  ];
+}
 
 function renderMacTabs() {
   keepFocus(() => fill($('#mac-tabs'), MAC_TABS.map((t) => h('button', { 'aria-pressed': String(macv.tab === t.id), 'data-focus': `mac-tab:${t.id}`,
@@ -194,12 +275,13 @@ function renderMacTabs() {
 function renderMacBody() {
   const box = $('#mac-body');
   if (!box) return;
-  const body = macv.tab === 'apps' ? renderApps() : macv.tab === 'folders' ? renderFolders() : renderSearch();
+  const body = macv.tab === 'apps' ? renderApps() : macv.tab === 'folders' ? renderFolders() : macv.tab === 'health' ? renderHealth()
+    : macv.tab === 'shortcuts' ? renderShortcuts() : macv.tab === 'watch' ? renderWatcher() : renderSearch();
   keepFocus(() => fill(box, body));
 }
 
 function renderMac() {
-  const filter = macv.tab === 'search' ? null : h('input', { type: 'search', class: 'filter', 'aria-label': 'Filtern',
+  const filter = ['search', 'health', 'watch'].includes(macv.tab) ? null : h('input', { type: 'search', class: 'filter', 'aria-label': 'Filtern',
     placeholder: macv.tab === 'apps' ? 'App suchen …' : 'In diesem Ordner filtern …' });
   if (filter) {
     filter.value = macv.filter;
@@ -213,3 +295,73 @@ function renderMac() {
   renderMacBody();
   if (filter && macv.tab === 'apps' && !(document.activeElement && document.activeElement.dataset.focus)) filter.focus();
 }
+
+// ---------- Ordner-Wächter ----------
+
+async function loadWatcher() {
+  try { macv.watch = await api.watchState(); } catch { macv.watch = { rules: [], log: [], unsorted: [] }; }
+  if (ui.view === 'mac' && macv.tab === 'watch') renderMacBody();
+}
+
+function watcherForm() {
+  const f = macv.watchForm;
+  const folder = h('input', { id: 'w-folder', type: 'text', placeholder: 'leer = Downloads', 'data-focus': 'w-folder' });
+  folder.value = f.folder;
+  folder.addEventListener('input', () => { f.folder = folder.value; });
+  const pattern = h('input', { id: 'w-pattern', type: 'text', placeholder: 'z. B. *Rechnung*.pdf', 'data-focus': 'w-pattern' });
+  pattern.value = f.pattern;
+  pattern.addEventListener('input', () => { f.pattern = pattern.value; });
+  const target = h('input', { id: 'w-target', type: 'text', placeholder: 'Zielordner', 'data-focus': 'w-target' });
+  target.value = f.target;
+  target.addEventListener('input', () => { f.target = target.value; });
+  const pick = (key, el) => h('button', { type: 'button', class: 'btn ghost', onClick: async () => { const d = await api.pickFolder(); if (d) { f[key] = d; el.value = d; } } }, 'Wählen …');
+  return h('form', { class: 'card form', onSubmit: async (e) => {
+    e.preventDefault();
+    const r = await api.watchSave({ id: f.id, folder: f.folder, pattern: f.pattern, target: f.target });
+    if (!r.ok) { f.error = r.error; renderMacBody(); return; }
+    macv.watchForm = null;
+    await loadWatcher();
+  } },
+  h('h2', { class: 'full', text: f.id ? 'Regel bearbeiten' : 'Neue Regel' }),
+  h('div', { class: 'field full' }, h('label', { for: 'w-folder', text: 'Überwachter Ordner' }), h('div', { class: 'folder' }, folder, pick('folder', folder))),
+  h('div', { class: 'field full' }, h('label', { for: 'w-pattern', text: 'Dateiname passt zu' }), pattern,
+    h('span', { class: 'hint', text: '* steht für beliebigen Text. Beispiele: *Rechnung*.pdf · Screenshot*.png · *.mp4' })),
+  h('div', { class: 'field full' }, h('label', { for: 'w-target', text: 'Verschieben nach' }), h('div', { class: 'folder' }, target, pick('target', target))),
+  f.error ? h('div', { class: 'full sub warn', role: 'alert', text: f.error }) : null,
+  h('div', { class: 'actions full' }, h('span', { class: 'hint', text: 'Gilt für neue Dateien. Es wird nie etwas überschrieben – gleiche Namen bekommen „(2)“.' }),
+    h('span', { class: 'spacer' }),
+    h('button', { type: 'button', class: 'btn ghost', onClick: () => { macv.watchForm = null; renderMacBody(); } }, 'Abbrechen'),
+    h('button', { type: 'submit', class: 'btn' }, 'Speichern')));
+}
+
+function renderWatcher() {
+  const w = macv.watch;
+  if (!w) { loadWatcher(); return h('div', { class: 'card empty', text: 'Lädt …' }); }
+  const home = (p) => p.replace(/^\/Users\/[^/]+/, '~');
+  return [
+    h('p', { class: 'date', text: 'Neue Dateien landen automatisch am richtigen Platz – zum Beispiel Rechnungen aus Downloads im ESA-Büro. Jede Verschiebung lässt sich rückgängig machen.' }),
+    macv.watchForm ? watcherForm() : h('div', { class: 'actions' }, h('button', { class: 'btn', onClick: () => {
+      macv.watchForm = { id: null, folder: '', pattern: '', target: '', error: null };
+      renderMacBody();
+    } }, '+ Neue Regel')),
+    h('section', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', { text: 'Regeln' })),
+      h('div', { class: 'card list' }, w.rules.length ? w.rules.map((r) => h('div', { class: 'row' },
+        h('div', { class: 'grow' }, h('div', { class: 'title', text: r.pattern }), h('div', { class: 'sub', text: `${home(r.folder)} → ${home(r.target)}` })),
+        h('button', { class: 'link', onClick: () => { macv.watchForm = { ...r, error: null }; renderMacBody(); } }, 'Bearbeiten'),
+        h('button', { class: 'icon-btn', 'aria-label': `Regel ${r.pattern} löschen`, onClick: async () => { if (confirm(`Regel „${r.pattern}“ löschen?`)) { macv.watch = await api.watchRemove(r.id); renderMacBody(); } } }, trashIcon())))
+        : h('div', { class: 'empty', text: 'Noch keine Regeln.' }))),
+    w.unsorted.length ? h('section', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', { text: 'Neu, ohne passende Regel' })),
+      h('div', { class: 'card list' }, w.unsorted.map((u) => h('div', { class: 'row' },
+        h('div', { class: 'grow' }, h('div', { class: 'title', text: u.name }), h('div', { class: 'sub', text: `${home(u.path)} · ${formatWhen(u.at)}` })),
+        h('button', { class: 'link', disabled: !ui.state.claude.found, onClick: () => sendMessage(`Die Datei „${u.path}“ ist neu. Schau sie dir an und schlag mir vor, in welchen Ordner sie gehört (meine Ordnerstruktur kennst du aus dem Gehirn). Verschiebe sie erst nach meinem Ja.`) }, 'Claude fragen'),
+        h('button', { class: 'link', onClick: () => api.fsReveal(u.path) }, 'Im Finder'),
+        h('button', { class: 'icon-btn', 'aria-label': 'Ausblenden', onClick: async () => { macv.watch = await api.watchDismiss(u.path); renderMacBody(); } }, '×'))))) : null,
+    h('section', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', { text: 'Zuletzt einsortiert' })),
+      h('div', { class: 'card list' }, w.log.length ? w.log.map((e) => h('div', { class: 'row' },
+        h('div', { class: 'grow' }, h('div', { class: 'title', text: e.to.split('/').pop() }), h('div', { class: 'sub', text: `${home(e.from)} → ${home(e.to)} · ${formatWhen(e.at)}` })),
+        e.undone ? h('span', { class: 'pill', text: 'rückgängig gemacht' }) : h('button', { class: 'link', onClick: async () => { const r = await api.watchUndo(e.id); if (!r.ok) alert(r.error); await loadWatcher(); } }, 'Rückgängig')))
+        : h('div', { class: 'empty', text: 'Noch nichts einsortiert.' }))),
+  ];
+}
+
+window.zentrale.onWatchState((s) => { macv.watch = s; if (typeof ui !== 'undefined' && ui.view === 'mac' && macv.tab === 'watch' && !macv.watchForm) renderMacBody(); });

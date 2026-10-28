@@ -171,6 +171,8 @@ function describeApproval(toolName, input, description) {
       i.key ? `Taste: ${field('key')}` : null].filter(Boolean).join('\n');
     shown = ['url', 'text', 'submit', 'key', 'tab', 'ref', 'files'];
     canAlways = false;
+  } else if (name === 'mcp__mac__shortcuts_run') {
+    title = 'Einen Kurzbefehl ausführen'; summary = `${field('name')}${i.input ? `\nEingabe: ${field('input')}` : ''}`; shown = ['name', 'input'];
   } else if (name === 'mcp__mac__notes_create') {
     title = 'Eine Notiz anlegen'; summary = `${field('title')}\n\n${field('body')}`.trim(); shown = ['title', 'body'];
   } else if (/chrome/i.test(name)) {

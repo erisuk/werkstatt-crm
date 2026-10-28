@@ -15,6 +15,8 @@ const files = require('./files');
 const music = require('./music');
 const vault = require('./vault');
 const servers = require('./servers');
+const health = require('./health');
+const { FolderWatcher } = require('./watcher');
 const { PortalStore, PRESETS } = require('./portals');
 const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
@@ -166,6 +168,17 @@ function setup() {
 
   function pushState() {
     send('state', snapshot());
+  }
+
+  // Mac-Mitteilung (Klick holt die Zentrale nach vorn). view: welche Ansicht dabei geöffnet werden soll.
+  function notify(title, body, view) {
+    if (!Notification.isSupported()) return;
+    const n = new Notification({ title, body: String(body || '').slice(0, 240) });
+    liveNotifications.add(n);
+    const drop = () => liveNotifications.delete(n);
+    n.on('click', () => { drop(); if (!win) createWindow(); win.show(); win.focus(); if (view) send('go-view', view); });
+    n.on('close', drop);
+    n.show();
   }
 
   // Neue Freigabe-Anfragen melden, auch wenn das Fenster gerade nicht vorne ist.
@@ -626,6 +639,41 @@ function setup() {
 
   ipcMain.handle('fs-search', (_e, q) => (typeof q === 'string' ? mac.spotlight(q, 60) : { ok: false, error: 'Suchbegriff fehlt.' }));
 
+  // ---------- Mac-Gesundheit und Kurzbefehle ----------
+
+  ipcMain.handle('mac-health', () => health.snapshot());
+  let bigFoldersCache = null;
+  ipcMain.handle('mac-big-folders', async (_e, refresh) => {
+    if (!bigFoldersCache || refresh === true) bigFoldersCache = { at: Date.now(), data: await health.bigFolders() };
+    return bigFoldersCache;
+  });
+  // Papierkorb leeren macht der Nutzer selbst per Klick (mit Rückfrage) – endgültig, darum mit eigenem Dialog.
+  ipcMain.handle('mac-empty-trash', async () => {
+    const { response } = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Abbrechen', 'Papierkorb leeren'], defaultId: 0, cancelId: 0,
+      message: 'Papierkorb endgültig leeren?', detail: 'Alles im Papierkorb wird gelöscht und lässt sich danach nicht mehr zurückholen.' });
+    if (response !== 1) return { ok: false, cancelled: true };
+    const res = await mac.runScript('tell application "Finder" to empty trash', [], { language: 'AppleScript', app: 'Finder', timeout: 300000 });
+    bigFoldersCache = null;
+    return res.ok ? { ok: true } : res;
+  });
+  // Ordner-Wächter
+  let folderWatcher = null;
+  ipcMain.handle('watch-state', () => folderWatcher.get());
+  ipcMain.handle('watch-save', (_e, rule) => folderWatcher.saveRule(rule));
+  ipcMain.handle('watch-remove', (_e, id) => { if (typeof id === 'string') folderWatcher.removeRule(id); return folderWatcher.get(); });
+  ipcMain.handle('watch-undo', (_e, id) => folderWatcher.undo(id));
+  ipcMain.handle('watch-dismiss', (_e, file) => { folderWatcher.dismiss(file); return folderWatcher.get(); });
+  const startFolderWatcher = () => {
+    folderWatcher = new FolderWatcher(path.join(app.getPath('userData'), 'watcher.json'));
+    folderWatcher.on('change', () => send('watch-state', folderWatcher.get()));
+    folderWatcher.on('moved', (m) => notify('Einsortiert', `${path.basename(m.to)} → ${path.basename(path.dirname(m.to))}`));
+    folderWatcher.on('failed', (f) => notify('Einsortieren ging nicht', `${path.basename(f.path)}: ${f.error}`));
+    folderWatcher.start();
+  };
+
+  ipcMain.handle('shortcuts-list', () => (process.platform === 'darwin' ? mac.listShortcuts() : { ok: true, data: [] }));
+  ipcMain.handle('shortcuts-run', (_e, name) => (typeof name === 'string' ? mac.runShortcut(name) : { ok: false, error: 'Name fehlt.' }));
+
   // ---------- Projekte & Server ----------
 
   // Kleine JSON-Speicher in userData (von der Zentrale gestartete Server, selbst hinzugefügte/ausgeblendete Projekte).
@@ -893,6 +941,7 @@ function setup() {
     nativeTheme.themeSource = settings.get().theme;
     loadN8n();
     n8nProxy = startProxy(makeOps(n8nClient), n8nSocketPath(app.getPath('userData')));
+    startFolderWatcher();
     writeMacConfig();
     refreshProjects();
     createWindow();
@@ -936,6 +985,7 @@ function setup() {
     e.preventDefault();
     cleanedUp = true;
     if (scheduler) scheduler.stop();
+    if (folderWatcher) folderWatcher.stop();
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];
     if (webTabs) jobs.push(webTabs.saveLogins());

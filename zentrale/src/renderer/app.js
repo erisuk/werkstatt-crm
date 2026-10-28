@@ -775,5 +775,7 @@ window.addEventListener('focus', () => { if (ui.view === 'overview') loadToday(f
 setInterval(() => { if (ui.state) applyState(ui.state); }, 60000);
 
 api.onState(applyState);
+// Klick auf eine Mitteilung kann eine bestimmte Ansicht öffnen.
+api.onGoView((v) => { if (typeof v === 'string') setView(v); });
 renderNav();
 api.getState().then(applyState);
