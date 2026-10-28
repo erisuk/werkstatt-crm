@@ -100,3 +100,20 @@ test('Prüfung: UUIDs mit langen Ziffern, Tausenderpunkte, Ortszeit', () => {
   const sum = summary({ accounts: [], fixed: [], incomes: [], moves: [], snapshots: [], bills: [{ name: 'X', amount: 1, due: '2026-10-27', paid: false }] }, new Date(2026, 9, 28, 0, 30));
   assert.strictEqual(sum.upcoming[0].overdue, true);
 });
+
+test('Was wäre wenn: Abo kündigen, Zusatzeinnahme, Einmalzahlung, Monat ins Minus', () => {
+  const { simulate } = require('../src/finance');
+  const d = { accounts: [{ balance: 100 }], fixed: [{ id: 'a', amount: 600, interval: 'monat' }, { id: 'b', amount: 120, interval: 'jahr' }],
+    incomes: [{ amount: 600, interval: 'monat' }], bills: [], moves: [], snapshots: [] };
+  const now = new Date(2026, 9, 28);
+  const plain = simulate(d, {}, now);
+  assert.strictEqual(plain.monthly, -10);
+  assert.strictEqual(plain.end, -20);
+  assert.strictEqual(plain.firstNegative, '2027-09');
+  const s = simulate(d, { cancel: ['b'], addIncome: '50', oneTime: { amount: '-200', month: 2 }, months: 6 }, now);
+  assert.strictEqual(s.savedPerMonth, 10);
+  assert.strictEqual(s.savedPerYear, 120);
+  assert.strictEqual(s.monthly, 50);
+  assert.deepStrictEqual(s.points.map((p) => p.balance), [150, 0, 50, 100, 150, 200]);
+  assert.strictEqual(s.points[0].month, '2026-11');
+});

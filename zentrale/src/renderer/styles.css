@@ -598,3 +598,14 @@ h2 { font-size: 16px; font-weight: 600; }
 .komm-editor { border-bottom: 1px solid var(--border); background: var(--fill); }
 .komm-mehr { margin: 4px 18px 10px; align-self: flex-start; }
 .komm-video { display: flex; flex-direction: column; }
+
+/* Kontrollraum */
+.kr-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.kr-table th { text-align: left; font-weight: 600; color: var(--text-2); padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.kr-table td { padding: 8px 14px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.kr-table tr:last-child td { border-bottom: 0; }
+.dryrun-pill { background: var(--pill-amber-bg, #fef3c7); color: var(--pill-amber, #92400e); }
+#dryrun-status { display: flex; align-items: center; gap: 6px; -webkit-app-region: no-drag; }
+#lock-btn { -webkit-app-region: no-drag; }
+.fin-sim-result { display: flex; flex-direction: column; gap: 14px; }
+.fin-sim-cols .pair span { width: 60%; max-width: 22px; }

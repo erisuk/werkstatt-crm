@@ -156,8 +156,14 @@ function chatBusy() {
 
 function renderStatus() {
   const st = chatStatus();
-  if (!changed('status', st)) return;
+  const dry = ui.state && ui.state.dryRun;
+  if (!changed('status', [st, dry])) return;
   fill($('#claude-status'), h('span', { class: `dot ${st.dot}` }), st.text);
+  // Probelauf sichtbar machen: solange er läuft, passiert in Web-Tabs und n8n nichts Echtes.
+  const box = $('#dryrun-status');
+  box.hidden = !dry;
+  if (dry) fill(box, h('span', { class: 'status-pill dryrun-pill', role: 'status', text: `Probelauf bis ${new Date(dry).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` }),
+    h('button', { class: 'link', onClick: () => api.simDryRunStop() }, 'Beenden'));
 }
 
 function renderNav() {
@@ -187,6 +193,7 @@ function setView(view, { focusHeading = true } = {}) {
   // Privaten Bereich beim Verlassen sofort sperren.
   if (ui.view === 'finance' && view !== 'finance' && typeof fin !== 'undefined' && fin.open) { api.finLock(); finClear(); }
   ui.view = view;
+  api.kontrolleView(view).catch(() => {}); // Data Layer: welche Seiten benutzt werden (nur der Name)
   // Im privaten Bereich gibt es kein Eingabefeld zu Claude – so landet nichts versehentlich dort.
   $('#quick-section').hidden = view === 'finance';
   ui.sig.main = null;
@@ -831,6 +838,7 @@ function renderMain() {
   else if (ui.view === 'planner') renderPlanner();
   else if (ui.view === 'websites') renderWebsites();
   else if (ui.view === 'finance') renderFinance();
+  else if (ui.view === 'kontrolle') renderKontrolle();
   else if (ui.view === 'bitvideos') renderBitVideos();
   else renderTasks();
 }
@@ -866,7 +874,7 @@ function applyState(next) {
     renderRunning();
   } else if (ui.view === 'automations') {
     renderAssistant(); // Status, Freigaben und Antworten des Assistenten
-  } else if (['mac', 'web', 'local', 'brain', 'projects', 'planner', 'websites', 'finance', 'bitvideos'].includes(ui.view)) {
+  } else if (['mac', 'web', 'local', 'brain', 'projects', 'planner', 'websites', 'finance', 'bitvideos', 'kontrolle'].includes(ui.view)) {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');
@@ -882,6 +890,7 @@ $('#search').addEventListener('input', (e) => {
   if (ui.view !== 'overview') setView('overview', { focusHeading: false }); else renderOverview();
 });
 $('#aside-new-task').addEventListener('click', () => editTask({}));
+$('#lock-btn').addEventListener('click', () => api.appLock());
 $('#quick-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const input = $('#quick-input');
@@ -899,4 +908,18 @@ api.onState(applyState);
 // Klick auf eine Mitteilung kann eine bestimmte Ansicht öffnen.
 api.onGoView((v) => { if (typeof v === 'string') setView(v); });
 renderNav();
-api.getState().then(applyState);
+api.getState().then((s) => {
+  applyState(s);
+  // Nach dem Entsperren lädt die Seite neu – den Verlauf des offenen Gesprächs wieder holen.
+  if (s && s.chat && !ui.messages.length) {
+    api.chatHistory().then((hist) => {
+      if (!hist || !hist.length || ui.messages.length) return;
+      ui.messages = hist.map((m) => ({ kind: m.role, text: m.text }));
+      ui.shown = 0;
+      if (ui.view === 'chat') renderMessages();
+    }).catch(() => {});
+  }
+});
+// Data Layer: Fehler in der Oberfläche melden (nur Ort und Fehlerart, keine Inhalte).
+window.addEventListener('error', (e) => { api.kontrolleError(ui.view, (e.error && e.error.name) || 'Fehler').catch(() => {}); });
+window.addEventListener('unhandledrejection', (e) => { api.kontrolleError(ui.view, (e.reason && e.reason.name) || 'Promise').catch(() => {}); });
