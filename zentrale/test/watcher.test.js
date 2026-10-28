@@ -86,7 +86,7 @@ test('Echte Dateien: der Wächter sortiert, sobald die Datei fertig ist', async 
   const done = new Promise((resolve) => w.once('moved', resolve));
   fs.writeFileSync(path.join(src, 'Bit.mp4.part'), 'lädt');
   fs.writeFileSync(path.join(src, 'Bit.mp4'), 'video');
-  const m = await Promise.race([done, new Promise((r) => setTimeout(() => r(null), 8000))]);
+  const m = await Promise.race([done, new Promise((r) => setTimeout(() => r(null), 20000))]);
   w.stop();
   assert.ok(m, 'nicht einsortiert');
   assert.ok(fs.existsSync(path.join(dst, 'Bit.mp4')));

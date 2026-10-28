@@ -412,6 +412,31 @@ function setup() {
     return recent ? recent.path : os.homedir();
   }
 
+  // Seite ins Fenster laden – mit Wächter: kommt sie nicht an (z. B. weil macOS beim Start am Schlüsselbund-Dialog
+  // festhing), stürzt sie ab oder hängt sie, lädt die Zentrale sie neu. Sonst bliebe das Fenster grau.
+  const PAGE_TIMEOUT_MS = 15000;
+  const PAGE_RETRIES = 20; // 20 × 15 s – übersteht auch einen langen Schlüsselbund-Dialog
+  let pageTimer = null;
+  let pageTries = 0;
+  const pageFile = () => path.join(__dirname, 'renderer', appLocked ? 'lock.html' : 'index.html');
+  function loadPage(retry = false) {
+    if (!win || win.isDestroyed()) return;
+    pageTries = retry ? pageTries + 1 : 0;
+    if (pageTries > PAGE_RETRIES) return;
+    clearTimeout(pageTimer);
+    pageTimer = setTimeout(() => loadPage(true), PAGE_TIMEOUT_MS);
+    win.loadFile(pageFile()).catch(() => {}); // Fehler meldet did-fail-load
+  }
+  function watchPage(w) {
+    const again = () => { clearTimeout(pageTimer); pageTimer = setTimeout(() => loadPage(true), 1000); };
+    w.webContents.on('did-finish-load', () => { clearTimeout(pageTimer); pageTries = 0; });
+    w.webContents.on('did-fail-load', (_e, code, _d, _u, isMainFrame) => { if (isMainFrame && code !== -3) again(); }); // -3 = abgebrochen durch neues Laden
+    w.webContents.on('render-process-gone', again);
+    let hangTimer = null;
+    w.on('unresponsive', () => { clearTimeout(hangTimer); hangTimer = setTimeout(() => { if (!w.isDestroyed()) { w.webContents.forcefullyCrashRenderer(); again(); } }, 10000); });
+    w.on('responsive', () => clearTimeout(hangTimer));
+  }
+
   function createWindow() {
     const isMac = process.platform === 'darwin';
     win = new BrowserWindow({
@@ -434,7 +459,8 @@ function setup() {
         devTools: !app.isPackaged, // in der installierten App keine Entwicklerwerkzeuge (dort wären offene Finanzdaten lesbar)
       },
     });
-    win.loadFile(path.join(__dirname, 'renderer', appLocked ? 'lock.html' : 'index.html'));
+    watchPage(win);
+    loadPage();
     if (webTabs) webTabs.attach(win);
     win.once('ready-to-show', () => win.show());
 
@@ -1335,7 +1361,7 @@ function setup() {
     appLocked = true;
     finLock();
     if (webTabs) webTabs.setVisible(false);
-    if (win && !win.isDestroyed()) win.loadFile(path.join(__dirname, 'renderer', 'lock.html'));
+    loadPage();
   }
   async function verifyUser(method) {
     if (process.platform !== 'darwin') return { ok: true };
@@ -1354,7 +1380,7 @@ function setup() {
     const r = await verifyUser(method === 'password' ? 'password' : 'touchid');
     if (!r.ok) return r;
     appLocked = false;
-    win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    loadPage();
     return { ok: true };
   });
   ipcMain.handle('app-lock', () => { lockApp(); return { ok: true }; });
