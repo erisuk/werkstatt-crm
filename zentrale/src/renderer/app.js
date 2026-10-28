@@ -713,6 +713,7 @@ function renderMain() {
   else if (ui.view === 'brain') renderBrain();
   else if (ui.view === 'projects') renderProjects();
   else if (ui.view === 'kommentare') renderKommentare();
+  else if (ui.view === 'bitvideos') renderBitVideos();
   else renderTasks();
 }
 
@@ -745,7 +746,7 @@ function applyState(s) {
     renderRunning();
   } else if (ui.view === 'automations') {
     renderAssistant(); // Status, Freigaben und Antworten des Assistenten
-  } else if (['mac', 'web', 'local', 'brain', 'projects', 'kommentare'].includes(ui.view)) {
+  } else if (['mac', 'web', 'local', 'brain', 'projects', 'kommentare', 'bitvideos'].includes(ui.view)) {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');

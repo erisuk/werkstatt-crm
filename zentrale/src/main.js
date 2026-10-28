@@ -25,6 +25,7 @@ const { BrowserControl, makeBrowserOps } = require('./browser-control');
 const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
 const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
 const kommentare = require('./kommentare');
+const bitvideos = require('./bitvideos');
 
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
@@ -745,6 +746,15 @@ function setup() {
     return a && a.art === 'einsammeln' ? kommentare.auftragEinsammeln(d) : kommentare.auftragVorbereiten(d, a && a.id);
   });
   ipcMain.handle('kommentare-settings', (_e, patch) => kommentare.einstellen(kommentareFile(), patch || {}));
+
+  // ---------- Bit-Videos (Video-Automatik im Studio-Ordner) ----------
+  ipcMain.handle('bit-get', () => bitvideos.uebersicht());
+  ipcMain.handle('bit-pause', (_e, bis) => bitvideos.pauseSetzen(bis));
+  ipcMain.handle('bit-settings', (_e, patch) => bitvideos.einstellen(patch));
+  ipcMain.handle('bit-wunsch-add', (_e, a) => bitvideos.wunschHinzu(a && a.thema, a && a.link));
+  ipcMain.handle('bit-wunsch-remove', (_e, id) => bitvideos.wunschEntfernen(id));
+  ipcMain.handle('bit-wunsch-vor', (_e, id) => bitvideos.wunschVor(id));
+  ipcMain.handle('bit-sperren', (_e, a) => bitvideos.sperren(a && a.thema, !!(a && a.an)));
 
   ipcMain.handle('vault-info', () => ({ vault: currentVault() }));
   ipcMain.handle('vault-search', (_e, q) => withVault((dir) => vault.search(dir, typeof q === 'string' ? q : '')));
