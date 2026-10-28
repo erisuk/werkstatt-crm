@@ -53,6 +53,7 @@
       "enableNodeCliInspectArguments": false,
       "enableEmbeddedAsarIntegrityValidation": true,
       "onlyLoadAppFromAsar": true
-    }
+    },
+    "afterSign": "build/adhoc-sign.js"
   }
 }
