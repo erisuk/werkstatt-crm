@@ -512,6 +512,12 @@ h2 { font-size: 16px; font-weight: 600; }
 .bit-status { display: flex; flex-direction: column; gap: 4px; }
 .bit-status .title { font-size: 16px; font-weight: 700; }
 .bit-status .hint { font-size: 13px; color: var(--text-2); line-height: 1.5; }
+.section-head .bit-sub { white-space: normal; flex-basis: 100%; }
 .bit-row { flex-wrap: wrap; row-gap: 6px; }
 .bit-row .grow { flex: 1 1 240px; }
 .bit-row .title { white-space: normal; }
+.bit-quelle .sub { white-space: normal; }
+.bit-row .link, .bit-quelle .link { padding: 8px 4px; }
+.link.danger { color: var(--pill-red); }
+.bit-meldung { position: sticky; top: 0; z-index: 2; box-shadow: var(--shadow); }
+.bit-fehler { background: var(--pill-red-bg, var(--notice-bg)); color: var(--pill-red); }

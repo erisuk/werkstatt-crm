@@ -90,3 +90,50 @@ test('Keine halb geschriebenen Dateien', () => {
   b.wunschHinzu('X', '', s);
   assert.ok(!fs.readdirSync(path.join(s, 'gedaechtnis')).some((n) => n.endsWith('.tmp')));
 });
+
+test('Wunschthemen: keine Doppelten, gescheiterte werden markiert und „Vorziehen“ setzt sie zurück', () => {
+  const s = fakeStudio();
+  assert.ok(b.wunschHinzu('Thema A', '', s).ok);
+  assert.ok(!b.wunschHinzu('thema a', '', s).ok);
+  const f = path.join(s, 'gedaechtnis', 'wunschthemen.json');
+  const [w] = JSON.parse(fs.readFileSync(f, 'utf8'));
+  fs.writeFileSync(f, JSON.stringify([{ ...w, versuche: b.MAX_VERSUCHE }]));
+  assert.ok(b.uebersicht(s).data.wuensche[0].uebersprungen);
+  b.wunschVor(w.id, s);
+  assert.ok(!b.uebersicht(s).data.wuensche[0].uebersprungen);
+});
+
+test('Kaputte Wunsch- oder Sperrdatei wird nie überschrieben', () => {
+  const s = fakeStudio();
+  const f = path.join(s, 'gedaechtnis', 'wunschthemen.json');
+  fs.writeFileSync(f, '[kaputt');
+  assert.ok(!b.wunschHinzu('X', '', s).ok);
+  assert.strictEqual(fs.readFileSync(f, 'utf8'), '[kaputt');
+  fs.writeFileSync(path.join(s, 'gedaechtnis', 'themen_gesperrt.json'), '{');
+  assert.ok(!b.sperren('Neu', true, s).ok);
+});
+
+test('Falsch geformte, aber gültige JSON-Dateien legen die Seite nicht lahm', () => {
+  const s = fakeStudio();
+  fs.writeFileSync(path.join(s, 'gedaechtnis', 'veroeffentlichung.json'), 'null');
+  fs.writeFileSync(path.join(s, 'videos', '015-mods', 'skript.json'), 'null');
+  fs.writeFileSync(path.join(s, 'gedaechtnis', 'recherche', '2026-10-26.json'), JSON.stringify({ themen: [null, { thema: 'Ok', summe: 9 }] }));
+  const r = b.uebersicht(s);
+  assert.ok(r.ok);
+  assert.deepStrictEqual(r.data.radar.themen.map((t) => t.thema), ['Ok']);
+  assert.ok(!b.einstellen('quatsch', s).ok);
+});
+
+test('Links nur öffentlich (gleiche Regel wie in der Pipeline)', () => {
+  assert.ok(b.linkOk('HTTPS://www.anthropic.com/news'));
+  for (const schlecht of ['http://localhost:5678', 'http://127.0.0.1:4100', 'http://192.168.0.10/', 'http://169.254.169.254/',
+    'http://drucker.local/', 'file:///etc/passwd', 'ftp://x.de', 'http://[::1]/', 'javascript:alert(1)']) assert.ok(!b.linkOk(schlecht), schlecht);
+});
+
+test('Kürzen zerschneidet keine Emojis', () => {
+  const s = fakeStudio();
+  b.einstellen({ fokus: `${'a'.repeat(299)}🤖🤖` }, s);
+  const fokus = b.einstellungen(s).fokus;
+  assert.strictEqual(Array.from(fokus).length, 300);
+  assert.ok(fokus.endsWith('🤖'));
+});
