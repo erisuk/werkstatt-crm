@@ -23,6 +23,8 @@ const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require
 const { startProxy, makeOps, socketPath: n8nSocketPath } = require('./n8n-proxy');
 const { BrowserControl, makeBrowserOps } = require('./browser-control');
 const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
+const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
+const kommentare = require('./kommentare');
 
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
@@ -97,6 +99,8 @@ function setup() {
   let browserProxy = null;
   let browser = null;
   let browserConfigFile = null;
+  let kommentareConfigFile = null;
+  const kommentareFile = () => path.join(app.getPath('userData'), 'kommentare.json');
   let n8nConfig = { url: 'http://localhost:5678', key: null };
   const taskChats = new Map(); // laufende Aufgaben-Chats → Name der Aufgabe
   const notified = new Set();
@@ -200,6 +204,11 @@ function setup() {
       args.push(`--mcp-config=${browserConfigFile}`);
       allowed.push(...BROWSER_READ_ONLY.map((t) => `mcp__web__${t}`));
     }
+    // Die Kommentar-Liste ist lokal – immer dabei, ohne Rückfrage.
+    if (kommentareConfigFile) {
+      args.push(`--mcp-config=${kommentareConfigFile}`);
+      allowed.push(...KOMMENTARE_TOOLS.map((t) => `mcp__kommentare__${t}`));
+    }
     // Ein gemeinsamer Hinweis: wo das Gehirn (Obsidian) liegt und – falls an – wie Webseiten bedient werden.
     const hints = [];
     const v = currentVault();
@@ -236,6 +245,7 @@ function setup() {
     // Der n8n-Server bekommt nur den Weg zur Vermittlung in der Zentrale – keinen Schlüssel.
     n8nConfigFile = writeMcpConfig('n8n', 'n8n-server.js', { ZENTRALE_N8N_SOCKET: n8nSocketPath(app.getPath('userData')) });
     browserConfigFile = writeMcpConfig('web', 'browser-server.js', { ZENTRALE_BROWSER_SOCKET: n8nSocketPath(app.getPath('userData'), 'browser') });
+    kommentareConfigFile = writeMcpConfig('kommentare', 'kommentare-server.js', { ZENTRALE_KOMMENTARE_FILE: kommentareFile() });
   }
 
   // ---------- n8n: Adresse und verschlüsselter Schlüssel (macOS-Schlüsselbund) ----------
@@ -723,6 +733,19 @@ function setup() {
     if (!v) return { ok: false, error: 'Kein Obsidian-Vault gefunden. Öffne Obsidian einmal mit deinem Vault.' };
     try { return fn(v.path); } catch (e) { return { ok: false, error: e.message }; }
   };
+  // ---------- Kommentare („Wer will den Code?“) ----------
+  ipcMain.handle('kommentare-get', () => {
+    const d = kommentare.load(kommentareFile());
+    return { ok: true, data: { ...d, nochFrei: kommentare.nochFrei(d.eintraege) } };
+  });
+  ipcMain.handle('kommentare-status', (_e, a) => kommentare.status(kommentareFile(), a && a.id, a && a.status));
+  ipcMain.handle('kommentare-remove', (_e, id) => kommentare.entfernen(kommentareFile(), id));
+  ipcMain.handle('kommentare-auftrag', (_e, a) => {
+    const d = kommentare.load(kommentareFile());
+    return a && a.art === 'einsammeln' ? kommentare.auftragEinsammeln(d) : kommentare.auftragVorbereiten(d, a && a.id);
+  });
+  ipcMain.handle('kommentare-settings', (_e, patch) => kommentare.einstellen(kommentareFile(), patch || {}));
+
   ipcMain.handle('vault-info', () => ({ vault: currentVault() }));
   ipcMain.handle('vault-search', (_e, q) => withVault((dir) => vault.search(dir, typeof q === 'string' ? q : '')));
   ipcMain.handle('vault-read', (_e, rel) => withVault((dir) => vault.readNote(dir, rel)));
