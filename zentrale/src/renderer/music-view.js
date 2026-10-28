@@ -1,8 +1,10 @@
 // Mini-Player in der rechten Seitenleiste für Spotify und Apple Music.
 // Fragt nur ab, solange das Fenster sichtbar und „Mein Mac“ verbunden ist. Nutzt die Helfer aus app.js.
 
-const musicv = { data: null, timer: null, busy: false };
-const MUSIC_POLL_MS = 5000;
+const musicv = { data: null, at: 0, timer: null, tick: null, busy: false };
+// Wechsel meldet der Mac sofort (siehe music-watch.js); die Abfrage ist nur noch die Absicherung.
+const MUSIC_POLL_MS = 15000;
+const MUSIC_TICK_MS = 1000;
 const MUSIC_APPS = [
   { name: 'Spotify', path: '/Applications/Spotify.app' },
   { name: 'Apple Music', path: '/System/Applications/Music.app' },
@@ -21,7 +23,7 @@ async function loadMusic() {
   if (!on) return;
   musicv.busy = true;
   // Bei einem kurzen Fehler den letzten Stand behalten, statt „keine Musik“ aufblitzen zu lassen.
-  try { const res = await api.musicNow(); if (res && res.ok) musicv.data = res.data; } catch {}
+  try { const res = await api.musicNow(); if (res && res.ok) { musicv.data = res.data; musicv.at = Date.now(); } } catch {}
   musicv.busy = false;
   renderMusic();
 }
@@ -29,9 +31,8 @@ async function loadMusic() {
 async function musicDo(app, action) {
   const res = await api.musicControl(app, action);
   if (res && !res.ok) alert(res.error);
-  else if (res && res.data) musicv.data = { ...(musicv.data || {}), current: res.data };
-  renderMusic();
-  setTimeout(loadMusic, 600); // Titelwechsel braucht einen Moment
+  else if (res && res.data) { musicv.data = { ...(musicv.data || {}), current: res.data }; musicv.at = Date.now(); }
+  renderMusic(); // den Rest meldet der Mac von selbst
 }
 
 function renderMusic() {
@@ -39,7 +40,9 @@ function renderMusic() {
   if (!box) return;
   const cur = musicv.data && musicv.data.current;
   const t0 = cur && cur.track;
-  const pct0 = t0 && t0.duration && Number.isFinite(cur.position) ? Math.min(100, (cur.position / t0.duration) * 100) : 0;
+  // Zwischen zwei Abfragen läuft der Balken selbst weiter, solange gespielt wird.
+  const pos = cur && Number.isFinite(cur.position) ? cur.position + (cur.playing ? (Date.now() - musicv.at) / 1000 : 0) : NaN;
+  const pct0 = t0 && t0.duration && Number.isFinite(pos) ? Math.min(100, (pos / t0.duration) * 100) : 0;
   // Nur der Fortschritt hat sich geändert: Balken direkt anpassen, nichts neu aufbauen.
   if (!changed('music', cur && { app: cur.app, playing: cur.playing, track: t0 })) {
     const bar = box.querySelector('.bar');
@@ -57,7 +60,7 @@ function renderMusic() {
     return;
   }
   const t = cur.track;
-  const pct = t && t.duration && Number.isFinite(cur.position) ? Math.min(100, (cur.position / t.duration) * 100) : 0;
+  const pct = pct0;
   const btn = (action, label, icon, main) => h('button', { class: main ? 'play' : '', 'aria-label': label, title: label,
     'data-focus': `music:${action}`, onClick: () => musicDo(cur.app, action) }, icon);
   keepFocus(() => fill(box, h('div', { class: 'card player' },
@@ -78,6 +81,8 @@ function startMusic() {
   if (musicv.timer) return;
   loadMusic();
   musicv.timer = setInterval(loadMusic, MUSIC_POLL_MS);
+  musicv.tick = setInterval(() => { const c = musicv.data && musicv.data.current; if (c && c.playing && !document.hidden) renderMusic(); }, MUSIC_TICK_MS);
 }
+window.zentrale.onMusicNow((d) => { musicv.data = d; musicv.at = Date.now(); renderMusic(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) loadMusic(); });
 window.zentrale.onState(() => { if (!musicv.timer) setTimeout(startMusic, 500); });

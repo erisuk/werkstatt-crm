@@ -27,6 +27,7 @@ const { videoSite, cookieFileText, analyzePrompt } = require('./video-analyze');
 const { WebsiteStudio, AGENT: WEB_AGENT } = require('./website-studio');
 const { FinanceStore, summary: financeSummary } = require('./finance');
 const { importCsv } = require('./finance-csv');
+const { MusicWatch } = require('./music-watch');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
 const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require('./n8n');
@@ -338,9 +339,8 @@ function setup() {
     c.on('event', (ev) => send('chat-event', { ...ev, gen }));
     c.on('status', () => pushState());
     c.on('approvals', onApprovalsChanged);
-    if (old) await old.dispose();
-    // Inzwischen ersetzt oder gelöscht: nicht mehr starten.
-    if (gen !== chatGen || chat !== c) return chatInfo();
+    // Den alten Claude im Hintergrund beenden – nicht darauf warten, sonst dauert jeder Wechsel ~1 s.
+    if (old) old.dispose().catch(() => {});
     c.start();
     pushState();
     return chatInfo();
@@ -998,6 +998,13 @@ function setup() {
 
   const musicAllowed = () => process.platform === 'darwin' && settings.get().connections.mac;
   ipcMain.handle('music-now', () => (musicAllowed() ? music.nowPlaying() : null));
+  // Titelwechsel, Play und Pause kommen sofort an (statt erst bei der nächsten Abfrage).
+  const musicWatch = new MusicWatch();
+  musicWatch.on('change', async () => {
+    if (!musicAllowed() || !win) return;
+    const res = await music.nowPlaying().catch(() => null);
+    if (res && res.ok) send('music-now', res.data);
+  });
   ipcMain.handle('music-control', (_e, args) => (musicAllowed() && args
     ? music.control(String(args.app || ''), String(args.action || '')) : { ok: false, error: 'Die Verbindung „Mein Mac“ ist aus.' }));
 
@@ -1193,6 +1200,7 @@ function setup() {
     startAlerts();
     startMorning();
     registerScreenShortcut();
+    musicWatch.start();
     writeMacConfig();
     refreshProjects();
     createWindow();
@@ -1241,6 +1249,7 @@ function setup() {
     clearInterval(morningTimer);
     clearInterval(finTimer);
     globalShortcut.unregisterAll();
+    musicWatch.stop();
     clearCookieFiles(true);
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];

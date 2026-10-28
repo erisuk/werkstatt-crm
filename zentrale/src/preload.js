@@ -60,6 +60,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   macEmptyTrash: () => ipcRenderer.invoke('mac-empty-trash'),
   alertsRecent: () => ipcRenderer.invoke('alerts-recent'),
   cockpit: () => ipcRenderer.invoke('cockpit'),
+  onMusicNow: (fn) => ipcRenderer.on('music-now', (_e, d) => fn(d)),
   finUnlock: () => ipcRenderer.invoke('fin-unlock'),
   finLock: () => ipcRenderer.invoke('fin-lock'),
   finGet: () => ipcRenderer.invoke('fin-get'),
