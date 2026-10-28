@@ -346,6 +346,31 @@ async function runUserScript(script, language = 'AppleScript') {
   return res.ok ? { ok: true, data: res.out } : res;
 }
 
+// macOS-Kurzbefehle: auflisten und ausführen (nur Namen, die es wirklich gibt).
+const SHORTCUTS = '/usr/bin/shortcuts';
+
+async function listShortcuts() {
+  const res = await execText(SHORTCUTS, ['list'], 15000);
+  if (!res.ok) return { ok: false, error: 'Die Kurzbefehle ließen sich nicht lesen.' };
+  return { ok: true, data: res.out.split('\n').map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b, 'de')) };
+}
+
+async function runShortcut(name, input = '') {
+  const list = await listShortcuts();
+  if (!list.ok) return list;
+  if (!list.data.includes(String(name))) return { ok: false, error: `Einen Kurzbefehl „${name}“ gibt es nicht.` };
+  const args = ['run', String(name)];
+  let tmp = null;
+  if (input) {
+    tmp = path.join(os.tmpdir(), `zentrale-shortcut-${process.pid}-${Date.now()}.txt`);
+    require('fs').writeFileSync(tmp, String(input).slice(0, 20000));
+    args.push('--input-path', tmp);
+  }
+  const res = await execText(SHORTCUTS, args, 120000);
+  if (tmp) try { require('fs').unlinkSync(tmp); } catch {}
+  return res.ok ? { ok: true, data: res.out.trim().slice(0, 4000) || 'ausgeführt' } : { ok: false, error: res.error || 'Der Kurzbefehl ist fehlgeschlagen.' };
+}
+
 // Alles für die "Heute"-Ansicht. launch: false fragt nur Apps ab, die schon laufen –
 // so öffnet die regelmäßige Aktualisierung keine Programme ungefragt.
 const TODAY_PARTS = {
@@ -370,5 +395,5 @@ async function today({ launch = false } = {}) {
 module.exports = {
   AVAILABLE, SCRIPTS, runScript, friendlyError, mergeEvents, parseDue, openArgs,
   calendarEvents, requestCalendarAccess, reminders, addReminder, searchNotes, createNote, mailUnread, outlookUnread,
-  spotlight, open, runUserScript, today, todayPart,
+  spotlight, open, runUserScript, today, todayPart, listShortcuts, runShortcut,
 };

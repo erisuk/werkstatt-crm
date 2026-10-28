@@ -1,121 +1,124 @@
-// Ansicht „Kommentare“: wer unter Bits Videos das Stichwort kommentiert hat und den Code bekommen soll.
-// Claude sammelt die Kommentare in den Web-Tabs ein und tippt Nachrichten vor – auf „Senden“ drückt der Nutzer selbst.
-// Nutzt die Helfer aus app.js (h, fill, ui, api …).
+// Abschnitt „Kommentare & Antworten“ auf der Seite „Bit-Videos“: je Video das Stichwort, das Bit im Video nennt,
+// die Antwort, die jeder Kommentierende bekommt, und die Leute, die darauf warten. Claude sammelt die Kommentare ein
+// (auf Knopfdruck oder täglich) und tippt die Antworten vor – auf „Senden“ drückt der Nutzer selbst.
+// Nutzt die Helfer aus app.js und bitvideos-view.js (h, fill, ui, api, bitAktion, bitFeld …).
 
-const komm = { daten: null, meldung: null, timer: null, filter: 'alle' };
-const KOMM_POLL_MS = 4000;      // Claude schreibt in dieselbe Datei – so erscheinen neue Treffer von selbst
-const KOMM_STATUS = { offen: ['offen', ''], vorbereitet: ['vorbereitet', 'amber'], gesendet: ['gesendet', 'green'], ignoriert: ['ignoriert', ''] };
-const PLATTFORM_NAME = { instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube' };
-
-async function loadKommentare() {
-  if (ui.view !== 'kommentare') { clearInterval(komm.timer); komm.timer = null; return; }
-  const res = await api.kommentare();
-  if (!res || !res.ok) return;
-  if (!changed('kommentare', res.data)) return;
-  komm.daten = res.data;
-  renderKommentareBody();
-}
+const komm = { offen: null, gesendetZeigen: new Set() };
+const KOMM_VIDEOS_MAX = 6;
+const KOMM_STATUS = { offen: ['wartet', 'amber'], vorbereitet: ['vorgetippt', 'blue'], gesendet: ['gesendet', 'green'], ignoriert: ['ignoriert', ''] };
 
 async function kommAuftrag(art, id) {
-  const res = await api.kommentareAuftrag(art, id);
-  if (!res || !res.ok) { komm.meldung = (res && res.error) || 'Das hat nicht geklappt.'; renderKommentareBody(); return; }
+  let res;
+  try { res = await api.kommentareAuftrag(art, id); } catch (e) { res = { ok: false, error: String(e.message || e) }; }
+  if (!res || !res.ok) { zeigeMeldung((res && res.error) || 'Das hat nicht geklappt.', true); return; }
   sendMessage(res.data);
 }
 
-async function kommStatus(id, status) {
-  await api.kommentareStatus(id, status);
-  loadKommentare();
-}
-
-function kommEinstellungen() {
-  const d = komm.daten;
-  const konto = h('input', { id: 'komm-konto', type: 'text', placeholder: '@bit.ai.news', 'data-focus': 'komm-konto' });
-  konto.value = d.konto;
-  const wort = h('input', { id: 'komm-wort', type: 'text', 'data-focus': 'komm-wort' });
-  wort.value = d.stichwort;
-  const vorlage = h('textarea', { id: 'komm-vorlage', rows: '2', 'data-focus': 'komm-vorlage' });
-  vorlage.value = d.vorlage;
-  return h('form', { class: 'card form', onSubmit: async (e) => {
+function kommKopf(k) {
+  const konto = bitFeld('input', { id: 'komm-konto', type: 'text', placeholder: '@bits.konto' }, k.konto);
+  const auto = k.automatik && k.automatik.an;
+  const claudeDa = ui.state.claude.found;
+  return h('form', { class: 'card form', onSubmit: (e) => {
     e.preventDefault();
-    const res = await api.kommentareSettings({ konto: konto.value, stichwort: wort.value, vorlage: vorlage.value });
-    komm.meldung = res.ok ? 'Gespeichert.' : res.error;
-    loadKommentare();
-    renderKommentareBody();
+    bitAktion(() => api.kommentareSettings({ konto: konto.value }), 'Konto gespeichert.', ['komm-konto']);
   } },
-  h('div', { class: 'field' }, h('label', { for: 'komm-konto', text: 'Eigenes Instagram-Konto' }), konto),
-  h('div', { class: 'field' }, h('label', { for: 'komm-wort', text: 'Stichwort' }), wort),
-  h('div', { class: 'field full' }, h('label', { for: 'komm-vorlage', text: 'Nachricht ({name} = Profilname)' }), vorlage),
+  h('div', { class: 'field' }, h('label', { for: 'komm-konto', text: 'Instagram-Konto von Bit' }), konto,
+    h('span', { class: 'hint', text: 'Claude prüft vor jedem Auftrag, dass genau dieses Konto angemeldet ist – sonst bricht er ab.' })),
+  h('div', { class: 'field' }, h('span', { class: 'label', text: 'Automatisch einsammeln' }),
+    h('div', { class: 'toggle-line' },
+      h('button', { class: 'switch', role: 'switch', 'aria-checked': String(!!auto), 'aria-label': 'Jeden Tag automatisch einsammeln', 'data-focus': 'komm-auto',
+        disabled: !k.konto, onClick: () => bitAktion(() => api.kommentareAutomatik(!auto), auto ? 'Automatik aus.' : `Claude sammelt ab jetzt jeden Tag um ${k.automatik ? k.automatik.zeit : '18:00'} ein.`) }),
+      h('span', { text: auto ? `jeden Tag um ${k.automatik.zeit}${k.automatik.laeuft ? ' – läuft gerade' : ''}` : 'aus' })),
+    h('span', { class: 'hint', text: 'Liest nur – schreibt, liked und sendet nichts. Braucht „Web-Tabs für Claude“ unter Verbindungen.' })),
   h('div', { class: 'actions full' },
-    h('span', { class: 'hint', text: 'Claude prüft vor jedem Auftrag, dass genau dieses Konto angemeldet ist – sonst bricht er ab.' }),
-    h('span', { class: 'spacer' }), h('button', { type: 'submit', class: 'btn ghost' }, 'Speichern')));
+    h('span', { class: 'hint', text: `Diese Stunde gehen noch ${k.nochFrei} Nachrichten (Schutz vor Spam-Sperre).` }),
+    h('span', { class: 'spacer' }),
+    h('button', { type: 'submit', class: 'btn ghost' }, 'Konto speichern'),
+    h('button', { type: 'button', class: 'btn', 'data-focus': 'komm-sammeln', disabled: !claudeDa || !k.konto,
+      onClick: () => kommAuftrag('einsammeln') }, 'Jetzt einsammeln')));
 }
 
-function kommZeile(e, frei) {
+function kommEditor(a) {
+  const wort = bitFeld('input', { id: `komm-wort-${a.video}`, type: 'text', maxlength: '30' }, a.stichwort);
+  const text = bitFeld('textarea', { id: `komm-text-${a.video}`, rows: '3', maxlength: '500' }, a.nachricht);
+  return h('form', { class: 'form komm-editor', onSubmit: (e) => {
+    e.preventDefault();
+    bitAktion(() => api.bitAktion(a.video, { stichwort: wort.value, nachricht: text.value }), 'Antwort gespeichert.',
+      [`komm-wort-${a.video}`, `komm-text-${a.video}`]);
+    komm.offen = null;
+  } },
+  h('div', { class: 'field' }, h('label', { for: `komm-wort-${a.video}`, text: 'Stichwort (wie im Video gesagt)' }), wort),
+  h('div', { class: 'field' }, h('span', { class: 'label', text: 'Aktion' }),
+    h('div', { class: 'toggle-line' },
+      h('button', { type: 'button', class: 'switch', role: 'switch', 'aria-checked': String(a.aktiv), 'aria-label': `Kommentar-Aktion für ${a.stichwort}`,
+        'data-focus': `komm-aktiv-${a.video}`, onClick: () => bitAktion(() => api.bitAktion(a.video, { aktiv: !a.aktiv }), a.aktiv ? 'Aktion aus.' : 'Aktion an.') }),
+      h('span', { text: a.aktiv ? 'an – Kommentare werden eingesammelt' : 'aus' }))),
+  h('div', { class: 'field full' }, h('label', { for: `komm-text-${a.video}`, text: 'Antwort ({name} = Profilname)' }), text),
+  h('div', { class: 'actions full' },
+    h('button', { type: 'button', class: 'link', onClick: () => { komm.offen = null; renderBitBody(); } }, 'Abbrechen'),
+    h('button', { type: 'submit', class: 'btn ghost' }, 'Speichern')));
+}
+
+function kommPerson(e, frei) {
   const [label, farbe] = KOMM_STATUS[e.status] || KOMM_STATUS.offen;
   const aktionen = [];
   if (e.status === 'offen') {
-    aktionen.push(h('button', { class: 'btn', 'data-focus': `komm-prep:${e.id}`, disabled: !ui.state.claude.found || frei === 0,
-      title: frei === 0 ? 'Diese Stunde sind genug Nachrichten raus' : 'Claude tippt die Nachricht im Web-Tab vor – senden tust du',
-      onClick: () => kommAuftrag('vorbereiten', e.id) }, 'Nachricht vorbereiten'));
+    aktionen.push(h('button', { class: 'link', 'aria-label': `Antwort vortippen für ${e.name}`, 'data-focus': `komm-prep:${e.id}`,
+      disabled: !ui.state.claude.found || frei === 0, title: frei === 0 ? 'Diese Stunde sind genug Nachrichten raus' : 'Claude tippt die Antwort im Web-Tab vor – senden tust du',
+      onClick: () => kommAuftrag('vorbereiten', e.id) }, 'Antwort vortippen'));
   }
   if (e.status === 'vorbereitet') {
-    aktionen.push(h('button', { class: 'btn', 'data-focus': `komm-sent:${e.id}`, onClick: () => kommStatus(e.id, 'gesendet') }, 'Hab gesendet'));
+    aktionen.push(h('button', { class: 'link', 'aria-label': `Gesendet an ${e.name}`, 'data-focus': `komm-sent:${e.id}`,
+      onClick: () => bitAktion(() => api.kommentareStatus(e.id, 'gesendet'), `${e.name} ist erledigt.`) }, 'Hab gesendet'));
   }
   if (e.status === 'offen' || e.status === 'vorbereitet') {
-    aktionen.push(h('button', { class: 'link', 'data-focus': `komm-skip:${e.id}`, onClick: () => kommStatus(e.id, 'ignoriert') }, 'Ignorieren'));
+    aktionen.push(h('button', { class: 'link', 'aria-label': `Ignorieren: ${e.name}`, 'data-focus': `komm-skip:${e.id}`,
+      onClick: () => bitAktion(() => api.kommentareStatus(e.id, 'ignoriert'), 'Ignoriert.') }, 'Ignorieren'));
   }
-  if (e.status === 'ignoriert') {
-    aktionen.push(h('button', { class: 'link', 'data-focus': `komm-back:${e.id}`, onClick: () => kommStatus(e.id, 'offen') }, 'Zurückholen'));
-  }
-  return h('div', { class: 'row' },
-    h('span', { class: 'pill blue', text: PLATTFORM_NAME[e.plattform] || e.plattform }),
-    h('div', { class: 'grow' },
-      h('div', { class: 'title', text: e.name }),
-      h('div', { class: 'sub clamp', text: `„${e.kommentar}“` })),
-    h('span', { class: 'when', text: formatWhen(e.gefunden) }),
+  return h('div', { class: 'row bit-row komm-person' },
     h('span', { class: `pill ${farbe}`, text: label }),
+    h('div', { class: 'grow' }, h('div', { class: 'title', text: e.name }), h('div', { class: 'sub clamp', text: `„${e.kommentar}“` })),
+    h('span', { class: 'when', text: formatWhen(e.gefunden) }),
     aktionen);
 }
 
-function renderKommentareBody() {
-  const box = $('#komm-body');
-  if (!box) return;
-  const d = komm.daten;
-  if (!d) { fill(box, h('div', { class: 'card empty', text: 'Lädt …' })); return; }
-  const zahl = (s) => d.eintraege.filter((e) => e.status === s).length;
-  const liste = d.eintraege.filter((e) => komm.filter === 'alle' ? e.status !== 'ignoriert' : e.status === komm.filter)
-    .sort((a, b) => b.gefunden - a.gefunden);
-  const filterBtn = (f, label) => h('button', { 'aria-pressed': String(komm.filter === f), 'data-focus': `komm-filter:${f}`,
-    onClick: () => { komm.filter = f; renderKommentareBody(); } }, label);
-  keepFocus(() => fill(box,
-    komm.meldung ? h('div', { class: 'notice', role: 'status', text: komm.meldung }) : null,
-    h('div', { class: 'stats' },
-      stat(`Wollen den Code („${d.stichwort}“)`, d.eintraege.filter((e) => e.status !== 'ignoriert').length),
-      stat('Offen', zahl('offen') + zahl('vorbereitet')), stat('Gesendet', zahl('gesendet'))),
-    h('div', { class: 'actions' },
-      h('button', { class: 'btn', 'data-focus': 'komm-sammeln', disabled: !ui.state.claude.found,
-        onClick: () => kommAuftrag('einsammeln') }, 'Instagram-Kommentare einsammeln'),
-      h('span', { class: 'hint', text: `Diese Stunde noch ${d.nochFrei} Nachrichten frei. Lesen geht ohne Rückfrage, Klicks fragt die Zentrale.` })),
-    h('section', { class: 'section' },
-      h('div', { class: 'section-head wrap' }, h('h2', { text: 'Liste' }), h('span', { class: 'spacer' }),
-        h('div', { class: 'segmented', role: 'group', 'aria-label': 'Filter' },
-          filterBtn('alle', 'Alle'), filterBtn('offen', 'Offen'), filterBtn('vorbereitet', 'Vorbereitet'),
-          filterBtn('gesendet', 'Gesendet'), filterBtn('ignoriert', 'Ignoriert'))),
-      h('div', { class: 'card list' }, liste.length ? liste.map((e) => kommZeile(e, d.nochFrei))
-        : h('div', { class: 'empty', text: d.eintraege.length ? 'Nichts in diesem Filter.' : 'Noch keine Kommentare. Klick auf „Instagram-Kommentare einsammeln“.' }))),
-    h('section', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', { text: 'Einstellungen' })), kommEinstellungen())));
+function kommVideo(a, eintraege, frei) {
+  const meine = eintraege.filter((e) => e.video === a.video && e.status !== 'ignoriert').sort((x, y) => y.gefunden - x.gefunden);
+  const wartend = meine.filter((e) => e.status !== 'gesendet');
+  const gesendet = meine.filter((e) => e.status === 'gesendet');
+  const zeigen = komm.gesendetZeigen.has(a.video);
+  return h('div', { class: 'card list komm-video' },
+    h('div', { class: 'row bit-row' },
+      h('span', { class: 'pill', text: `#${String(a.nr).padStart(3, '0')}` }),
+      h('div', { class: 'grow' }, h('div', { class: 'title', text: a.thema }),
+        h('div', { class: 'sub clamp', text: `Antwort: ${a.nachricht}` })),
+      h('span', { class: `pill ${a.aktiv ? 'blue' : ''}`, text: a.aktiv ? `💬 ${a.stichwort}` : `${a.stichwort} · aus` }),
+      h('span', { class: 'when', text: `${wartend.length} wartet · ${gesendet.length} gesendet` }),
+      h('button', { class: 'link', 'aria-label': `Antwort ändern für ${a.stichwort}`, 'data-focus': `komm-edit:${a.video}`,
+        onClick: () => { komm.offen = komm.offen === a.video ? null : a.video; renderBitBody(); } }, komm.offen === a.video ? 'Schließen' : 'Ändern')),
+    komm.offen === a.video ? kommEditor(a) : null,
+    wartend.map((e) => kommPerson(e, frei)),
+    gesendet.length ? h('button', { class: 'link komm-mehr', 'data-focus': `komm-gesendet:${a.video}`,
+      onClick: () => { if (zeigen) komm.gesendetZeigen.delete(a.video); else komm.gesendetZeigen.add(a.video); renderBitBody(); } },
+    zeigen ? 'Gesendete ausblenden' : `${gesendet.length} gesendete zeigen`) : null,
+    zeigen ? gesendet.map((e) => kommPerson(e, frei)) : null);
 }
 
-function renderKommentare() {
-  fill($('#main'),
-    h('div', { class: 'section-head wrap' }, h('h1', { text: 'Kommentare' }), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn ghost', onClick: () => { ui.sig.kommentare = null; loadKommentare(); } }, 'Aktualisieren')),
-    h('p', { class: 'date', text: 'Wer unter deinen Videos das Stichwort kommentiert hat, landet hier. Claude tippt die Nachricht vor – auf „Senden“ drückst du selbst, höchstens 10 pro Stunde.' }),
-    h('div', { id: 'komm-body', class: 'section' }));
-  komm.meldung = null;
-  ui.sig.kommentare = null;
-  renderKommentareBody();
-  loadKommentare();
-  clearInterval(komm.timer);
-  komm.timer = setInterval(loadKommentare, KOMM_POLL_MS);
+// Der ganze Abschnitt. k = Antwort von api.kommentare().
+function bitKommentare(k) {
+  if (!k) return h('div', { class: 'card empty', text: 'Lädt …' });
+  const wartend = k.eintraege.filter((e) => e.status === 'offen' || e.status === 'vorbereitet');
+  // Videos mit wartenden Leuten immer zeigen, sonst die neuesten aktiven.
+  const mitWartenden = new Set(wartend.map((e) => e.video));
+  const videos = k.aktionen.filter((a, i) => mitWartenden.has(a.video) || (a.aktiv && i < KOMM_VIDEOS_MAX) || komm.offen === a.video);
+  return [
+    kommKopf(k),
+    h('div', { class: 'stats' },
+      stat('Warten auf ihre Antwort', wartend.length),
+      stat('Gesendet', k.eintraege.filter((e) => e.status === 'gesendet').length),
+      stat('Videos mit Stichwort', k.aktionen.filter((a) => a.aktiv).length)),
+    // ausgepackt: h() und fill() glätten nur eine Ebene
+    ...(videos.length ? videos.map((a) => kommVideo(a, k.eintraege, k.nochFrei))
+      : [h('div', { class: 'card empty', text: 'Noch kein Video mit Kommentar-Stichwort.' })]),
+  ];
 }

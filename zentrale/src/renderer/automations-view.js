@@ -76,6 +76,7 @@ async function loadAutomations() {
   auto.loading = true;
   try {
     auto.status = await api.n8nStatus();
+    if (!auto.status.hasKey) auto.bitKey = await api.n8nFileAvailable();
     auto.error = null;
     if (auto.status.hasKey && auto.status.running) {
       const [w, r] = await Promise.all([api.n8nWorkflows(), api.n8nExecutions()]);
@@ -135,7 +136,14 @@ function connectForm() {
         const res = await api.n8nConnectClipboard(url.value);
         if (!res.ok) { auto.connectError = res.error; renderAutomationsBody(); return; }
         await loadAutomations();
-      } }, 'Aus Zwischenablage verbinden'))),
+      } }, 'Aus Zwischenablage verbinden'),
+      auto.bitKey ? h('button', { type: 'button', class: 'btn ghost', 'data-focus': 'n8n-file', title: 'Nimmt den Schlüssel, den die Bit-Automatik schon hat (~/.config/bitai) – ohne ihn anzuzeigen',
+        onClick: async () => {
+          auto.connectError = null;
+          const res = await api.n8nConnectFile(url.value);
+          if (!res.ok) { auto.connectError = res.error; renderAutomationsBody(); return; }
+          await loadAutomations();
+        } }, 'Schlüssel der Bit-Automatik nehmen') : null)),
   h('p', { class: 'full sub', text: 'Oder von Hand: In n8n unter Einstellungen → n8n API einen Schlüssel erstellen und hier einfügen. Bitte nie in den Chat kopieren.' }),
   h('div', { class: 'field' }, h('label', { for: 'n8n-url', text: 'Adresse' }), url),
   h('div', { class: 'field' }, h('label', { for: 'n8n-key', text: 'API-Schlüssel' }), key),

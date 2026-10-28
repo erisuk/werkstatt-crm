@@ -110,6 +110,22 @@ function todayLabel() {
 }
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// Screenreader-Ansagen über einen festen Bereich (frisch eingefügte Live-Regionen liest nicht jeder vor).
+let lastAnnounced = '';
+function announce(text) {
+  const box = document.getElementById('sr-live');
+  if (!box || !text || text === lastAnnounced) return;
+  lastAnnounced = text;
+  box.textContent = '';
+  setTimeout(() => { box.textContent = text; }, 50);
+}
+// Hinweiszeile oben in einer Ansicht; die Ansage macht announce().
+function noticeEl(text) {
+  if (!text) return null;
+  announce(text);
+  return h('div', { class: 'notice', text });
+}
 function projectKey(p) { return p.path || p.name; }
 function projects() { return (ui.state && ui.state.projects) || []; }
 function settings() { return (ui.state && ui.state.settings) || { theme: 'system', connections: { mac: false, chrome: false } }; }
@@ -168,7 +184,11 @@ darkQuery.addEventListener('change', renderTheme);
 // Der Chat setzt seinen Fokus selbst ins Eingabefeld.
 function setView(view) {
   if ((ui.view === 'web' || ui.view === 'local') && view !== ui.view) leaveWeb();
+  // Privaten Bereich beim Verlassen sofort sperren.
+  if (ui.view === 'finance' && view !== 'finance' && typeof fin !== 'undefined' && fin.open) { api.finLock(); finClear(); }
   ui.view = view;
+  // Im privaten Bereich gibt es kein Eingabefeld zu Claude – so landet nichts versehentlich dort.
+  $('#quick-section').hidden = view === 'finance';
   ui.sig.main = null;
   renderNav();
   renderMain();
@@ -281,6 +301,38 @@ function todayCard(title, res, renderItems, emptyText) {
     body = items.length ? h('ul', { class: 'today-list' }, items) : h('div', { class: 'sub', text: emptyText });
   }
   return h('div', { class: 'card today-card' }, h('div', { class: 'label', text: title }), body);
+}
+
+// Lage auf einen Blick: Ungelesenes in den Web-Tabs, Fehler, Server, einsortierte Dateien.
+const COCKPIT_REFRESH_MS = 60000;
+async function loadCockpit() {
+  if (ui.cockpitLoading || (ui.cockpitAt && Date.now() - ui.cockpitAt < COCKPIT_REFRESH_MS)) return;
+  ui.cockpitLoading = true;
+  ui.cockpitAt = Date.now();
+  try { ui.cockpit = await api.cockpit(); } catch {}
+  ui.cockpitLoading = false;
+  if (ui.view === 'overview') renderOverview();
+}
+
+function renderCockpit() {
+  const c = ui.cockpit;
+  if (!c) return null;
+  const m = settings().morning || { enabled: false, time: '08:00' };
+  const time = h('input', { type: 'time', value: m.time, 'aria-label': 'Uhrzeit der Morgen-Mitteilung', 'data-focus': 'morning-time',
+    onChange: (e) => api.updateSettings({ morning: { time: e.target.value } }) });
+  const tile = (label, value, sub, onClick, tone) => h('button', { class: `card cockpit-tile${tone ? ` ${tone}` : ''}`, 'data-focus': `cockpit:${label}`, onClick },
+    h('span', { class: 'label', text: label }), h('span', { class: 'value', text: String(value) }), h('span', { class: 'sub', text: sub }));
+  const unread = c.web.reduce((n, p) => n + p.unread, 0);
+  return h('section', { class: 'section' },
+    h('div', { class: 'section-head wrap' }, h('h2', { text: 'Lage' }), h('span', { class: 'spacer' }),
+      h('label', { class: 'toggle-line' },
+        h('button', { class: 'switch', role: 'switch', 'aria-checked': String(m.enabled), 'aria-label': 'Morgen-Mitteilung: jeden Morgen eine Zusammenfassung', 'data-focus': 'morning-on',
+          onClick: () => api.updateSettings({ morning: { enabled: !m.enabled } }) }), 'Morgen-Mitteilung um'), time),
+    h('div', { class: 'cockpit' },
+      tile('Ungelesen', unread, unread ? c.web.slice(0, 3).map((p) => `${p.name} ${p.unread}`).join(' · ') : 'in deinen Web-Tabs', () => setView('web')),
+      tile('Fehler', c.alerts.length, c.alerts.length ? c.alerts[0].body : 'seit gestern keine', () => setView(c.alerts[0] ? c.alerts[0].view : 'projects'), c.alerts.length ? 'warn' : ''),
+      tile('Server', c.servers, c.servers === 1 ? 'läuft gerade' : 'laufen gerade', () => setView('projects')),
+      tile('Einsortiert', c.sorted, c.unsorted ? `${c.unsorted} neu ohne Platz` : 'Dateien seit gestern', () => { if (typeof macv !== 'undefined') macv.tab = 'watch'; setView('mac'); }, c.unsorted ? 'warn' : '')));
 }
 
 function renderToday() {
@@ -406,8 +458,9 @@ function renderOverview(force) {
   // Ist gerade ein Auswahlfeld offen, nicht neu zeichnen – sonst klappt es unter der Maus zu.
   const picking = document.activeElement && document.activeElement.tagName === 'SELECT' && $('#main').contains(document.activeElement);
   if (picking && !force) return;
-  if (!changed('main', ['overview', list, chat, enabledTasks, s.claude, ui.search, sel && sel.key, ui.groupMode, ui.showArchived, minute, settings().connections, ui.today, ui.todayLoading]) && !force) return;
+  if (!changed('main', ['overview', list, chat, enabledTasks, s.claude, ui.search, sel && sel.key, ui.groupMode, ui.showArchived, minute, settings().connections, settings().morning, ui.today, ui.todayLoading, ui.cockpit]) && !force) return;
   loadToday(false);
+  loadCockpit();
 
   const totalSessions = list.reduce((n, p) => n + p.sessions.length, 0);
   const archivedCount = list.reduce((n, p) => n + p.sessions.filter((x) => x.archived).length, 0);
@@ -449,6 +502,7 @@ function renderOverview(force) {
       ', melde dich mit ', h('code', { text: 'claude' }), ' an und starte die Zentrale neu.'),
     h('div', { class: 'quick-actions' }, QUICK_ACTIONS.map((q) =>
       h('button', { class: 'chip', 'data-focus': `quick:${q.label}`, disabled: !s.claude.found, onClick: () => sendMessage(q.prompt) }, q.label))),
+    renderCockpit(),
     renderToday(),
     h('div', { class: 'stats' },
       stat('Projekte', list.length), stat('Gespräche', totalSessions), stat('Tägliche Aufgaben', enabledTasks)),
@@ -532,8 +586,14 @@ function renderChat() {
   }
   if (ui.chatGen !== s.chat.gen) resetChat(s.chat.gen, []);
 
-  const input = h('textarea', { id: 'chat-input', rows: '1', placeholder: `Nachricht an Claude in ${s.chat.name} …` });
+  const input = h('textarea', { id: 'chat-input', rows: '1', placeholder: `Nachricht an Claude in ${s.chat.name} … (Dateien einfach hineinziehen)` });
   const sendBtn = h('button', { type: 'submit', class: 'send', 'aria-label': 'Senden' });
+  const shotBtn = isMac() ? h('button', { type: 'button', class: 'icon-btn shot-btn', 'aria-label': 'Bildschirm zeigen', title: 'Bildschirm zeigen (Cmd+Shift+Leertaste): Bereich wählen, Leertaste für ein Fenster, Esc bricht ab',
+    onClick: async () => { const r = await api.screenCapture(); if (r && r.ok) attachScreenshot(r.path); else if (r && r.error) alert(r.error); } }) : null;
+  const fileBtn = h('button', { type: 'button', class: 'icon-btn shot-btn', 'aria-label': 'Datei anhängen', title: 'Datei anhängen (oder einfach ins Feld ziehen)',
+    onClick: async () => { const files = await api.pickFiles(); if (files && files.length) insertPaths(input, files); } });
+  fileBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg>';
+  if (shotBtn) shotBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>';
   sendBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
   const form = h('form', { class: 'composer', onSubmit: (e) => {
     e.preventDefault();
@@ -542,11 +602,12 @@ function renderChat() {
     input.value = '';
     input.style.height = 'auto';
     sendMessage(t);
-  } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input, sendBtn);
+  } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input, fileBtn, shotBtn, sendBtn);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
   });
   input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = `${input.scrollHeight}px`; });
+  attachDrop(form, input);
 
   const typing = h('div', { class: 'typing', id: 'typing', role: 'status', hidden: true },
     h('span'), h('span'), h('span'), h('span', { class: 'sr-only', text: 'Claude schreibt' }));
@@ -564,6 +625,60 @@ function renderChat() {
   if (ui.prefill) { input.value = ui.prefill; ui.prefill = null; }
   input.focus();
 }
+
+// Dateien in den Chat ziehen: der Pfad landet im Eingabefeld, Claude liest die Datei dann selbst
+// (Bilder, PDFs, Videos, Tabellen …). Hochgeladen oder kopiert wird nichts.
+const MAX_DROP_FILES = 10;
+function insertPaths(input, paths) {
+  const lines = paths.map((p) => `Datei: ${p}`).join('\n');
+  input.value = input.value.trim() ? `${input.value.trimEnd()}\n${lines}\n` : `${lines}\n`;
+  input.dispatchEvent(new Event('input'));
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  announce(paths.length === 1 ? 'Eine Datei angehängt.' : `${paths.length} Dateien angehängt.`);
+}
+
+function attachDrop(zone, input) {
+  const insert = (paths) => insertPaths(input, paths);
+  let depth = 0;
+  zone.addEventListener('dragenter', (e) => { if (e.dataTransfer.types.includes('Files')) { depth += 1; zone.classList.add('drop-on'); } });
+  zone.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) zone.classList.remove('drop-on'); });
+  zone.addEventListener('dragover', (e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+  zone.addEventListener('drop', (e) => {
+    depth = 0; zone.classList.remove('drop-on');
+    const files = [...(e.dataTransfer.files || [])];
+    if (!files.length) return;
+    e.preventDefault();
+    const paths = files.slice(0, MAX_DROP_FILES).map((f) => api.pathForFile(f)).filter(Boolean);
+    if (paths.length) insert(paths);
+    if (files.length > MAX_DROP_FILES) alert(`Es werden nur die ersten ${MAX_DROP_FILES} Dateien übernommen.`);
+  });
+}
+
+// Bildschirm-Helfer: Bild an den Chat hängen. Abgeschickt wird erst, wenn du auf Senden drückst –
+// so siehst du vorher, dass ein Bildschirmfoto mitgeht.
+async function attachScreenshot(file) {
+  const text = `Datei: ${file}\nDas ist ein Bildschirmfoto von mir. `;
+  if (!ui.state.chat) {
+    const recent = projects().find((p) => p.path);
+    if (!recent) { alert('Öffne zuerst einen Chat – das Bildschirmfoto liegt hier:\n' + file); return; }
+    ui.prefill = text;
+    await newSession(recent.path);
+    return;
+  }
+  const input = $('#chat-input');
+  if (ui.view === 'chat' && input) {
+    input.value = input.value.trim() ? `${input.value.trimEnd()}\n${text}` : text;
+    input.dispatchEvent(new Event('input'));
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  } else { ui.prefill = text; setView('chat'); }
+}
+api.onScreenShot((file) => { if (typeof file === 'string') attachScreenshot(file); });
+
+// Eine danebengezogene Datei soll die Zentrale nicht verlassen (sonst öffnet das Fenster die Datei).
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => e.preventDefault());
 
 function updateChatHead() {
   const head = $('#chat-head');
@@ -712,7 +827,10 @@ function renderMain() {
   else if (ui.view === 'automations') renderAutomations();
   else if (ui.view === 'brain') renderBrain();
   else if (ui.view === 'projects') renderProjects();
-  else if (ui.view === 'kommentare') renderKommentare();
+  else if (ui.view === 'planner') renderPlanner();
+  else if (ui.view === 'websites') renderWebsites();
+  else if (ui.view === 'finance') renderFinance();
+  else if (ui.view === 'bitvideos') renderBitVideos();
   else renderTasks();
 }
 
@@ -745,7 +863,7 @@ function applyState(s) {
     renderRunning();
   } else if (ui.view === 'automations') {
     renderAssistant(); // Status, Freigaben und Antworten des Assistenten
-  } else if (['mac', 'web', 'local', 'brain', 'projects', 'kommentare'].includes(ui.view)) {
+  } else if (['mac', 'web', 'local', 'brain', 'projects', 'planner', 'websites', 'finance', 'bitvideos'].includes(ui.view)) {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');
@@ -775,5 +893,7 @@ window.addEventListener('focus', () => { if (ui.view === 'overview') loadToday(f
 setInterval(() => { if (ui.state) applyState(ui.state); }, 60000);
 
 api.onState(applyState);
+// Klick auf eine Mitteilung kann eine bestimmte Ansicht öffnen.
+api.onGoView((v) => { if (typeof v === 'string') setView(v); });
 renderNav();
 api.getState().then(applyState);

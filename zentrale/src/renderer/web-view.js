@@ -10,7 +10,8 @@ const isLocalUrl = (u) => { try { return /^(localhost|127\.0\.0\.1|\[::1\]|.+\.l
 const inWebView = () => ui.view === 'web' || ui.view === 'local';
 const modePortals = () => (webv.state ? webv.state.portals.filter((p) => (webv.mode === 'local') === isLocalUrl(p.url)) : []);
 
-const profileLabel = (p) => (p === 'standard' ? 'Standard-Konto' : `Konto ${(/(\d+)$/.exec(p) || [])[1] || p}`);
+const profileLabel = (p) => (p === 'standard' ? 'Standard-Konto' : p === 'bit' ? 'Bit-Konto' : `Konto ${(/(\d+)$/.exec(p) || [])[1] || p}`);
+const BIT_URLS = ['https://studio.youtube.com/', 'https://www.instagram.com/', 'https://www.tiktok.com/'];
 const ACTIVITY_MS = 20000; // so lange gilt „Claude bedient gerade …“ nach der letzten Aktion
 
 function activePortal() {
@@ -94,6 +95,11 @@ function renderAddForm() {
     addPortal(name.value, url.value);
   } },
     h('h2', { class: 'full', text: 'Seite hinzufügen' }),
+    BIT_URLS.every((u) => s.portals.some((p) => p.profile === 'bit' && p.url === u)) ? null
+      : h('div', { class: 'full bit-setup' },
+        h('div', { class: 'grow' }, h('strong', { text: 'BIT AI News einrichten' }),
+          h('div', { class: 'sub', text: 'Legt YouTube Studio, Instagram und TikTok in einem eigenen Bit-Konto an – getrennt von deinen privaten und MURIS-Anmeldungen. Danach meldest du dich dort einmal mit den Bit-Konten an.' })),
+        h('button', { type: 'button', class: 'btn', 'data-focus': 'bit-setup', 'aria-label': 'BIT AI News einrichten', onClick: async () => { const r = await api.webSetupBit(); if (!r.ok) { webv.addError = r.error; renderWebChrome(); return; } webv.adding = false; renderWebChrome(); announce('Bit-Tabs angelegt: YouTube Studio, Instagram, TikTok. Melde dich dort jetzt mit den Bit-Konten an.'); } }, 'Einrichten')),
     h('div', { class: 'field full' }, h('label', { for: 'web-profile', text: 'Konto' }), profile,
       h('span', { class: 'hint', text: 'Jedes Konto hat eine eigene Anmeldung. Für ein zweites Gmail oder Outlook: „Neues Konto“ wählen und dann Gmail anklicken.' })),
     [...new Set(s.presets.map((p) => p.group))].map((group) => {
@@ -120,7 +126,7 @@ function webTab(p, active) {
       onClick: () => { webv.adding = false; api.webShow(p.id); } },
     p.loading ? h('span', { class: 'dot amber pulse', 'aria-hidden': 'true' }) : null,
     h('span', { class: 'web-tab-name', text: p.name }),
-    p.profile && p.profile !== 'standard' ? h('span', { class: 'profile-dot', title: profileLabel(p.profile), 'aria-label': profileLabel(p.profile), text: (/(\d+)$/.exec(p.profile) || [])[1] || '•' }) : null,
+    p.profile && p.profile !== 'standard' ? h('span', { class: 'profile-dot', title: profileLabel(p.profile), 'aria-label': profileLabel(p.profile), text: p.profile === 'bit' ? 'B' : (/(\d+)$/.exec(p.profile) || [])[1] || '•' }) : null,
     p.unread ? h('span', { class: 'count', 'aria-label': `${p.unread} ungelesen`, text: p.unread > 99 ? '99+' : String(p.unread) }) : null),
     h('button', { class: 'web-tab-close', 'aria-label': `${p.name} schließen`, title: 'Tab entfernen', 'data-focus': `web-close:${p.id}`,
       onClick: async () => {
@@ -150,6 +156,9 @@ function renderToolbar(p) {
     nav('back', 'Zurück', '←', !p.canGoBack), nav('forward', 'Vor', '→', !p.canGoForward),
     nav('reload', 'Neu laden', '↻', false), nav('home', 'Startseite der Seite', '⌂', false),
     middle,
+    isVideoPage(p.current) ? h('button', { class: 'btn video-btn', 'data-focus': 'web-video', disabled: !ui.state.claude.found,
+      title: 'Claude schaut sich das Video mit Bild und Ton an (Skill „watch“) und fragt dich danach, wo die Analyse hin soll',
+      onClick: async (e) => { const b = e.currentTarget; b.disabled = true; announce('Video wird vorbereitet …'); const r = await api.webAnalyzeVideo(p.id); b.disabled = false; if (!r.ok) { alert(r.error); return; } sendMessage(r.data); } }, h('span', { 'aria-hidden': 'true', text: '▶ ' }), 'Video analysieren') : null,
     h('button', { class: 'link', 'data-focus': 'web-rename-btn', onClick: () => { webv.renaming = true; renderWebChrome(); } }, 'Umbenennen'),
     h('button', { class: 'link', 'data-focus': 'web-browser', onClick: () => api.webOpenBrowser(p.id) }, 'Im Browser öffnen'));
 }
@@ -250,3 +259,10 @@ window.zentrale.onWebActivity((a) => {
   redraw();
   setTimeout(redraw, ACTIVITY_MS + 200);
 });
+
+// Grobe Erkennung für den Knopf; die genaue Prüfung macht die Zentrale beim Klick.
+const VIDEO_PAGE = [/youtube\.com\/(watch|shorts\/|live\/)/, /youtu\.be\/[\w-]{6,}/, /instagram\.com\/(reels?|p|tv)\/[\w-]+/, /tiktok\.com\/@[^/]+\/video\/\d+/,
+  /reddit\.com\/r\/[^/]+\/comments\//, /(x|twitter)\.com\/[^/]+\/status\/\d+/, /vimeo\.com\/\d+/, /loom\.com\/share\//, /facebook\.com\/(reel\/|watch|[^/]+\/videos\/)/];
+function isVideoPage(url) {
+  return typeof url === 'string' && url.startsWith('https://') && VIDEO_PAGE.some((re) => re.test(url));
+}

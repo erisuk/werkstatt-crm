@@ -30,6 +30,13 @@ const PRESETS = [
 ];
 
 const MAX_PORTALS = 40;
+// Die Kanäle von BIT AI News: eigenes Konto „bit“, damit sie nie mit privaten oder MURIS-Anmeldungen vermischt werden.
+const BIT_PROFILE = 'bit';
+const BIT_TABS = [
+  { name: 'Bit · YouTube Studio', url: 'https://studio.youtube.com/' },
+  { name: 'Bit · Instagram', url: 'https://www.instagram.com/' },
+  { name: 'Bit · TikTok', url: 'https://www.tiktok.com/' },
+];
 // Jedes Konto hat seinen eigenen Anmelde-Speicher; „standard“ ist der bisherige gemeinsame.
 const PROFILE = /^[a-z0-9-]{1,24}$/;
 const profileOf = (v) => (typeof v === 'string' && PROFILE.test(v) ? v : 'standard');
@@ -161,4 +168,4 @@ class PortalStore {
   }
 }
 
-module.exports = { PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, sanitize, MAX_PORTALS, partitionFor, profileOf };
+module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, sanitize, MAX_PORTALS, partitionFor, profileOf };

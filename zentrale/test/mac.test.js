@@ -169,7 +169,7 @@ test('Spotlight hört nach 30 Treffern auf und ignoriert führende Striche', asy
 // ---------- MCP-Server ----------
 
 test('MCP-Server: Lese-Werkzeuge ohne Rückfrage, Aktionen mit Rückfrage', () => {
-  assert.deepStrictEqual([...READ_ONLY_TOOLS].sort(), ['calendar_events', 'mail_unread', 'music_now_playing', 'notes_search', 'outlook_unread', 'reminders_list', 'spotlight_search']);
+  assert.deepStrictEqual([...READ_ONLY_TOOLS].sort(), ['calendar_events', 'mail_unread', 'music_now_playing', 'notes_search', 'outlook_unread', 'reminders_list', 'shortcuts_list', 'spotlight_search']);
   for (const t of TOOLS) assert.ok(t.inputSchema && t.inputSchema.type === 'object', t.name);
 });
 

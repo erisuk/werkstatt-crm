@@ -1,5 +1,6 @@
 // Hauptprozess: öffnet das Fenster, startet Claude automatisch und hält alles synchron.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard, globalShortcut, systemPreferences, powerMonitor } = require('electron');
+const { execFile } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -15,8 +16,18 @@ const files = require('./files');
 const music = require('./music');
 const vault = require('./vault');
 const servers = require('./servers');
-const { PortalStore, PRESETS } = require('./portals');
-const { WebTabs } = require('./web-tabs');
+const health = require('./health');
+const { FolderWatcher } = require('./watcher');
+const { AlertWatch } = require('./alerts');
+const morning = require('./morning');
+const { PlanStore, uploadPrompt } = require('./planner');
+const { PortalStore, PRESETS, partitionFor, BIT_PROFILE, BIT_TABS } = require('./portals');
+const { WebTabs, portalSession } = require('./web-tabs');
+const { videoSite, cookieFileText, analyzePrompt } = require('./video-analyze');
+const { WebsiteStudio, AGENT: WEB_AGENT } = require('./website-studio');
+const { FinanceStore, summary: financeSummary } = require('./finance');
+const { importCsv } = require('./finance-csv');
+const { MusicWatch } = require('./music-watch');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
 const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require('./n8n');
@@ -25,6 +36,12 @@ const { BrowserControl, makeBrowserOps } = require('./browser-control');
 const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
 const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
 const kommentare = require('./kommentare');
+const bitvideos = require('./bitvideos');
+
+const KOMMENTARE_TASK = 'Bit: Kommentare einsammeln';
+const KOMMENTARE_ZEIT = '18:00';
+const KOMMENTARE_PROMPT = 'Hol dir mit dem Werkzeug kommentare_auftrag den aktuellen Auftrag und führe ihn genau so aus. '
+  + 'Schreib, like und sende nichts. Bricht der Auftrag ab (z. B. weil ein anderes Konto angemeldet ist), melde nur den Grund.';
 
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
@@ -168,6 +185,17 @@ function setup() {
     send('state', snapshot());
   }
 
+  // Mac-Mitteilung (Klick holt die Zentrale nach vorn). view: welche Ansicht dabei geöffnet werden soll.
+  function notify(title, body, view) {
+    if (!Notification.isSupported()) return;
+    const n = new Notification({ title, body: String(body || '').slice(0, 240) });
+    liveNotifications.add(n);
+    const drop = () => liveNotifications.delete(n);
+    n.on('click', () => { drop(); if (!win) createWindow(); win.show(); win.focus(); if (view) send('go-view', view); });
+    n.on('close', drop);
+    n.show();
+  }
+
   // Neue Freigabe-Anfragen melden, auch wenn das Fenster gerade nicht vorne ist.
   function onApprovalsChanged() {
     pushState();
@@ -259,12 +287,12 @@ function setup() {
     if (raw.key && safeStorage.isEncryptionAvailable()) {
       try { key = safeStorage.decryptString(Buffer.from(raw.key, 'base64')); } catch { key = null; }
     }
-    n8nConfig = { url: normalizeBase(raw.url) || N8N_DEFAULT_URL, key };
+    n8nConfig = { url: normalizeBase(raw.url) || N8N_DEFAULT_URL, key, off: raw.off === true };
   }
 
   function saveN8n(next) {
     if (next.key && !safeStorage.isEncryptionAvailable()) return false;
-    const data = { url: next.url, key: next.key ? safeStorage.encryptString(next.key).toString('base64') : null };
+    const data = { url: next.url, key: next.key ? safeStorage.encryptString(next.key).toString('base64') : null, off: next.off === true };
     try {
       fs.mkdirSync(path.dirname(n8nFile()), { recursive: true });
       fs.writeFileSync(`${n8nFile()}.tmp`, JSON.stringify(data), { mode: 0o600 });
@@ -309,14 +337,16 @@ function setup() {
     const old = chat;
     chatGen += 1;
     const gen = chatGen;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs, approvalInfo });
+    // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
+    const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
+    const args = agent ? () => [...extraArgs(), '--agent', agent] : extraArgs;
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo });
     chat = c;
     c.on('event', (ev) => send('chat-event', { ...ev, gen }));
     c.on('status', () => pushState());
     c.on('approvals', onApprovalsChanged);
-    if (old) await old.dispose();
-    // Inzwischen ersetzt oder gelöscht: nicht mehr starten.
-    if (gen !== chatGen || chat !== c) return chatInfo();
+    // Den alten Claude im Hintergrund beenden – nicht darauf warten, sonst dauert jeder Wechsel ~1 s.
+    if (old) old.dispose().catch(() => {});
     c.start();
     pushState();
     return chatInfo();
@@ -356,6 +386,7 @@ function setup() {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        devTools: !app.isPackaged, // in der installierten App keine Entwicklerwerkzeuge (dort wären offene Finanzdaten lesbar)
       },
     });
     win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -373,7 +404,12 @@ function setup() {
     win.on('close', (e) => {
       if (isMac && !quitting) { e.preventDefault(); win.hide(); }
     });
-    win.on('closed', () => { win = null; });
+    win.on('closed', () => { win = null; finLock(); });
+    // Fenster weg oder minimiert: privater Bereich sofort zu.
+    win.on('hide', () => finLock());
+    win.on('blur', () => { clearTimeout(finBlurTimer); if (finUntil) finBlurTimer = setTimeout(finLock, FIN_BLUR_MS); });
+    win.on('focus', () => clearTimeout(finBlurTimer));
+    win.on('minimize', () => finLock());
   }
 
   ipcMain.handle('get-state', () => snapshot());
@@ -626,6 +662,244 @@ function setup() {
 
   ipcMain.handle('fs-search', (_e, q) => (typeof q === 'string' ? mac.spotlight(q, 60) : { ok: false, error: 'Suchbegriff fehlt.' }));
 
+  // ---------- Mac-Gesundheit und Kurzbefehle ----------
+
+  ipcMain.handle('mac-health', () => health.snapshot());
+  let bigFoldersCache = null;
+  let bigFoldersRun = null; // läuft schon eine Messung, warten alle auf dieselbe
+  ipcMain.handle('mac-big-folders', async (_e, refresh) => {
+    if (bigFoldersCache && refresh !== true) return bigFoldersCache;
+    if (!bigFoldersRun) bigFoldersRun = health.bigFolders().then((data) => { bigFoldersCache = { at: Date.now(), data }; return bigFoldersCache; }).finally(() => { bigFoldersRun = null; });
+    return bigFoldersRun;
+  });
+  // Papierkorb leeren macht der Nutzer selbst per Klick (mit Rückfrage) – endgültig, darum mit eigenem Dialog.
+  ipcMain.handle('mac-empty-trash', async () => {
+    const { response } = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Abbrechen', 'Papierkorb leeren'], defaultId: 0, cancelId: 0,
+      message: 'Papierkorb endgültig leeren?', detail: 'Alles im Papierkorb wird gelöscht und lässt sich danach nicht mehr zurückholen.' });
+    if (response !== 1) return { ok: false, cancelled: true };
+    const res = await mac.runScript('tell application "Finder" to empty trash', [], { language: 'AppleScript', app: 'Finder', timeout: 300000 });
+    bigFoldersCache = null;
+    return res.ok ? { ok: true } : res;
+  });
+  // Fehler-Meldungen: wichtige Server und fehlgeschlagene n8n-Workflows (jede Minute).
+  let alerts = null;
+  ipcMain.handle('alerts-recent', () => (alerts ? alerts.get() : []));
+  const startAlerts = () => {
+    alerts = new AlertWatch({
+      listServers: () => currentServers(false),
+      listExecutions: () => (n8nConfig.key ? n8nClient().listExecutions(30) : null),
+      listWorkflows: () => n8nClient().listWorkflows(),
+      notify: (title, body, view) => { notify(title, body, view); send('alerts', alerts.get()); },
+    });
+    alerts.start(60000);
+  };
+
+  // Bildschirm-Helfer: du wählst einen Bereich oder ein Fenster (Leertaste), Esc bricht ab.
+  // Das Bild bleibt auf dem Mac, bis du es im Chat abschickst; alte Bilder werden nach einem Tag gelöscht.
+  const SCREEN_SHORTCUT = 'CommandOrControl+Shift+Space';
+  const SHOT_MAX_AGE_MS = 24 * 3600 * 1000;
+  let capturing = false;
+  function cleanScreenshots() {
+    const dir = path.join(app.getPath('userData'), 'bildschirm');
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      try { if (Date.now() - fs.statSync(p).mtimeMs > SHOT_MAX_AGE_MS) fs.unlinkSync(p); } catch {}
+    }
+    return dir;
+  }
+  async function captureScreen() {
+    if (process.platform !== 'darwin') return { ok: false, error: 'Das geht nur auf dem Mac.' };
+    if (capturing) return { ok: false, cancelled: true };
+    capturing = true;
+    finLock(); // der private Bereich kommt nie aufs Bildschirmfoto
+    try {
+      const dir = cleanScreenshots();
+      const file = path.join(dir, `bildschirm-${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
+      // Die Zentrale selbst soll nicht im Bild sein.
+      if (win && win.isVisible() && win.isFocused()) { win.hide(); await new Promise((r) => setTimeout(r, 250)); }
+      await new Promise((resolve) => execFile('/usr/sbin/screencapture', ['-i', '-x', file], { timeout: 180000 }, () => resolve()));
+      if (!win) createWindow();
+      win.show();
+      win.focus();
+      if (!fs.existsSync(file)) return { ok: false, cancelled: true };
+      return { ok: true, path: file };
+    } finally { capturing = false; }
+  }
+  ipcMain.handle('screen-capture', () => captureScreen());
+  ipcMain.handle('screen-shortcut', () => ({ shortcut: 'Cmd+Shift+Leertaste', registered: globalShortcut.isRegistered(SCREEN_SHORTCUT) }));
+  const registerScreenShortcut = () => {
+    try {
+      globalShortcut.register(SCREEN_SHORTCUT, async () => { const r = await captureScreen(); if (r.ok) send('screen-shot', r.path); });
+    } catch {}
+  };
+
+  // ---------- Privat: Finanzen ----------
+  // Nur dieses Fenster darf fragen, nur nach Touch ID, nach 5 Minuten ohne Nutzung wieder zu.
+  // Keine Verbindung zu Claude, seinen Werkzeugen oder dem Netz; Bildschirmfotos sind gesperrt, solange offen.
+  const FIN_IDLE_MS = 5 * 60000;
+  let finUntil = 0;
+  const finStore = () => new FinanceStore(path.join(app.getPath('userData'), 'privat', 'finanzen.bin'), {
+    encrypt: (s) => safeStorage.encryptString(s), decrypt: (b) => safeStorage.decryptString(b) });
+  const fromWindow = (e) => !!win && e.sender === win.webContents;
+  // Höchstens 30 Minuten am Stück offen, auch wenn ständig etwas getan wird.
+  const FIN_MAX_MS = 30 * 60000;
+  const FIN_BLUR_MS = 60000;
+  let finOpenedAt = 0;
+  let finBlurTimer = null;
+  const finIsOpen = () => Date.now() < finUntil && Date.now() - finOpenedAt < FIN_MAX_MS;
+  function finLock() {
+    const was = finUntil > 0;
+    finUntil = 0;
+    clearTimeout(finBlurTimer);
+    if (win && !win.isDestroyed()) win.setContentProtection(false);
+    if (was) send('fin-locked');
+  }
+  const finGuard = (e) => {
+    if (!fromWindow(e)) return { ok: false, error: 'Nicht erlaubt.' };
+    if (!finIsOpen()) { finLock(); return { ok: false, locked: true, error: 'Der private Bereich ist gesperrt.' }; }
+    finUntil = Date.now() + FIN_IDLE_MS;
+    return null;
+  };
+  const finData = () => { const d = finStore().load(); return { ok: true, data: d, summary: financeSummary(d) }; };
+  // Entschlüsseln kann scheitern (z. B. Schlüsselbund geändert) – dann eine klare Meldung statt eines stillen Fehlers.
+  const finSafe = (fn) => { try { return fn(); } catch { return { ok: false, error: 'Die Finanzdaten ließen sich nicht lesen oder speichern (Schlüsselbund?).' }; } };
+  ipcMain.handle('fin-unlock', async (e) => {
+    if (!fromWindow(e)) return { ok: false, error: 'Nicht erlaubt.' };
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'Der Schlüsselbund ist nicht verfügbar – ohne ihn speichert die Zentrale keine Finanzdaten.' };
+    // Ohne Touch ID kein Zugang – ein bloßer Bestätigungs-Klick wäre keine Sperre.
+    if (process.platform !== 'darwin' || !systemPreferences.canPromptTouchID()) {
+      return { ok: false, error: 'Touch ID ist gerade nicht verfügbar (z. B. bei zugeklapptem Mac). Klapp den Mac auf oder richte Touch ID ein – ohne Fingerabdruck öffnet sich der Bereich nicht.' };
+    }
+    try { await systemPreferences.promptTouchID('deinen privaten Finanzbereich zu öffnen'); } catch { return { ok: false, cancelled: true }; }
+    // Inzwischen weggeklickt oder versteckt: nicht öffnen.
+    if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return { ok: false, cancelled: true };
+    win.setContentProtection(true);
+    finUntil = Date.now() + FIN_IDLE_MS;
+    finOpenedAt = Date.now();
+    try { return finData(); } catch { finLock(); return { ok: false, error: 'Die Finanzdaten ließen sich nicht entschlüsseln.' }; }
+  });
+  ipcMain.handle('fin-lock', (e) => { if (fromWindow(e)) finLock(); });
+  ipcMain.handle('fin-get', (e) => finGuard(e) || finSafe(finData));
+  ipcMain.handle('fin-save', (e, a) => finGuard(e) || finSafe(() => { const r = finStore().upsert(a && a.kind, a && a.item); return r.ok ? finData() : r; }));
+  ipcMain.handle('fin-remove', (e, a) => finGuard(e) || finSafe(() => { finStore().remove(a && a.kind, a && a.id); return finData(); }));
+  ipcMain.handle('fin-clear-moves', (e) => finGuard(e) || finSafe(() => { finStore().clearMoves(); return finData(); }));
+  ipcMain.handle('fin-import', async (e, accountId) => {
+    const g = finGuard(e);
+    if (g) return g;
+    const res = await dialog.showOpenDialog(win, { title: 'Kontoauszug (CSV) wählen', properties: ['openFile'], filters: [{ name: 'CSV', extensions: ['csv', 'txt'] }] });
+    if (res.canceled) return { ok: false, cancelled: true };
+    let buf;
+    try { buf = fs.readFileSync(res.filePaths[0]); } catch (err) { return { ok: false, error: err.message }; }
+    // Viele Banken exportieren noch in Windows-1252 statt UTF-8.
+    let text = buf.toString('utf8');
+    if (text.includes('\uFFFD')) text = new TextDecoder('windows-1252').decode(buf);
+    const parsed = importCsv(text, typeof accountId === 'string' ? accountId.slice(0, 64) : '');
+    if (!parsed.ok) return parsed;
+    const r = finSafe(() => finStore().addMoves(parsed.moves));
+    if (!r.ok) return r;
+    // Die CSV liegt sonst unverschlüsselt im Download-Ordner.
+    let trashed = false;
+    const { response } = await dialog.showMessageBox(win, { type: 'question', buttons: ['Behalten', 'In den Papierkorb'], defaultId: 1, cancelId: 0,
+      message: `${r.added} Buchungen übernommen.`, detail: 'Die CSV-Datei liegt noch unverschlüsselt auf dem Mac. In den Papierkorb legen?' });
+    if (response === 1) { try { await shell.trashItem(res.filePaths[0]); trashed = true; } catch {} }
+    return { ...finSafe(finData), imported: r.added, duplicates: r.skipped, unreadable: parsed.skipped, trashed };
+  });
+  const finTimer = setInterval(() => { if (finUntil && !finIsOpen()) finLock(); }, 15000);
+  powerMonitor.on('lock-screen', finLock);
+  powerMonitor.on('suspend', finLock);
+
+  // Website-Werkstatt
+  let studioObj = null;
+  function studio() { return studioObj || (studioObj = new WebsiteStudio(path.join(app.getPath('userData'), 'websites.json'))); }
+  ipcMain.handle('studio-list', () => studio().list());
+  ipcMain.handle('studio-suggest', (_e, avoid) => studio().suggest(typeof avoid === 'string' ? avoid : null));
+  ipcMain.handle('studio-forget', (_e, id) => { if (typeof id === 'string') studio().forget(id); return studio().list(); });
+  ipcMain.handle('studio-create', async (_e, brief) => {
+    // Erst prüfen, ob Claude da ist – sonst bliebe ein halb angelegter Ordner zurück.
+    await claudeReady;
+    if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const res = studio().create(brief);
+    if (!res.ok) return res;
+    const info = await openChat({ cwd: res.dir });
+    return { ok: true, chat: info, prompt: res.prompt, dir: res.dir };
+  });
+
+  // Social-Media-Planer
+  let planner = null;
+  const plannerStore = () => planner || (planner = new PlanStore(path.join(app.getPath('userData'), 'planer.json')));
+  const plannerTabs = () => (webTabs ? webTabs.info().portals.map((p) => ({ id: p.id, name: p.name, url: p.url, title: p.title })) : []);
+  ipcMain.handle('planner-list', () => ({ posts: plannerStore().list(), tabs: plannerTabs() }));
+  ipcMain.handle('planner-save', (_e, post) => plannerStore().upsert(post));
+  ipcMain.handle('planner-remove', (_e, id) => { if (typeof id === 'string') plannerStore().remove(id); return { ok: true }; });
+  ipcMain.handle('planner-status', (_e, a) => plannerStore().setStatus(a && a.id, a && a.status));
+  ipcMain.handle('planner-upload', (_e, a) => {
+    const post = plannerStore().list().find((p) => p.id === (a && a.id));
+    const target = post && post.targets.find((t) => t.tabId === (a && a.tabId));
+    if (!target) return { ok: false, error: 'Beitrag oder Tab nicht gefunden.' };
+    if (!fs.existsSync(post.video)) return { ok: false, error: `Das Video liegt nicht mehr hier: ${post.video}` };
+    return uploadPrompt(post, target, plannerTabs());
+  });
+  // Dateien für den Chat wählen (nur der Pfad geht ins Eingabefeld, die Datei bleibt, wo sie ist).
+  ipcMain.handle('pick-files', async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: 'Dateien für Claude wählen' });
+    return res.canceled ? [] : res.filePaths.slice(0, 10);
+  });
+  ipcMain.handle('pick-video', async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile'], title: 'Video wählen', defaultPath: path.join(os.homedir(), 'Movies'),
+      filters: [{ name: 'Videos', extensions: ['mp4', 'mov', 'm4v', 'webm'] }] });
+    return res.canceled ? null : res.filePaths[0];
+  });
+  const checkPlanner = () => {
+    for (const p of plannerStore().takeDue()) {
+      notify('Beitrag ist fällig', `„${p.title}“ für ${p.targets.map((t) => t.tabName).join(', ')} – in der Zentrale auf „Hochladen“ tippen.`, 'planner');
+    }
+  };
+
+  // Morgen-Cockpit: Lage für „Heute“ und einmal täglich als Mitteilung.
+  // Erst beim ersten Gebrauch anlegen – „store“ steht weiter unten.
+  const morningStore = () => store('morning.json', { lastSent: null });
+  async function cockpitNow() {
+    const w = folderWatcher ? folderWatcher.get() : { log: [], unsorted: [] };
+    return morning.cockpit({ portals: webTabs ? webTabs.info().portals : [], alerts: alerts ? alerts.get() : [],
+      watcherLog: w.log, unsorted: w.unsorted, servers: await currentServers(false).catch(() => []) });
+  }
+  ipcMain.handle('cockpit', () => cockpitNow());
+  let morningTimer = null;
+  const startMorning = () => {
+    morningTimer = setInterval(async () => {
+      checkPlanner();
+      const m = settings.get().morning;
+      const now = new Date();
+      if (!m.enabled || !morning.isDue(now, m.time, morningStore().get().lastSent)) return;
+      morningStore().set({ lastSent: morning.dayKey(now) });
+      let events = null;
+      if (process.platform === 'darwin' && settings.get().connections.mac) {
+        const r = await mac.todayPart('events', { launch: false }).catch(() => null);
+        if (r && r.ok && Array.isArray(r.data)) events = r.data;
+      }
+      notify('Guten Morgen', morning.summaryText(await cockpitNow(), events), 'overview');
+    }, 30000);
+  };
+
+  // Ordner-Wächter
+  let folderWatcher = null;
+  ipcMain.handle('watch-state', () => folderWatcher.get());
+  ipcMain.handle('watch-save', (_e, rule) => folderWatcher.saveRule(rule));
+  ipcMain.handle('watch-remove', (_e, id) => { if (typeof id === 'string') folderWatcher.removeRule(id); return folderWatcher.get(); });
+  ipcMain.handle('watch-undo', (_e, id) => folderWatcher.undo(id));
+  ipcMain.handle('watch-dismiss', (_e, file) => { folderWatcher.dismiss(file); return folderWatcher.get(); });
+  const startFolderWatcher = () => {
+    folderWatcher = new FolderWatcher(path.join(app.getPath('userData'), 'watcher.json'));
+    folderWatcher.on('change', () => send('watch-state', folderWatcher.get()));
+    folderWatcher.on('moved', (m) => notify('Einsortiert', `${path.basename(m.to)} → ${path.basename(path.dirname(m.to))}`));
+    folderWatcher.on('failed', (f) => notify('Einsortieren ging nicht', `${path.basename(f.path)}: ${f.error}`));
+    folderWatcher.start();
+  };
+
+  ipcMain.handle('shortcuts-list', () => (process.platform === 'darwin' ? mac.listShortcuts() : { ok: true, data: [] }));
+  ipcMain.handle('shortcuts-run', (_e, name) => (typeof name === 'string' ? mac.runShortcut(name) : { ok: false, error: 'Name fehlt.' }));
+
   // ---------- Projekte & Server ----------
 
   // Kleine JSON-Speicher in userData (von der Zentrale gestartete Server, selbst hinzugefügte/ausgeblendete Projekte).
@@ -658,7 +932,7 @@ function setup() {
     const match = (await currentServers(true)).find((s) => s.pid === pid && s.port === port);
     if (!match) return { ok: false, error: 'Dieser Server läuft nicht mehr.' };
     const res = await servers.stopServer(match, { force: !!(args && args.force), selfPids: [process.pid] });
-    if (res.ok) startedStore.set(startedStore.get().filter((s) => s.pid !== pid));
+    if (res.ok) { startedStore.set(startedStore.get().filter((s) => s.pid !== pid)); if (alerts) alerts.expectStop(port); }
     return res;
   });
 
@@ -733,18 +1007,40 @@ function setup() {
     if (!v) return { ok: false, error: 'Kein Obsidian-Vault gefunden. Öffne Obsidian einmal mit deinem Vault.' };
     try { return fn(v.path); } catch (e) { return { ok: false, error: e.message }; }
   };
-  // ---------- Kommentare („Wer will den Code?“) ----------
+  // ---------- Kommentare unter Bits Videos (Stichwort + Antwort je Video aus bitvideos.aktionen) ----------
   ipcMain.handle('kommentare-get', () => {
     const d = kommentare.load(kommentareFile());
-    return { ok: true, data: { ...d, nochFrei: kommentare.nochFrei(d.eintraege) } };
+    const task = scheduler && scheduler.list().find((t) => t.name === KOMMENTARE_TASK);
+    return { ok: true, data: { ...d, nochFrei: kommentare.nochFrei(d.eintraege), aktionen: bitvideos.aktionen(),
+      automatik: task ? { an: !!task.enabled, zeit: task.time, laeuft: !!task.running, zuletzt: task.lastStatus || null } : null } };
   });
   ipcMain.handle('kommentare-status', (_e, a) => kommentare.status(kommentareFile(), a && a.id, a && a.status));
   ipcMain.handle('kommentare-remove', (_e, id) => kommentare.entfernen(kommentareFile(), id));
   ipcMain.handle('kommentare-auftrag', (_e, a) => {
     const d = kommentare.load(kommentareFile());
-    return a && a.art === 'einsammeln' ? kommentare.auftragEinsammeln(d) : kommentare.auftragVorbereiten(d, a && a.id);
+    return a && a.art === 'einsammeln' ? kommentare.auftragEinsammeln(d, bitvideos.aktionen())
+      : kommentare.auftragVorbereiten(d, a && a.id, bitvideos.aktionen());
+  });
+  // Tägliches Einsammeln = eine normale Aufgabe (Seite „Aufgaben“), die sich ihren Auftrag selbst holt.
+  ipcMain.handle('kommentare-automatik', (_e, an) => {
+    const task = scheduler.list().find((t) => t.name === KOMMENTARE_TASK);
+    if (an && !task) scheduler.upsert({ name: KOMMENTARE_TASK, time: KOMMENTARE_ZEIT, prompt: KOMMENTARE_PROMPT });
+    else if (an && !task.enabled) scheduler.toggle(task.id);
+    else if (!an && task) scheduler.remove(task.id);
+    pushState();
+    return { ok: true };
   });
   ipcMain.handle('kommentare-settings', (_e, patch) => kommentare.einstellen(kommentareFile(), patch || {}));
+
+  // ---------- Bit-Videos (Video-Automatik im Studio-Ordner) ----------
+  ipcMain.handle('bit-get', () => bitvideos.uebersicht());
+  ipcMain.handle('bit-pause', (_e, bis) => bitvideos.pauseSetzen(bis));
+  ipcMain.handle('bit-settings', (_e, patch) => bitvideos.einstellen(patch));
+  ipcMain.handle('bit-wunsch-add', (_e, a) => bitvideos.wunschHinzu(a && a.thema, a && a.link));
+  ipcMain.handle('bit-wunsch-remove', (_e, id) => bitvideos.wunschEntfernen(id));
+  ipcMain.handle('bit-wunsch-vor', (_e, id) => bitvideos.wunschVor(id));
+  ipcMain.handle('bit-aktion', (_e, a) => bitvideos.aktionSetzen(a && a.video, a && a.patch));
+  ipcMain.handle('bit-sperren', (_e, a) => bitvideos.sperren(a && a.thema, !!(a && a.an)));
 
   ipcMain.handle('vault-info', () => ({ vault: currentVault() }));
   ipcMain.handle('vault-search', (_e, q) => withVault((dir) => vault.search(dir, typeof q === 'string' ? q : '')));
@@ -761,6 +1057,15 @@ function setup() {
 
   const musicAllowed = () => process.platform === 'darwin' && settings.get().connections.mac;
   ipcMain.handle('music-now', () => (musicAllowed() ? music.nowPlaying() : null));
+  // Titelwechsel, Play und Pause kommen sofort an (statt erst bei der nächsten Abfrage).
+  const musicWatch = new MusicWatch();
+  let musicSeq = 0;
+  musicWatch.on('change', async () => {
+    if (!musicAllowed() || !win) return;
+    const seq = ++musicSeq; // beim schnellen Weiterschalten nur das neueste Ergebnis zeigen
+    const res = await music.nowPlaying().catch(() => null);
+    if (seq === musicSeq && res && res.ok) send('music-now', res.data);
+  });
   ipcMain.handle('music-control', (_e, args) => (musicAllowed() && args
     ? music.control(String(args.app || ''), String(args.action || '')) : { ok: false, error: 'Die Verbindung „Mein Mac“ ist aus.' }));
 
@@ -815,7 +1120,20 @@ function setup() {
 
   ipcMain.handle('n8n-connect', async (_e, args) => connectN8n(args && args.url, args && args.key));
 
-  ipcMain.handle('n8n-disconnect', () => saveN8n({ url: n8nConfig.url, key: null }));
+  // Schlüssel, den die Bit-Automatik schon auf dem Mac hat (~/.config/bitai, nur für dich lesbar):
+  // die Zentrale liest ihn selbst und legt ihn in den Schlüsselbund – angezeigt wird er nie.
+  const BIT_N8N_KEY = path.join(os.homedir(), '.config', 'bitai', 'n8n_api_key');
+  const bitKeyUsable = () => { try { const st = fs.statSync(BIT_N8N_KEY); return st.isFile() && (st.mode & 0o077) === 0 && st.size < 4000; } catch { return false; } };
+  ipcMain.handle('n8n-file-available', () => bitKeyUsable());
+  ipcMain.handle('n8n-connect-file', async (_e, args) => {
+    if (!bitKeyUsable()) return { ok: false, error: 'Kein passender n8n-Schlüssel auf dem Mac gefunden.' };
+    const url = normalizeBase((args && args.url) || n8nConfig.url);
+    if (!url || (!isLoopback(url) && url !== n8nConfig.url)) return { ok: false, error: 'Den Schlüssel der Bit-Automatik gibt die Zentrale nur an das n8n auf diesem Mac.' };
+    return connectN8n(url, fs.readFileSync(BIT_N8N_KEY, 'utf8'));
+  });
+
+  // Bewusst getrennt: dann verbindet die Zentrale auch beim Start nicht von selbst wieder.
+  ipcMain.handle('n8n-disconnect', () => saveN8n({ url: n8nConfig.url, key: null, off: true }));
   ipcMain.handle('n8n-workflows', () => n8nClient().listWorkflows());
   ipcMain.handle('n8n-executions', () => n8nClient().listExecutions(50));
   ipcMain.handle('n8n-set-active', (_e, args) => (args && typeof args.id === 'string'
@@ -844,6 +1162,18 @@ function setup() {
     if (res.ok) webTabs.show(res.portal.id);
     return res.ok ? { ok: true, id: res.portal.id } : res;
   });
+  // „BIT AI News einrichten“: die drei Kanal-Tabs im eigenen Bit-Konto anlegen (Anmelden machst du).
+  ipcMain.handle('web-setup-bit', () => {
+    const have = webTabs.store.get().portals.filter((p) => p.profile === BIT_PROFILE).map((p) => p.url);
+    let first = null;
+    for (const t of BIT_TABS.filter((x) => !have.includes(x.url))) {
+      const r = webTabs.store.add(t.name, t.url, BIT_PROFILE);
+      if (!r.ok) return r;
+      first = first || r.portal.id;
+    }
+    if (first) webTabs.show(first);
+    return { ok: true, added: !!first };
+  });
   ipcMain.handle('web-show', (_e, id) => typeof id === 'string' && webTabs.show(id));
   ipcMain.handle('web-close', (_e, id) => { if (typeof id === 'string') webTabs.close(id); });
   ipcMain.handle('web-rename', (_e, args) => {
@@ -856,6 +1186,51 @@ function setup() {
   });
   ipcMain.handle('web-bounds', (_e, rect) => webTabs.setBounds(rect));
   ipcMain.handle('web-visible', (_e, on) => webTabs.setVisible(on === true));
+  // „Video analysieren“: Auftrag für Claude zum Video im Tab. Braucht die Seite eine Anmeldung, kommt eine
+  // Cookie-Datei nur für diese Seite dazu (nur für dich lesbar, nach 15 Minuten und beim Beenden gelöscht).
+  const COOKIE_TTL_MS = 15 * 60000;
+  const cookieDir = () => path.join(app.getPath('userData'), 'video-anmeldung');
+  const clearCookieFiles = (all) => {
+    try {
+      for (const f of fs.readdirSync(cookieDir())) {
+        const p = path.join(cookieDir(), f);
+        if (all || Date.now() - fs.statSync(p).mtimeMs > COOKIE_TTL_MS) fs.unlinkSync(p);
+      }
+    } catch {}
+  };
+  ipcMain.handle('web-analyze-video', async (_e, id) => {
+    const p = webTabs && webTabs.info().portals.find((x) => x.id === id);
+    if (!p) return { ok: false, error: 'Tab nicht gefunden.' };
+    const site = videoSite(p.current);
+    if (!site) return { ok: false, error: 'Öffne zuerst ein einzelnes Video in diesem Tab.' };
+    clearCookieFiles(true);
+    if (!site.login) return { ok: true, data: analyzePrompt(p.current, site), site: site.name };
+    // Seiten mit Anmeldung: die Zentrale lädt das Video selbst herunter. Die Anmeldung (Cookies) bekommt Claude
+    // nie zu sehen – die Datei existiert nur während des Downloads und wird sofort danach gelöscht.
+    const ytdlp = ['/opt/homebrew/bin/yt-dlp', '/usr/local/bin/yt-dlp'].find((x) => fs.existsSync(x));
+    if (!ytdlp) return { ok: false, error: 'yt-dlp fehlt (brew install yt-dlp).' };
+    const cookies = await portalSession(partitionFor(p.profile)).cookies.get({}).catch(() => []);
+    const { count, text } = cookieFileText(cookies, site.domain);
+    if (!count) return { ok: false, error: `Bitte melde dich zuerst im Tab bei ${site.name} an.` };
+    fs.mkdirSync(cookieDir(), { recursive: true, mode: 0o700 });
+    const cookieFile = path.join(cookieDir(), `${site.domain}-${Date.now()}.txt`);
+    fs.writeFileSync(cookieFile, text, { mode: 0o600 });
+    const outDir = path.join(os.homedir(), 'video-analyse', '.downloads');
+    fs.mkdirSync(outDir, { recursive: true });
+    let out = '';
+    try {
+      out = await new Promise((resolve, reject) => execFile(ytdlp, ['--no-playlist', '--no-progress', '--cookies', cookieFile,
+        '-f', 'bv*[height<=1080]+ba/b[height<=1080]/b', '--merge-output-format', 'mp4', '--restrict-filenames',
+        '-o', path.join(outDir, '%(title).60s-%(id)s.%(ext)s'), '--print', 'after_move:filepath', '--no-simulate', p.current],
+      { timeout: 300000, maxBuffer: 4 * 1024 * 1024, env: claude.env || process.env }, (err, stdout) => (err ? reject(err) : resolve(String(stdout)))));
+    } catch (err) {
+      return { ok: false, error: `Das Video ließ sich nicht laden: ${String(err.message || err).split('\n').slice(-2).join(' ').slice(0, 200)}` };
+    } finally { clearCookieFiles(true); }
+    const file = out.trim().split('\n').filter((l) => l.startsWith('/')).pop();
+    if (!file || !fs.existsSync(file)) return { ok: false, error: 'Das Video ließ sich nicht laden.' };
+    return { ok: true, data: analyzePrompt(p.current, site, file), site: site.name };
+  });
+
   ipcMain.handle('web-open-browser', (_e, id) => {
     const url = typeof id === 'string' && webTabs.currentUrl(id);
     if (url && /^https?:\/\//.test(url)) shell.openExternal(url);
@@ -892,7 +1267,17 @@ function setup() {
     browserProxy = startProxy(makeBrowserOps(browser), n8nSocketPath(app.getPath('userData'), 'browser'));
     nativeTheme.themeSource = settings.get().theme;
     loadN8n();
+    // Noch nicht verbunden (und nicht bewusst getrennt): mit dem Schlüssel der Bit-Automatik verbinden.
+    if (!n8nConfig.key && !n8nConfig.off && bitKeyUsable()) {
+      connectN8n(n8nConfig.url, fs.readFileSync(BIT_N8N_KEY, 'utf8')).then((r) => { if (r.ok) pushState(); }).catch(() => {});
+    }
     n8nProxy = startProxy(makeOps(n8nClient), n8nSocketPath(app.getPath('userData')));
+    startFolderWatcher();
+    startAlerts();
+    startMorning();
+    registerScreenShortcut();
+    cleanScreenshots();
+    musicWatch.start();
     writeMacConfig();
     refreshProjects();
     createWindow();
@@ -936,6 +1321,13 @@ function setup() {
     e.preventDefault();
     cleanedUp = true;
     if (scheduler) scheduler.stop();
+    if (folderWatcher) folderWatcher.stop();
+    if (alerts) alerts.stop();
+    clearInterval(morningTimer);
+    clearInterval(finTimer);
+    globalShortcut.unregisterAll();
+    musicWatch.stop();
+    clearCookieFiles(true);
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];
     if (webTabs) jobs.push(webTabs.saveLogins());
