@@ -537,3 +537,10 @@ h2 { font-size: 16px; font-weight: 600; }
 .check-line { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .check-line input { width: 16px; height: 16px; accent-color: var(--accent); }
 .plan-row { flex-wrap: wrap; }
+
+/* Website-Werkstatt */
+.direction { padding: 14px 16px; background: var(--card-strong); }
+.direction-name { font-size: 20px; font-weight: 700; margin: 2px 0 8px; }
+.direction-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+.direction-facts dt { color: var(--text-2); font-weight: 600; }
+.direction-facts dd { margin: 0; }

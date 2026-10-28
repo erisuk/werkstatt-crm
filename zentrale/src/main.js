@@ -24,6 +24,7 @@ const { PlanStore, uploadPrompt } = require('./planner');
 const { PortalStore, PRESETS, partitionFor } = require('./portals');
 const { WebTabs, portalSession } = require('./web-tabs');
 const { videoSite, cookieFileText, analyzePrompt } = require('./video-analyze');
+const { WebsiteStudio, AGENT: WEB_AGENT } = require('./website-studio');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
 const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require('./n8n');
@@ -327,7 +328,10 @@ function setup() {
     const old = chat;
     chatGen += 1;
     const gen = chatGen;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs, approvalInfo });
+    // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
+    const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
+    const args = agent ? () => [...extraArgs(), '--agent', agent] : extraArgs;
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo });
     chat = c;
     c.on('event', (ev) => send('chat-event', { ...ev, gen }));
     c.on('status', () => pushState());
@@ -708,6 +712,21 @@ function setup() {
       globalShortcut.register(SCREEN_SHORTCUT, async () => { const r = await captureScreen(); if (r.ok) send('screen-shot', r.path); });
     } catch {}
   };
+
+  // Website-Werkstatt
+  let studioObj = null;
+  function studio() { return studioObj || (studioObj = new WebsiteStudio(path.join(app.getPath('userData'), 'websites.json'))); }
+  ipcMain.handle('studio-list', () => studio().list());
+  ipcMain.handle('studio-suggest', (_e, avoid) => studio().suggest(typeof avoid === 'string' ? avoid : null));
+  ipcMain.handle('studio-forget', (_e, id) => { if (typeof id === 'string') studio().forget(id); return studio().list(); });
+  ipcMain.handle('studio-create', async (_e, brief) => {
+    const res = studio().create(brief);
+    if (!res.ok) return res;
+    await claudeReady;
+    if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const info = await openChat({ cwd: res.dir });
+    return { ok: true, chat: info, prompt: res.prompt, dir: res.dir };
+  });
 
   // Social-Media-Planer
   let planner = null;
