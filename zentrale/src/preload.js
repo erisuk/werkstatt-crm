@@ -107,6 +107,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   webBounds: (rect) => ipcRenderer.invoke('web-bounds', rect),
   webVisible: (on) => ipcRenderer.invoke('web-visible', on === true),
   webOpenBrowser: (id) => ipcRenderer.invoke('web-open-browser', id),
+  webAnalyzeVideo: (id) => ipcRenderer.invoke('web-analyze-video', id),
   webClearLogins: () => ipcRenderer.invoke('web-clear-logins'),
   onWebState: (fn) => ipcRenderer.on('web-state', (_e, s) => fn(s)),
   onWebActivity: (fn) => ipcRenderer.on('web-activity', (_e, a) => fn(a)),

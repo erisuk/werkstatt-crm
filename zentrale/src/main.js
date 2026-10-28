@@ -21,8 +21,9 @@ const { FolderWatcher } = require('./watcher');
 const { AlertWatch } = require('./alerts');
 const morning = require('./morning');
 const { PlanStore, uploadPrompt } = require('./planner');
-const { PortalStore, PRESETS } = require('./portals');
-const { WebTabs } = require('./web-tabs');
+const { PortalStore, PRESETS, partitionFor } = require('./portals');
+const { WebTabs, portalSession } = require('./web-tabs');
+const { videoSite, cookieFileText, analyzePrompt } = require('./video-analyze');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
 const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require('./n8n');
@@ -1008,6 +1009,38 @@ function setup() {
   });
   ipcMain.handle('web-bounds', (_e, rect) => webTabs.setBounds(rect));
   ipcMain.handle('web-visible', (_e, on) => webTabs.setVisible(on === true));
+  // „Video analysieren“: Auftrag für Claude zum Video im Tab. Braucht die Seite eine Anmeldung, kommt eine
+  // Cookie-Datei nur für diese Seite dazu (nur für dich lesbar, nach 15 Minuten und beim Beenden gelöscht).
+  const COOKIE_TTL_MS = 15 * 60000;
+  const cookieDir = () => path.join(app.getPath('userData'), 'video-anmeldung');
+  const clearCookieFiles = (all) => {
+    try {
+      for (const f of fs.readdirSync(cookieDir())) {
+        const p = path.join(cookieDir(), f);
+        if (all || Date.now() - fs.statSync(p).mtimeMs > COOKIE_TTL_MS) fs.unlinkSync(p);
+      }
+    } catch {}
+  };
+  ipcMain.handle('web-analyze-video', async (_e, id) => {
+    const p = webTabs && webTabs.info().portals.find((x) => x.id === id);
+    if (!p) return { ok: false, error: 'Tab nicht gefunden.' };
+    const site = videoSite(p.current);
+    if (!site) return { ok: false, error: 'Öffne zuerst ein einzelnes Video in diesem Tab.' };
+    clearCookieFiles(false);
+    let cookieFile = null;
+    if (site.login) {
+      const cookies = await portalSession(partitionFor(p.profile)).cookies.get({}).catch(() => []);
+      const { count, text } = cookieFileText(cookies, site.domain);
+      if (count) {
+        fs.mkdirSync(cookieDir(), { recursive: true, mode: 0o700 });
+        cookieFile = path.join(cookieDir(), `${site.domain}-${Date.now()}.txt`);
+        fs.writeFileSync(cookieFile, text, { mode: 0o600 });
+        setTimeout(() => clearCookieFiles(false), COOKIE_TTL_MS + 1000);
+      }
+    }
+    return { ok: true, data: analyzePrompt(p.current, site, cookieFile), site: site.name };
+  });
+
   ipcMain.handle('web-open-browser', (_e, id) => {
     const url = typeof id === 'string' && webTabs.currentUrl(id);
     if (url && /^https?:\/\//.test(url)) shell.openExternal(url);
@@ -1096,6 +1129,7 @@ function setup() {
     if (alerts) alerts.stop();
     clearInterval(morningTimer);
     globalShortcut.unregisterAll();
+    clearCookieFiles(true);
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];
     if (webTabs) jobs.push(webTabs.saveLogins());

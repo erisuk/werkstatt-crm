@@ -150,6 +150,9 @@ function renderToolbar(p) {
     nav('back', 'Zurück', '←', !p.canGoBack), nav('forward', 'Vor', '→', !p.canGoForward),
     nav('reload', 'Neu laden', '↻', false), nav('home', 'Startseite der Seite', '⌂', false),
     middle,
+    isVideoPage(p.current) ? h('button', { class: 'btn video-btn', 'data-focus': 'web-video', disabled: !ui.state.claude.found,
+      title: 'Claude schaut sich das Video mit Bild und Ton an (Skill „watch“) und fragt dich danach, wo die Analyse hin soll',
+      onClick: async () => { const r = await api.webAnalyzeVideo(p.id); if (!r.ok) { alert(r.error); return; } sendMessage(r.data); } }, '▶ Video analysieren') : null,
     h('button', { class: 'link', 'data-focus': 'web-rename-btn', onClick: () => { webv.renaming = true; renderWebChrome(); } }, 'Umbenennen'),
     h('button', { class: 'link', 'data-focus': 'web-browser', onClick: () => api.webOpenBrowser(p.id) }, 'Im Browser öffnen'));
 }
@@ -250,3 +253,10 @@ window.zentrale.onWebActivity((a) => {
   redraw();
   setTimeout(redraw, ACTIVITY_MS + 200);
 });
+
+// Grobe Erkennung für den Knopf; die genaue Prüfung macht die Zentrale beim Klick.
+const VIDEO_PAGE = [/youtube\.com\/(watch|shorts\/|live\/)/, /youtu\.be\/[\w-]{6,}/, /instagram\.com\/(reels?|p|tv)\/[\w-]+/, /tiktok\.com\/@[^/]+\/video\/\d+/,
+  /reddit\.com\/r\/[^/]+\/comments\//, /(x|twitter)\.com\/[^/]+\/status\/\d+/, /vimeo\.com\/\d+/, /loom\.com\/share\//, /facebook\.com\/(reel\/|watch|[^/]+\/videos\/)/];
+function isVideoPage(url) {
+  return typeof url === 'string' && url.startsWith('https://') && VIDEO_PAGE.some((re) => re.test(url));
+}
