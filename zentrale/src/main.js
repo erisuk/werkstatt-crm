@@ -1,5 +1,6 @@
 // Hauptprozess: öffnet das Fenster, startet Claude automatisch und hält alles synchron.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard, globalShortcut } = require('electron');
+const { execFile } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -19,6 +20,7 @@ const health = require('./health');
 const { FolderWatcher } = require('./watcher');
 const { AlertWatch } = require('./alerts');
 const morning = require('./morning');
+const { PlanStore, uploadPrompt } = require('./planner');
 const { PortalStore, PRESETS } = require('./portals');
 const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
@@ -671,6 +673,67 @@ function setup() {
     alerts.start(60000);
   };
 
+  // Bildschirm-Helfer: du wählst einen Bereich oder ein Fenster (Leertaste), Esc bricht ab.
+  // Das Bild bleibt auf dem Mac, bis du es im Chat abschickst; alte Bilder werden nach einem Tag gelöscht.
+  const SCREEN_SHORTCUT = 'CommandOrControl+Shift+Space';
+  const SHOT_MAX_AGE_MS = 24 * 3600 * 1000;
+  let capturing = false;
+  async function captureScreen() {
+    if (process.platform !== 'darwin') return { ok: false, error: 'Das geht nur auf dem Mac.' };
+    if (capturing) return { ok: false, cancelled: true };
+    capturing = true;
+    try {
+      const dir = path.join(app.getPath('userData'), 'bildschirm');
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      for (const f of fs.readdirSync(dir)) {
+        const p = path.join(dir, f);
+        try { if (Date.now() - fs.statSync(p).mtimeMs > SHOT_MAX_AGE_MS) fs.unlinkSync(p); } catch {}
+      }
+      const file = path.join(dir, `bildschirm-${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
+      // Die Zentrale selbst soll nicht im Bild sein.
+      if (win && win.isVisible() && win.isFocused()) { win.hide(); await new Promise((r) => setTimeout(r, 250)); }
+      await new Promise((resolve) => execFile('/usr/sbin/screencapture', ['-i', '-x', file], { timeout: 180000 }, () => resolve()));
+      if (!win) createWindow();
+      win.show();
+      win.focus();
+      if (!fs.existsSync(file)) return { ok: false, cancelled: true };
+      return { ok: true, path: file };
+    } finally { capturing = false; }
+  }
+  ipcMain.handle('screen-capture', () => captureScreen());
+  ipcMain.handle('screen-shortcut', () => ({ shortcut: 'Cmd+Shift+Leertaste', registered: globalShortcut.isRegistered(SCREEN_SHORTCUT) }));
+  const registerScreenShortcut = () => {
+    try {
+      globalShortcut.register(SCREEN_SHORTCUT, async () => { const r = await captureScreen(); if (r.ok) send('screen-shot', r.path); });
+    } catch {}
+  };
+
+  // Social-Media-Planer
+  let planner = null;
+  const plannerStore = () => planner || (planner = new PlanStore(path.join(app.getPath('userData'), 'planer.json')));
+  const plannerTabs = () => (webTabs ? webTabs.info().portals.map((p) => ({ id: p.id, name: p.name, url: p.url, title: p.title })) : []);
+  ipcMain.handle('planner-list', () => ({ posts: plannerStore().list(), tabs: plannerTabs() }));
+  ipcMain.handle('planner-save', (_e, post) => plannerStore().upsert(post));
+  ipcMain.handle('planner-remove', (_e, id) => { if (typeof id === 'string') plannerStore().remove(id); return { ok: true }; });
+  ipcMain.handle('planner-status', (_e, a) => plannerStore().setStatus(a && a.id, a && a.status));
+  ipcMain.handle('planner-upload', (_e, a) => {
+    const post = plannerStore().list().find((p) => p.id === (a && a.id));
+    const target = post && post.targets.find((t) => t.tabId === (a && a.tabId));
+    if (!target) return { ok: false, error: 'Beitrag oder Tab nicht gefunden.' };
+    if (!fs.existsSync(post.video)) return { ok: false, error: `Das Video liegt nicht mehr hier: ${post.video}` };
+    return uploadPrompt(post, target, plannerTabs());
+  });
+  ipcMain.handle('pick-video', async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile'], title: 'Video wählen', defaultPath: path.join(os.homedir(), 'Movies'),
+      filters: [{ name: 'Videos', extensions: ['mp4', 'mov', 'm4v', 'webm'] }] });
+    return res.canceled ? null : res.filePaths[0];
+  });
+  const checkPlanner = () => {
+    for (const p of plannerStore().takeDue()) {
+      notify('Beitrag ist fällig', `„${p.title}“ für ${p.targets.map((t) => t.tabName).join(', ')} – in der Zentrale auf „Hochladen“ tippen.`, 'planner');
+    }
+  };
+
   // Morgen-Cockpit: Lage für „Heute“ und einmal täglich als Mitteilung.
   // Erst beim ersten Gebrauch anlegen – „store“ steht weiter unten.
   const morningStore = () => store('morning.json', { lastSent: null });
@@ -683,6 +746,7 @@ function setup() {
   let morningTimer = null;
   const startMorning = () => {
     morningTimer = setInterval(async () => {
+      checkPlanner();
       const m = settings.get().morning;
       const now = new Date();
       if (!m.enabled || !morning.isDue(now, m.time, morningStore().get().lastSent)) return;
@@ -984,6 +1048,7 @@ function setup() {
     startFolderWatcher();
     startAlerts();
     startMorning();
+    registerScreenShortcut();
     writeMacConfig();
     refreshProjects();
     createWindow();
@@ -1030,6 +1095,7 @@ function setup() {
     if (folderWatcher) folderWatcher.stop();
     if (alerts) alerts.stop();
     clearInterval(morningTimer);
+    globalShortcut.unregisterAll();
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];
     if (webTabs) jobs.push(webTabs.saveLogins());

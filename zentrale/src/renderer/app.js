@@ -568,6 +568,9 @@ function renderChat() {
 
   const input = h('textarea', { id: 'chat-input', rows: '1', placeholder: `Nachricht an Claude in ${s.chat.name} … (Dateien einfach hineinziehen)` });
   const sendBtn = h('button', { type: 'submit', class: 'send', 'aria-label': 'Senden' });
+  const shotBtn = isMac() ? h('button', { type: 'button', class: 'icon-btn shot-btn', 'aria-label': 'Bildschirm zeigen', title: 'Bildschirm zeigen (Cmd+Shift+Leertaste): Bereich wählen, Leertaste für ein Fenster, Esc bricht ab',
+    onClick: async () => { const r = await api.screenCapture(); if (r && r.ok) attachScreenshot(r.path); else if (r && r.error) alert(r.error); } }) : null;
+  if (shotBtn) shotBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>';
   sendBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
   const form = h('form', { class: 'composer', onSubmit: (e) => {
     e.preventDefault();
@@ -576,7 +579,7 @@ function renderChat() {
     input.value = '';
     input.style.height = 'auto';
     sendMessage(t);
-  } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input, sendBtn);
+  } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input, shotBtn, sendBtn);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
   });
@@ -625,6 +628,27 @@ function attachDrop(zone, input) {
     if (files.length > MAX_DROP_FILES) alert(`Es werden nur die ersten ${MAX_DROP_FILES} Dateien übernommen.`);
   });
 }
+
+// Bildschirm-Helfer: Bild an den Chat hängen. Abgeschickt wird erst, wenn du auf Senden drückst –
+// so siehst du vorher, dass ein Bildschirmfoto mitgeht.
+async function attachScreenshot(file) {
+  const text = `Datei: ${file}\nDas ist ein Bildschirmfoto von mir. `;
+  if (!ui.state.chat) {
+    const recent = projects().find((p) => p.path);
+    if (!recent) { alert('Öffne zuerst einen Chat – das Bildschirmfoto liegt hier:\n' + file); return; }
+    ui.prefill = text;
+    await newSession(recent.path);
+    return;
+  }
+  const input = $('#chat-input');
+  if (ui.view === 'chat' && input) {
+    input.value = input.value.trim() ? `${input.value.trimEnd()}\n${text}` : text;
+    input.dispatchEvent(new Event('input'));
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  } else { ui.prefill = text; setView('chat'); }
+}
+api.onScreenShot((file) => { if (typeof file === 'string') attachScreenshot(file); });
 
 // Eine danebengezogene Datei soll die Zentrale nicht verlassen (sonst öffnet das Fenster die Datei).
 document.addEventListener('dragover', (e) => e.preventDefault());
@@ -778,6 +802,7 @@ function renderMain() {
   else if (ui.view === 'brain') renderBrain();
   else if (ui.view === 'projects') renderProjects();
   else if (ui.view === 'kommentare') renderKommentare();
+  else if (ui.view === 'planner') renderPlanner();
   else renderTasks();
 }
 
@@ -810,7 +835,7 @@ function applyState(s) {
     renderRunning();
   } else if (ui.view === 'automations') {
     renderAssistant(); // Status, Freigaben und Antworten des Assistenten
-  } else if (['mac', 'web', 'local', 'brain', 'projects', 'kommentare'].includes(ui.view)) {
+  } else if (['mac', 'web', 'local', 'brain', 'projects', 'kommentare', 'planner'].includes(ui.view)) {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');
