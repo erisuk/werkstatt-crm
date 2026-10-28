@@ -834,8 +834,10 @@ function renderMain() {
   else renderTasks();
 }
 
-function applyState(s) {
+function applyState(next) {
   const firstLoad = !ui.state;
+  // Ohne „projects“ hat sich die Gesprächsliste nicht geändert (spart bei jeder Meldung ~200 KB).
+  const s = 'projects' in next ? next : { ...next, projects: ui.state ? ui.state.projects : [] };
   ui.state = s;
   // Chat geschlossen (z. B. sein Gespräch gelöscht): alter Verlauf weg, damit die nächste Nachricht stehen bleibt.
   if (!s.chat && ui.chatGen !== null) resetChat(null, []);

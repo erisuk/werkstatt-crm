@@ -108,6 +108,10 @@ function setup() {
   const iconCache = new Map();
   let sessionWatcher = null;
   let projectsCache = [];
+  // Die Gesprächsliste ist groß (500+ Gespräche ≈ 200 KB) – sie geht nur mit, wenn sie sich wirklich geändert hat.
+  let projectsRev = 0;
+  let projectsJson = '';
+  let sentProjectsRev = -1;
   let quitting = false;
   let cleanedUp = false;
   let macConfigFile = null;
@@ -152,6 +156,8 @@ function setup() {
       projectsCache = raw.map((p) => ({ ...p, sessions: p.sessions.map(({ snippet, ...x }) => ({
         ...x, topic: topicOf.get(x.id).topic, topicManual: topicOf.get(x.id).topicManual })) }));
     } catch { projectsCache = []; }
+    const json = JSON.stringify(projectsCache);
+    if (json !== projectsJson) { projectsJson = json; projectsRev += 1; }
     return projectsCache;
   }
 
@@ -182,7 +188,10 @@ function setup() {
   }
 
   function pushState() {
-    send('state', snapshot());
+    const s = snapshot();
+    if (sentProjectsRev === projectsRev) delete s.projects; // unverändert: die Oberfläche behält ihre Liste
+    else sentProjectsRev = projectsRev;
+    send('state', s);
   }
 
   // Mac-Mitteilung (Klick holt die Zentrale nach vorn). view: welche Ansicht dabei geöffnet werden soll.
@@ -412,7 +421,7 @@ function setup() {
     win.on('minimize', () => finLock());
   }
 
-  ipcMain.handle('get-state', () => snapshot());
+  ipcMain.handle('get-state', () => { sentProjectsRev = projectsRev; return snapshot(); });
 
   ipcMain.handle('open-session', async (_e, args) => {
     const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : null;
