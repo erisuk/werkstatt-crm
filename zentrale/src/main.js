@@ -380,6 +380,7 @@ function setup() {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        devTools: !app.isPackaged, // in der installierten App keine Entwicklerwerkzeuge (dort wären offene Finanzdaten lesbar)
       },
     });
     win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -400,6 +401,8 @@ function setup() {
     win.on('closed', () => { win = null; finLock(); });
     // Fenster weg oder minimiert: privater Bereich sofort zu.
     win.on('hide', () => finLock());
+    win.on('blur', () => { clearTimeout(finBlurTimer); if (finUntil) finBlurTimer = setTimeout(finLock, FIN_BLUR_MS); });
+    win.on('focus', () => clearTimeout(finBlurTimer));
     win.on('minimize', () => finLock());
   }
 
@@ -657,9 +660,11 @@ function setup() {
 
   ipcMain.handle('mac-health', () => health.snapshot());
   let bigFoldersCache = null;
+  let bigFoldersRun = null; // läuft schon eine Messung, warten alle auf dieselbe
   ipcMain.handle('mac-big-folders', async (_e, refresh) => {
-    if (!bigFoldersCache || refresh === true) bigFoldersCache = { at: Date.now(), data: await health.bigFolders() };
-    return bigFoldersCache;
+    if (bigFoldersCache && refresh !== true) return bigFoldersCache;
+    if (!bigFoldersRun) bigFoldersRun = health.bigFolders().then((data) => { bigFoldersCache = { at: Date.now(), data }; return bigFoldersCache; }).finally(() => { bigFoldersRun = null; });
+    return bigFoldersRun;
   });
   // Papierkorb leeren macht der Nutzer selbst per Klick (mit Rückfrage) – endgültig, darum mit eigenem Dialog.
   ipcMain.handle('mac-empty-trash', async () => {
@@ -688,17 +693,22 @@ function setup() {
   const SCREEN_SHORTCUT = 'CommandOrControl+Shift+Space';
   const SHOT_MAX_AGE_MS = 24 * 3600 * 1000;
   let capturing = false;
+  function cleanScreenshots() {
+    const dir = path.join(app.getPath('userData'), 'bildschirm');
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      try { if (Date.now() - fs.statSync(p).mtimeMs > SHOT_MAX_AGE_MS) fs.unlinkSync(p); } catch {}
+    }
+    return dir;
+  }
   async function captureScreen() {
     if (process.platform !== 'darwin') return { ok: false, error: 'Das geht nur auf dem Mac.' };
     if (capturing) return { ok: false, cancelled: true };
     capturing = true;
+    finLock(); // der private Bereich kommt nie aufs Bildschirmfoto
     try {
-      const dir = path.join(app.getPath('userData'), 'bildschirm');
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      for (const f of fs.readdirSync(dir)) {
-        const p = path.join(dir, f);
-        try { if (Date.now() - fs.statSync(p).mtimeMs > SHOT_MAX_AGE_MS) fs.unlinkSync(p); } catch {}
-      }
+      const dir = cleanScreenshots();
       const file = path.join(dir, `bildschirm-${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
       // Die Zentrale selbst soll nicht im Bild sein.
       if (win && win.isVisible() && win.isFocused()) { win.hide(); await new Promise((r) => setTimeout(r, 250)); }
@@ -726,10 +736,16 @@ function setup() {
   const finStore = () => new FinanceStore(path.join(app.getPath('userData'), 'privat', 'finanzen.bin'), {
     encrypt: (s) => safeStorage.encryptString(s), decrypt: (b) => safeStorage.decryptString(b) });
   const fromWindow = (e) => !!win && e.sender === win.webContents;
-  const finIsOpen = () => Date.now() < finUntil;
+  // Höchstens 30 Minuten am Stück offen, auch wenn ständig etwas getan wird.
+  const FIN_MAX_MS = 30 * 60000;
+  const FIN_BLUR_MS = 60000;
+  let finOpenedAt = 0;
+  let finBlurTimer = null;
+  const finIsOpen = () => Date.now() < finUntil && Date.now() - finOpenedAt < FIN_MAX_MS;
   function finLock() {
     const was = finUntil > 0;
     finUntil = 0;
+    clearTimeout(finBlurTimer);
     if (win && !win.isDestroyed()) win.setContentProtection(false);
     if (was) send('fin-locked');
   }
@@ -740,25 +756,28 @@ function setup() {
     return null;
   };
   const finData = () => { const d = finStore().load(); return { ok: true, data: d, summary: financeSummary(d) }; };
+  // Entschlüsseln kann scheitern (z. B. Schlüsselbund geändert) – dann eine klare Meldung statt eines stillen Fehlers.
+  const finSafe = (fn) => { try { return fn(); } catch { return { ok: false, error: 'Die Finanzdaten ließen sich nicht lesen oder speichern (Schlüsselbund?).' }; } };
   ipcMain.handle('fin-unlock', async (e) => {
     if (!fromWindow(e)) return { ok: false, error: 'Nicht erlaubt.' };
     if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'Der Schlüsselbund ist nicht verfügbar – ohne ihn speichert die Zentrale keine Finanzdaten.' };
-    if (process.platform === 'darwin' && systemPreferences.canPromptTouchID()) {
-      try { await systemPreferences.promptTouchID('deinen privaten Finanzbereich zu öffnen'); } catch { return { ok: false, cancelled: true }; }
-    } else {
-      const { response } = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Abbrechen', 'Trotzdem öffnen'], defaultId: 0, cancelId: 0,
-        message: 'Touch ID ist hier nicht verfügbar.', detail: 'Der Bereich bleibt verschlüsselt gespeichert, lässt sich aber ohne Fingerabdruck öffnen.' });
-      if (response !== 1) return { ok: false, cancelled: true };
+    // Ohne Touch ID kein Zugang – ein bloßer Bestätigungs-Klick wäre keine Sperre.
+    if (process.platform !== 'darwin' || !systemPreferences.canPromptTouchID()) {
+      return { ok: false, error: 'Touch ID ist gerade nicht verfügbar (z. B. bei zugeklapptem Mac). Klapp den Mac auf oder richte Touch ID ein – ohne Fingerabdruck öffnet sich der Bereich nicht.' };
     }
-    finUntil = Date.now() + FIN_IDLE_MS;
+    try { await systemPreferences.promptTouchID('deinen privaten Finanzbereich zu öffnen'); } catch { return { ok: false, cancelled: true }; }
+    // Inzwischen weggeklickt oder versteckt: nicht öffnen.
+    if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return { ok: false, cancelled: true };
     win.setContentProtection(true);
+    finUntil = Date.now() + FIN_IDLE_MS;
+    finOpenedAt = Date.now();
     try { return finData(); } catch { finLock(); return { ok: false, error: 'Die Finanzdaten ließen sich nicht entschlüsseln.' }; }
   });
   ipcMain.handle('fin-lock', (e) => { if (fromWindow(e)) finLock(); });
-  ipcMain.handle('fin-get', (e) => finGuard(e) || finData());
-  ipcMain.handle('fin-save', (e, a) => finGuard(e) || (() => { const r = finStore().upsert(a && a.kind, a && a.item); return r.ok ? finData() : r; })());
-  ipcMain.handle('fin-remove', (e, a) => finGuard(e) || (() => { finStore().remove(a && a.kind, a && a.id); return finData(); })());
-  ipcMain.handle('fin-clear-moves', (e) => finGuard(e) || (() => { finStore().clearMoves(); return finData(); })());
+  ipcMain.handle('fin-get', (e) => finGuard(e) || finSafe(finData));
+  ipcMain.handle('fin-save', (e, a) => finGuard(e) || finSafe(() => { const r = finStore().upsert(a && a.kind, a && a.item); return r.ok ? finData() : r; }));
+  ipcMain.handle('fin-remove', (e, a) => finGuard(e) || finSafe(() => { finStore().remove(a && a.kind, a && a.id); return finData(); }));
+  ipcMain.handle('fin-clear-moves', (e) => finGuard(e) || finSafe(() => { finStore().clearMoves(); return finData(); }));
   ipcMain.handle('fin-import', async (e, accountId) => {
     const g = finGuard(e);
     if (g) return g;
@@ -771,8 +790,14 @@ function setup() {
     if (text.includes('\uFFFD')) text = new TextDecoder('windows-1252').decode(buf);
     const parsed = importCsv(text, typeof accountId === 'string' ? accountId.slice(0, 64) : '');
     if (!parsed.ok) return parsed;
-    const r = finStore().addMoves(parsed.moves);
-    return { ...finData(), imported: r.added, duplicates: r.skipped, unreadable: parsed.skipped };
+    const r = finSafe(() => finStore().addMoves(parsed.moves));
+    if (!r.ok) return r;
+    // Die CSV liegt sonst unverschlüsselt im Download-Ordner.
+    let trashed = false;
+    const { response } = await dialog.showMessageBox(win, { type: 'question', buttons: ['Behalten', 'In den Papierkorb'], defaultId: 1, cancelId: 0,
+      message: `${r.added} Buchungen übernommen.`, detail: 'Die CSV-Datei liegt noch unverschlüsselt auf dem Mac. In den Papierkorb legen?' });
+    if (response === 1) { try { await shell.trashItem(res.filePaths[0]); trashed = true; } catch {} }
+    return { ...finSafe(finData), imported: r.added, duplicates: r.skipped, unreadable: parsed.skipped, trashed };
   });
   const finTimer = setInterval(() => { if (finUntil && !finIsOpen()) finLock(); }, 15000);
   powerMonitor.on('lock-screen', finLock);
@@ -785,10 +810,11 @@ function setup() {
   ipcMain.handle('studio-suggest', (_e, avoid) => studio().suggest(typeof avoid === 'string' ? avoid : null));
   ipcMain.handle('studio-forget', (_e, id) => { if (typeof id === 'string') studio().forget(id); return studio().list(); });
   ipcMain.handle('studio-create', async (_e, brief) => {
-    const res = studio().create(brief);
-    if (!res.ok) return res;
+    // Erst prüfen, ob Claude da ist – sonst bliebe ein halb angelegter Ordner zurück.
     await claudeReady;
     if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const res = studio().create(brief);
+    if (!res.ok) return res;
     const info = await openChat({ cwd: res.dir });
     return { ok: true, chat: info, prompt: res.prompt, dir: res.dir };
   });
@@ -807,6 +833,11 @@ function setup() {
     if (!target) return { ok: false, error: 'Beitrag oder Tab nicht gefunden.' };
     if (!fs.existsSync(post.video)) return { ok: false, error: `Das Video liegt nicht mehr hier: ${post.video}` };
     return uploadPrompt(post, target, plannerTabs());
+  });
+  // Dateien für den Chat wählen (nur der Pfad geht ins Eingabefeld, die Datei bleibt, wo sie ist).
+  ipcMain.handle('pick-files', async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: 'Dateien für Claude wählen' });
+    return res.canceled ? [] : res.filePaths.slice(0, 10);
   });
   ipcMain.handle('pick-video', async () => {
     const res = await dialog.showOpenDialog(win, { properties: ['openFile'], title: 'Video wählen', defaultPath: path.join(os.homedir(), 'Movies'),
@@ -1000,10 +1031,12 @@ function setup() {
   ipcMain.handle('music-now', () => (musicAllowed() ? music.nowPlaying() : null));
   // Titelwechsel, Play und Pause kommen sofort an (statt erst bei der nächsten Abfrage).
   const musicWatch = new MusicWatch();
+  let musicSeq = 0;
   musicWatch.on('change', async () => {
     if (!musicAllowed() || !win) return;
+    const seq = ++musicSeq; // beim schnellen Weiterschalten nur das neueste Ergebnis zeigen
     const res = await music.nowPlaying().catch(() => null);
-    if (res && res.ok) send('music-now', res.data);
+    if (seq === musicSeq && res && res.ok) send('music-now', res.data);
   });
   ipcMain.handle('music-control', (_e, args) => (musicAllowed() && args
     ? music.control(String(args.app || ''), String(args.action || '')) : { ok: false, error: 'Die Verbindung „Mein Mac“ ist aus.' }));
@@ -1066,7 +1099,9 @@ function setup() {
   ipcMain.handle('n8n-file-available', () => bitKeyUsable());
   ipcMain.handle('n8n-connect-file', async (_e, args) => {
     if (!bitKeyUsable()) return { ok: false, error: 'Kein passender n8n-Schlüssel auf dem Mac gefunden.' };
-    return connectN8n((args && args.url) || n8nConfig.url, fs.readFileSync(BIT_N8N_KEY, 'utf8'));
+    const url = normalizeBase((args && args.url) || n8nConfig.url);
+    if (!url || (!isLoopback(url) && url !== n8nConfig.url)) return { ok: false, error: 'Den Schlüssel der Bit-Automatik gibt die Zentrale nur an das n8n auf diesem Mac.' };
+    return connectN8n(url, fs.readFileSync(BIT_N8N_KEY, 'utf8'));
   });
 
   // Bewusst getrennt: dann verbindet die Zentrale auch beim Start nicht von selbst wieder.
@@ -1140,19 +1175,32 @@ function setup() {
     if (!p) return { ok: false, error: 'Tab nicht gefunden.' };
     const site = videoSite(p.current);
     if (!site) return { ok: false, error: 'Öffne zuerst ein einzelnes Video in diesem Tab.' };
-    clearCookieFiles(false);
-    let cookieFile = null;
-    if (site.login) {
-      const cookies = await portalSession(partitionFor(p.profile)).cookies.get({}).catch(() => []);
-      const { count, text } = cookieFileText(cookies, site.domain);
-      if (count) {
-        fs.mkdirSync(cookieDir(), { recursive: true, mode: 0o700 });
-        cookieFile = path.join(cookieDir(), `${site.domain}-${Date.now()}.txt`);
-        fs.writeFileSync(cookieFile, text, { mode: 0o600 });
-        setTimeout(() => clearCookieFiles(false), COOKIE_TTL_MS + 1000);
-      }
-    }
-    return { ok: true, data: analyzePrompt(p.current, site, cookieFile), site: site.name };
+    clearCookieFiles(true);
+    if (!site.login) return { ok: true, data: analyzePrompt(p.current, site), site: site.name };
+    // Seiten mit Anmeldung: die Zentrale lädt das Video selbst herunter. Die Anmeldung (Cookies) bekommt Claude
+    // nie zu sehen – die Datei existiert nur während des Downloads und wird sofort danach gelöscht.
+    const ytdlp = ['/opt/homebrew/bin/yt-dlp', '/usr/local/bin/yt-dlp'].find((x) => fs.existsSync(x));
+    if (!ytdlp) return { ok: false, error: 'yt-dlp fehlt (brew install yt-dlp).' };
+    const cookies = await portalSession(partitionFor(p.profile)).cookies.get({}).catch(() => []);
+    const { count, text } = cookieFileText(cookies, site.domain);
+    if (!count) return { ok: false, error: `Bitte melde dich zuerst im Tab bei ${site.name} an.` };
+    fs.mkdirSync(cookieDir(), { recursive: true, mode: 0o700 });
+    const cookieFile = path.join(cookieDir(), `${site.domain}-${Date.now()}.txt`);
+    fs.writeFileSync(cookieFile, text, { mode: 0o600 });
+    const outDir = path.join(os.homedir(), 'video-analyse', '.downloads');
+    fs.mkdirSync(outDir, { recursive: true });
+    let out = '';
+    try {
+      out = await new Promise((resolve, reject) => execFile(ytdlp, ['--no-playlist', '--no-progress', '--cookies', cookieFile,
+        '-f', 'bv*[height<=1080]+ba/b[height<=1080]/b', '--merge-output-format', 'mp4', '--restrict-filenames',
+        '-o', path.join(outDir, '%(title).60s-%(id)s.%(ext)s'), '--print', 'after_move:filepath', '--no-simulate', p.current],
+      { timeout: 300000, maxBuffer: 4 * 1024 * 1024, env: claude.env || process.env }, (err, stdout) => (err ? reject(err) : resolve(String(stdout)))));
+    } catch (err) {
+      return { ok: false, error: `Das Video ließ sich nicht laden: ${String(err.message || err).split('\n').slice(-2).join(' ').slice(0, 200)}` };
+    } finally { clearCookieFiles(true); }
+    const file = out.trim().split('\n').filter((l) => l.startsWith('/')).pop();
+    if (!file || !fs.existsSync(file)) return { ok: false, error: 'Das Video ließ sich nicht laden.' };
+    return { ok: true, data: analyzePrompt(p.current, site, file), site: site.name };
   });
 
   ipcMain.handle('web-open-browser', (_e, id) => {
@@ -1200,6 +1248,7 @@ function setup() {
     startAlerts();
     startMorning();
     registerScreenShortcut();
+    cleanScreenshots();
     musicWatch.start();
     writeMacConfig();
     refreshProjects();

@@ -54,7 +54,7 @@ function siteForm() {
   h('div', { class: 'actions full' },
     h('span', { class: 'hint', text: 'Legt ~/Websites/<name> an und öffnet einen Chat mit dem Webdesigner. Veröffentlicht wird nichts ohne dich.' }),
     h('span', { class: 'spacer' }),
-    h('button', { type: 'button', class: 'btn ghost', onClick: () => { sites.form = null; renderWebsitesBody(); } }, 'Abbrechen'),
+    h('button', { type: 'button', class: 'btn ghost', 'data-focus': 'ws-new', onClick: () => { sites.form = null; renderWebsitesBody(); } }, 'Abbrechen'),
     h('button', { type: 'submit', class: 'btn', disabled: sites.busy || !ui.state.claude.found }, sites.busy ? 'Startet …' : 'Website starten')));
 }
 
@@ -63,9 +63,9 @@ function siteRow(s) {
     h('div', { class: 'grow' },
       h('div', { class: 'title' }, s.name, s.direction ? h('span', { class: 'pill', text: s.direction.name }) : null),
       h('div', { class: 'sub', text: `${s.dir.replace(/^\/Users\/[^/]+/, '~')} · ${formatWhen(s.createdAt)}` })),
-    h('button', { class: 'link', 'aria-label': `An ${s.name} weiterarbeiten`, disabled: !ui.state.claude.found, onClick: () => newSession(s.dir) }, 'Weiterarbeiten'),
-    h('button', { class: 'link', 'aria-label': `Vorschau von ${s.name} starten`, onClick: () => { setView('projects'); openStartForm(s.dir); } }, 'Vorschau starten'),
-    h('button', { class: 'link', onClick: () => api.fsOpen(s.dir) }, 'Im Finder'),
+    h('button', { class: 'link', 'aria-label': `Weiterarbeiten: ${s.name}`, disabled: !ui.state.claude.found, onClick: () => newSession(s.dir) }, 'Weiterarbeiten'),
+    h('button', { class: 'link', 'aria-label': `Vorschau starten: ${s.name}`, onClick: () => { setView('projects'); openStartForm(s.dir); } }, 'Vorschau starten'),
+    h('button', { class: 'link', 'aria-label': `Im Finder: ${s.name}`, onClick: () => api.fsOpen(s.dir) }, 'Im Finder'),
     h('button', { class: 'icon-btn', 'aria-label': `${s.name} aus der Liste entfernen`, title: 'Aus der Liste entfernen (der Ordner bleibt)', onClick: async () => {
       if (confirm(`„${s.name}“ aus der Liste entfernen? Der Ordner bleibt.`)) { sites.data = await api.studioForget(s.id); renderWebsitesBody(); }
     } }, '×'));
@@ -76,7 +76,7 @@ function renderWebsitesBody() {
   if (!box) return;
   const d = sites.data;
   keepFocus(() => fill(box,
-    sites.message ? h('div', { class: 'notice', role: 'status', text: sites.message }) : null,
+    noticeEl(sites.message),
     sites.form ? siteForm() : h('div', { class: 'actions' }, h('button', { class: 'btn', 'data-focus': 'ws-new', disabled: !ui.state.claude.found, onClick: openSiteForm }, '+ Neue Website')),
     h('section', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', { text: 'Meine Websites' }),
       d ? h('span', { class: 'sub', text: `${d.used.length} von ${d.directions.length} Designrichtungen schon benutzt` }) : null),
@@ -85,6 +85,7 @@ function renderWebsitesBody() {
 }
 
 function renderWebsites() {
+  sites.message = null;
   fill($('#main'),
     h('div', { class: 'section-head wrap' }, h('h1', { text: 'Websites' })),
     h('p', { class: 'date', text: 'Der Webdesigner baut komplette Websites – Konzept, Texte, Design, Technik, Google, Barrierefreiheit – und nimmt für jede Seite eine andere Designrichtung.' }),

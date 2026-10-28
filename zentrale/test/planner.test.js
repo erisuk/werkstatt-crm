@@ -57,3 +57,12 @@ test('Upload-Auftrag: Texte als Daten, Kontoprüfung, Freigabe vor dem Veröffen
   assert.strictEqual(uploadPrompt(post, post.targets[0], []).ok, false);
   assert.strictEqual(uploadPrompt(post, post.targets[0], [{ id: 'yt1', name: 'Instagram', title: 'shop.muris • Instagram' }]).ok, false);
 });
+
+test('Fälligen Beitrag verschieben: wieder geplant und wird erneut gemeldet', () => {
+  const s = new PlanStore(tmp());
+  s.upsert(base);
+  const due = s.takeDue(Date.UTC(2026, 9, 29, 10))[0];
+  const moved = s.upsert({ ...due, dueAt: Date.UTC(2026, 10, 2, 9) }).post;
+  assert.strictEqual(moved.status, 'geplant');
+  assert.strictEqual(s.takeDue(Date.UTC(2026, 10, 2, 10)).length, 1);
+});

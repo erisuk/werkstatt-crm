@@ -27,9 +27,26 @@ function insideHome(dir) {
   } catch { return null; }
 }
 
+// Wie insideHome, aber der Ordner darf noch fehlen (wird beim ersten Einsortieren angelegt):
+// geprüft wird der nächste vorhandene Elternordner.
+function insideHomeOrNew(dir) {
+  if (!dir || !path.isAbsolute(dir)) return null;
+  const rest = [];
+  let cur = path.normalize(dir);
+  while (!fs.existsSync(cur)) {
+    rest.unshift(path.basename(cur));
+    const up = path.dirname(cur);
+    if (up === cur) return null;
+    cur = up;
+  }
+  if (rest.some((x) => x.startsWith('.'))) return null;
+  const base = insideHome(cur);
+  return base ? path.join(base, ...rest) : null;
+}
+
 function cleanRule(r) {
   const folder = insideHome(String((r && r.folder) || path.join(os.homedir(), 'Downloads')));
-  const target = insideHome(String((r && r.target) || ''));
+  const target = insideHomeOrNew(String((r && r.target) || ''));
   const re = patternToRegex(r && r.pattern);
   if (!folder) return { ok: false, error: 'Der überwachte Ordner muss in deinem Benutzerordner liegen.' };
   if (!target) return { ok: false, error: 'Der Zielordner muss in deinem Benutzerordner liegen und existieren.' };
@@ -48,12 +65,26 @@ function freeName(dir, name) {
   return candidate;
 }
 
+// Verschieben, ohne je etwas zu überschreiben: link() schlägt fehl, wenn das Ziel schon existiert –
+// anders als rename(), das stillschweigend ersetzt. Zwischen zwei Platten: kopieren mit COPYFILE_EXCL.
 function moveFile(from, to) {
-  try { fs.renameSync(from, to); } catch (e) {
-    if (e.code !== 'EXDEV') throw e;
+  try {
+    fs.linkSync(from, to);
+    fs.unlinkSync(from);
+  } catch (e) {
+    if (e.code !== 'EXDEV' && e.code !== 'EPERM' && e.code !== 'ENOTSUP') throw e;
     fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
     fs.unlinkSync(from);
   }
+}
+
+// Freien Namen suchen und verschieben; ist der Name inzwischen belegt, den nächsten nehmen.
+function moveFree(from, dir, name) {
+  for (let i = 0; i < 50; i += 1) {
+    const to = freeName(dir, name);
+    try { moveFile(from, to); return to; } catch (e) { if (e.code !== 'EEXIST') throw e; }
+  }
+  throw new Error('Kein freier Dateiname gefunden.');
 }
 
 class FolderWatcher extends EventEmitter {
@@ -138,7 +169,8 @@ class FolderWatcher extends EventEmitter {
   settle(dir, name, lastSize) {
     const full = path.join(dir, name);
     let st;
-    try { st = fs.statSync(full); } catch { this.pending.delete(full); return; }
+    // lstat: Verknüpfungen (Symlinks) werden nie verschoben.
+    try { st = fs.lstatSync(full); } catch { this.pending.delete(full); return; }
     if (!st.isFile()) { this.pending.delete(full); return; }
     if (st.size !== lastSize) { this.pending.set(full, setTimeout(() => this.settle(dir, name, st.size), SETTLE_MS)); return; }
     this.pending.delete(full);
@@ -158,8 +190,9 @@ class FolderWatcher extends EventEmitter {
     }
     try {
       if (!fs.existsSync(rule.target)) fs.mkdirSync(rule.target, { recursive: true });
-      const to = freeName(rule.target, name);
-      moveFile(full, to);
+      // Ziel beim Verschieben neu prüfen – es könnte inzwischen auf einen anderen Ort zeigen.
+      if (insideHomeOrNew(rule.target) !== rule.target) throw new Error('Der Zielordner liegt nicht mehr in deinem Benutzerordner.');
+      const to = moveFree(full, rule.target, name);
       const entry = { id: crypto.randomUUID(), from: full, to, at: Date.now(), rule: rule.pattern, undone: false };
       this.log = [...this.log, entry].slice(-MAX_LOG);
       this.save();
@@ -175,10 +208,9 @@ class FolderWatcher extends EventEmitter {
     const e = this.log.find((x) => x.id === id);
     if (!e || e.undone) return { ok: false, error: 'Das lässt sich nicht mehr rückgängig machen.' };
     if (!fs.existsSync(e.to)) return { ok: false, error: 'Die Datei liegt nicht mehr am Zielort.' };
-    const back = fs.existsSync(e.from) ? freeName(path.dirname(e.from), path.basename(e.from)) : e.from;
     // Nicht sofort wieder einsortieren, wenn die Datei zurückkommt.
-    this.skipOnce = back;
-    try { moveFile(e.to, back); } catch (err) { return { ok: false, error: err.message }; }
+    this.skipOnce = freeName(path.dirname(e.from), path.basename(e.from));
+    try { this.skipOnce = moveFree(e.to, path.dirname(e.from), path.basename(e.from)); } catch (err) { return { ok: false, error: err.message }; }
     this.log = this.log.map((x) => (x.id === id ? { ...x, undone: true } : x));
     this.save();
     return { ok: true };

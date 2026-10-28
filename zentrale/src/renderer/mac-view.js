@@ -190,6 +190,7 @@ const MAC_TABS = [{ id: 'apps', label: 'Apps' }, { id: 'folders', label: 'Ordner
 // ---------- Gesundheit ----------
 
 async function loadHealth(refreshFolders) {
+  macv.foldersLoading = true; // sofort, damit ein Doppelklick keine zweite Messung startet
   try { macv.health = await api.macHealth(); } catch (e) { macv.health = { error: e.message }; }
   if (ui.view === 'mac' && macv.tab === 'health') renderMacBody();
   macv.foldersLoading = true;
@@ -214,7 +215,7 @@ function renderHealth() {
   if (s.error) return h('div', { class: 'card empty warn', text: s.error });
   const usedDisk = s.disk.ok ? Math.round((s.disk.total - s.disk.free) * 10) / 10 : 0;
   return [
-    s.hints.length ? h('div', { class: 'notice', role: 'status' }, s.hints.map((t) => h('div', { text: t }))) : null,
+    s.hints.length ? h('div', { class: 'notice' }, s.hints.map((t) => h('div', { text: t }))) : null,
     h('div', { class: 'stats health-stats' },
       s.disk.ok ? meter('Speicherplatz belegt', usedDisk, s.disk.total, 'GB', 85) : null,
       s.memory.ok ? meter('Arbeitsspeicher belegt', s.memory.used, s.memory.total, 'GB', 85) : null,
@@ -263,13 +264,13 @@ function renderShortcuts() {
       } }, 'Ausführen')))
       : h('div', { class: 'empty' }, macv.shortcuts.length ? 'Nichts gefunden.' : 'Du hast noch keine Kurzbefehle. ',
         h('button', { class: 'link', onClick: () => api.fsOpen('/System/Applications/Shortcuts.app') }, 'Kurzbefehle-App öffnen'))),
-    macv.message ? h('div', { class: 'notice', role: 'status', text: macv.message }) : null,
+    noticeEl(macv.message),
   ];
 }
 
 function renderMacTabs() {
   keepFocus(() => fill($('#mac-tabs'), MAC_TABS.map((t) => h('button', { 'aria-pressed': String(macv.tab === t.id), 'data-focus': `mac-tab:${t.id}`,
-    onClick: () => { macv.tab = t.id; macv.filter = ''; renderMac(); } }, t.label))));
+    onClick: () => { macv.tab = t.id; macv.filter = ''; if (t.id === 'health') macv.health = null; renderMac(); } }, t.label))));
 }
 
 function renderMacBody() {

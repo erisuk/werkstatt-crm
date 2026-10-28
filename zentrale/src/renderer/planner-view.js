@@ -29,6 +29,7 @@ function openPlanForm(post) {
   plan.form = post ? { ...post, targets: post.targets.map((t) => ({ ...t })), error: null }
     : { id: null, video: '', title: '', description: '', hashtags: '', dueAt: tomorrow.getTime(), targets: [], error: null };
   renderPlannerBody();
+  setTimeout(() => { const el = document.querySelector('#main form input, #main form select, #main form textarea'); if (el) el.focus(); }, 0);
 }
 
 function planField(id, label, el, hint, full = true) {
@@ -57,12 +58,13 @@ function planForm() {
     const r = await api.plannerSave(f);
     if (!r.ok) { f.error = r.error; renderPlannerBody(); return; }
     plan.form = null; plan.message = `„${r.post.title}“ ist geplant.`;
+    setTimeout(() => { const b = document.querySelector('[data-focus="pl-new"]'); if (b) b.focus(); }, 0);
     await loadPlanner();
   } },
   h('h2', { class: 'full', text: f.id ? 'Beitrag bearbeiten' : 'Beitrag planen' }),
-  h('div', { class: 'field full' }, h('span', { class: 'label', text: 'Video' }),
+  h('div', { class: 'field full', role: 'group', 'aria-labelledby': 'pl-video-label' }, h('span', { class: 'label', id: 'pl-video-label', text: 'Video' }),
     h('div', { class: 'folder' }, h('span', { class: 'sub grow', title: f.video, text: f.video ? f.video.replace(/^\/Users\/[^/]+/, '~') : 'Noch kein Video gewählt' }),
-      h('button', { type: 'button', class: 'btn ghost', 'data-focus': 'pl-video', onClick: async () => { const v = await api.pickVideo(); if (v) { f.video = v; renderPlannerBody(); } } }, 'Wählen …'))),
+      h('button', { type: 'button', class: 'btn ghost', 'data-focus': 'pl-video', 'aria-label': 'Video wählen', onClick: async () => { const v = await api.pickVideo(); if (v) { f.video = v; renderPlannerBody(); } } }, 'Wählen …'))),
   planField('pl-title', 'Titel', title),
   planField('pl-desc', 'Beschreibung', desc),
   planField('pl-tags', 'Hashtags', tags, 'Mit Leerzeichen getrennt, höchstens 30.'),
@@ -73,8 +75,8 @@ function planForm() {
     h('button', { type: 'button', class: 'btn ghost', disabled: !f.video || !ui.state.claude.found, title: 'Claude schaut sich das Video an und schlägt Titel, Beschreibung und Hashtags vor',
       onClick: () => sendMessage(`Schau dir bitte mein Video ${JSON.stringify(f.video)} mit dem Skill „watch“ an und schlag mir dafür vor: einen Titel (max. 100 Zeichen), eine Beschreibung und bis zu 15 passende Hashtags – für ${f.targets.map((t) => t.tabName).join(', ') || 'YouTube, Instagram und TikTok'}. Ich trage sie dann im Planer ein.`) }, 'Texte von Claude'),
     h('span', { class: 'spacer' }),
-    h('button', { type: 'button', class: 'btn ghost', onClick: () => { plan.form = null; renderPlannerBody(); } }, 'Abbrechen'),
-    h('button', { type: 'submit', class: 'btn' }, 'Speichern')));
+    h('button', { type: 'button', class: 'btn ghost', 'data-focus': 'pl-new', onClick: () => { plan.form = null; renderPlannerBody(); } }, 'Abbrechen'),
+    h('button', { type: 'submit', class: 'btn', 'data-focus': 'pl-new' }, 'Speichern')));
 }
 
 async function planUpload(p, t) {
@@ -90,10 +92,10 @@ function planRow(p) {
     h('div', { class: 'grow' },
       h('div', { class: 'title' }, p.title, h('span', { class: `pill ${pill[1]}`, text: pill[0] })),
       h('div', { class: 'sub', text: `${new Date(p.dueAt).toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${p.video.split('/').pop()}` })),
-    open ? p.targets.map((t) => h('button', { class: 'btn', 'aria-label': `„${p.title}“ in ${t.tabName} hochladen`, disabled: !ui.state.claude.found, onClick: () => planUpload(p, t) }, `Hochladen: ${t.tabName}`)) : null,
-    open ? h('button', { class: 'link', onClick: () => openPlanForm(p) }, 'Bearbeiten') : null,
-    open ? h('button', { class: 'link', onClick: async () => { await api.plannerStatus(p.id, 'hochgeladen'); loadPlanner(); } }, 'Erledigt') : null,
-    h('button', { class: 'icon-btn', 'aria-label': `„${p.title}“ löschen`, onClick: async () => { if (confirm(`„${p.title}“ aus dem Planer löschen? (Das Video bleibt.)`)) { await api.plannerRemove(p.id); loadPlanner(); } } }, trashIcon()));
+    open ? p.targets.map((t) => h('button', { class: 'btn', 'aria-label': `Hochladen: ${t.tabName} – ${p.title}`, 'data-focus': `pl-up:${p.id}:${t.tabId}`, disabled: !ui.state.claude.found, onClick: () => planUpload(p, t) }, `Hochladen: ${t.tabName}`)) : null,
+    open ? h('button', { class: 'link', 'aria-label': `Bearbeiten: ${p.title}`, 'data-focus': `pl-edit:${p.id}`, onClick: () => openPlanForm(p) }, 'Bearbeiten') : null,
+    open ? h('button', { class: 'link', 'aria-label': `Erledigt: ${p.title}`, 'data-focus': `pl-done:${p.id}`, onClick: async () => { await api.plannerStatus(p.id, 'hochgeladen'); loadPlanner(); } }, 'Erledigt') : null,
+    h('button', { class: 'icon-btn', 'aria-label': `„${p.title}“ löschen`, 'data-focus': 'pl-new', onClick: async () => { if (confirm(`„${p.title}“ aus dem Planer löschen? (Das Video bleibt.)`)) { await api.plannerRemove(p.id); loadPlanner(); } } }, trashIcon()));
 }
 
 function renderPlannerBody() {
@@ -103,7 +105,7 @@ function renderPlannerBody() {
   const open = posts.filter((p) => p.status === 'geplant' || p.status === 'fällig');
   const done = posts.filter((p) => !open.includes(p)).reverse().slice(0, 20);
   keepFocus(() => fill(box,
-    plan.message ? h('div', { class: 'notice', role: 'status', text: plan.message }) : null,
+    noticeEl(plan.message),
     plan.form ? planForm() : h('div', { class: 'actions' }, h('button', { class: 'btn', 'data-focus': 'pl-new', onClick: () => openPlanForm(null) }, '+ Beitrag planen')),
     h('section', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', { text: 'Geplant' })),
       h('div', { class: 'card list' }, !plan.posts ? h('div', { class: 'empty', text: 'Lädt …' })
@@ -113,6 +115,7 @@ function renderPlannerBody() {
 }
 
 function renderPlanner() {
+  plan.message = null;
   fill($('#main'),
     h('div', { class: 'section-head wrap' }, h('h1', { text: 'Planer' })),
     h('p', { class: 'date', text: 'Videos für YouTube, Instagram und TikTok vorplanen. Claude lädt im angemeldeten Web-Tab hoch, prüft vorher das Konto und veröffentlicht erst nach deinem Ja.' }),

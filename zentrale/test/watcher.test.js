@@ -34,7 +34,10 @@ test('Regeln: nur Ordner im Benutzerordner, keine versteckten, Quelle ≠ Ziel',
   assert.strictEqual(cleanRule({ folder: src, pattern: '*.pdf', target: path.join(home, '.geheim') }).ok, false);
   assert.strictEqual(cleanRule({ folder: src, pattern: '*.pdf', target: src }).ok, false);
   assert.strictEqual(cleanRule({ folder: src, pattern: '', target: dst }).ok, false);
-  assert.strictEqual(cleanRule({ folder: src, pattern: '*.pdf', target: path.join(home, 'gibtsnicht') }).ok, false);
+  // Ziel darf noch fehlen (wird angelegt), aber nur im Benutzerordner und nicht versteckt
+  assert.ok(cleanRule({ folder: src, pattern: '*.pdf', target: path.join(home, 'gibtsnicht') }).ok);
+  assert.strictEqual(cleanRule({ folder: src, pattern: '*.pdf', target: path.join(home, 'gibtsnicht', '.versteckt') }).ok, false);
+  assert.strictEqual(cleanRule({ folder: src, pattern: '*.pdf', target: '/tmp/zentrale-gibtsnicht/x' }).ok, false);
 });
 
 test('Freie Namen: nie überschreiben', () => {
@@ -91,3 +94,22 @@ test('Echte Dateien: der Wächter sortiert, sobald die Datei fertig ist', async 
 });
 
 test.after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+test('Regel mit noch fehlendem Zielordner bleibt erhalten; nie überschreiben', () => {
+  const { src, file } = dirs();
+  const target = path.join(home, 'neu-erst-spaeter', 'Rechnungen');
+  const w = new FolderWatcher(file);
+  assert.ok(w.saveRule({ folder: src, pattern: '*.pdf', target }).ok);
+  assert.strictEqual(new FolderWatcher(file).get().rules.length, 1);
+  fs.writeFileSync(path.join(src, 'a.pdf'), 'neu');
+  const e = w.handle(src, 'a.pdf');
+  assert.strictEqual(e.to, path.join(fs.realpathSync(home), 'neu-erst-spaeter', 'Rechnungen', 'a.pdf'));
+  fs.writeFileSync(path.join(src, 'a.pdf'), 'zweite');
+  assert.strictEqual(w.handle(src, 'a.pdf').to, path.join(fs.realpathSync(home), 'neu-erst-spaeter', 'Rechnungen', 'a (2).pdf'));
+  assert.strictEqual(fs.readFileSync(e.to, 'utf8'), 'neu');
+  // Verknüpfungen werden nicht angefasst
+  fs.symlinkSync('/etc/hosts', path.join(src, 'link.pdf'));
+  w.settle(src, 'link.pdf', -1);
+  assert.ok(fs.lstatSync(path.join(src, 'link.pdf')).isSymbolicLink());
+  w.stop();
+});

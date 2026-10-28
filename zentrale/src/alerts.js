@@ -2,6 +2,7 @@
 // fehlgeschlagen sind, und meldet es als Mac-Mitteilung. Merkt sich die letzten Meldungen für „Heute“.
 const MAX_RECENT = 30;
 const ERROR_STATUS = new Set(['error', 'crashed', 'failed']);
+const RUNNING_STATUS = new Set(['running', 'waiting', 'new', 'unknown']);
 
 // Wichtig = von der Zentrale gestartet, startet automatisch (launchd) oder ein geschützter Dienst wie der Signal-Server.
 function isWatched(s) {
@@ -51,9 +52,11 @@ class AlertWatch {
     let res;
     try { res = await this.listExecutions(); } catch { return; }
     if (!res || !res.ok) return;
-    const ids = res.data.map((e) => e.id);
+    // Nur fertige Läufe merken – ein Lauf, der noch „running“ ist, kann später noch fehlschlagen.
+    const finished = res.data.filter((e) => !RUNNING_STATUS.has(e.status));
+    const ids = finished.map((e) => e.id);
     if (!this.seenExecutions) { this.seenExecutions = new Set(ids); return; }
-    const fresh = res.data.filter((e) => !this.seenExecutions.has(e.id) && ERROR_STATUS.has(e.status));
+    const fresh = finished.filter((e) => !this.seenExecutions.has(e.id) && ERROR_STATUS.has(e.status));
     for (const id of ids) this.seenExecutions.add(id);
     if (this.seenExecutions.size > 500) this.seenExecutions = new Set(ids);
     if (!fresh.length) return;

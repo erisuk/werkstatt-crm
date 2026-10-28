@@ -46,7 +46,7 @@ function renderMusic() {
   // Nur der Fortschritt hat sich geändert: Balken direkt anpassen, nichts neu aufbauen.
   if (!changed('music', cur && { app: cur.app, playing: cur.playing, track: t0 })) {
     const bar = box.querySelector('.bar');
-    if (bar) { bar.firstChild.style.width = `${pct0}%`; bar.setAttribute('aria-valuenow', String(Math.round(pct0))); }
+    if (bar) { bar.firstChild.style.width = `${pct0}%`; bar.setAttribute('aria-valuenow', String(Math.round(pct0))); bar.setAttribute('aria-valuetext', `${formatTime(pos)} von ${formatTime(t0 && t0.duration)}`); }
     return;
   }
   if (!cur) {
@@ -70,7 +70,7 @@ function renderMusic() {
         h('div', { class: 'name', text: t ? t.title : 'Kein Titel', title: t ? t.title : '' }),
         h('div', { class: 'where', text: t ? `${t.artist}${t.artist ? ' · ' : ''}${cur.label}` : cur.label }))),
     t && t.duration ? h('div', { class: 'bar', role: 'progressbar', 'aria-label': 'Fortschritt', 'aria-valuemin': '0', 'aria-valuemax': '100',
-      'aria-valuenow': String(Math.round(pct)), 'aria-valuetext': `${formatTime(t.duration)} lang` }, h('span', { style: { width: `${pct}%` } })) : null,
+      'aria-valuenow': String(Math.round(pct)), 'aria-valuetext': `${formatTime(pos)} von ${formatTime(t.duration)}` }, h('span', { style: { width: `${pct}%` } })) : null,
     h('div', { class: 'controls' },
       btn('previous', 'Vorheriger Titel', '⏮'),
       btn('playpause', cur.playing ? 'Pausieren' : 'Abspielen', cur.playing ? '⏸' : '▶', true),

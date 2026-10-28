@@ -99,7 +99,7 @@ function renderAddForm() {
       : h('div', { class: 'full bit-setup' },
         h('div', { class: 'grow' }, h('strong', { text: 'BIT AI News einrichten' }),
           h('div', { class: 'sub', text: 'Legt YouTube Studio, Instagram und TikTok in einem eigenen Bit-Konto an – getrennt von deinen privaten und MURIS-Anmeldungen. Danach meldest du dich dort einmal mit den Bit-Konten an.' })),
-        h('button', { type: 'button', class: 'btn', 'data-focus': 'bit-setup', onClick: async () => { const r = await api.webSetupBit(); if (!r.ok) { webv.addError = r.error; renderWebChrome(); return; } webv.adding = false; renderWebChrome(); } }, 'Einrichten')),
+        h('button', { type: 'button', class: 'btn', 'data-focus': 'bit-setup', 'aria-label': 'BIT AI News einrichten', onClick: async () => { const r = await api.webSetupBit(); if (!r.ok) { webv.addError = r.error; renderWebChrome(); return; } webv.adding = false; renderWebChrome(); announce('Bit-Tabs angelegt: YouTube Studio, Instagram, TikTok. Melde dich dort jetzt mit den Bit-Konten an.'); } }, 'Einrichten')),
     h('div', { class: 'field full' }, h('label', { for: 'web-profile', text: 'Konto' }), profile,
       h('span', { class: 'hint', text: 'Jedes Konto hat eine eigene Anmeldung. Für ein zweites Gmail oder Outlook: „Neues Konto“ wählen und dann Gmail anklicken.' })),
     [...new Set(s.presets.map((p) => p.group))].map((group) => {
@@ -158,7 +158,7 @@ function renderToolbar(p) {
     middle,
     isVideoPage(p.current) ? h('button', { class: 'btn video-btn', 'data-focus': 'web-video', disabled: !ui.state.claude.found,
       title: 'Claude schaut sich das Video mit Bild und Ton an (Skill „watch“) und fragt dich danach, wo die Analyse hin soll',
-      onClick: async () => { const r = await api.webAnalyzeVideo(p.id); if (!r.ok) { alert(r.error); return; } sendMessage(r.data); } }, '▶ Video analysieren') : null,
+      onClick: async (e) => { const b = e.currentTarget; b.disabled = true; announce('Video wird vorbereitet …'); const r = await api.webAnalyzeVideo(p.id); b.disabled = false; if (!r.ok) { alert(r.error); return; } sendMessage(r.data); } }, h('span', { 'aria-hidden': 'true', text: '▶ ' }), 'Video analysieren') : null,
     h('button', { class: 'link', 'data-focus': 'web-rename-btn', onClick: () => { webv.renaming = true; renderWebChrome(); } }, 'Umbenennen'),
     h('button', { class: 'link', 'data-focus': 'web-browser', onClick: () => api.webOpenBrowser(p.id) }, 'Im Browser öffnen'));
 }

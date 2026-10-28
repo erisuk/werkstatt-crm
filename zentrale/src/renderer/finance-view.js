@@ -32,8 +32,8 @@ function finApply(r) {
   fin.data = r.data; fin.sum = r.summary;
 }
 
-function finClear() {
-  fin.open = false; fin.data = null; fin.sum = null; fin.form = null; fin.message = null;
+function finClear(reason) {
+  fin.open = false; fin.data = null; fin.sum = null; fin.form = null; fin.message = reason || null;
   if (ui.view === 'finance') renderFinance();
 }
 
@@ -44,10 +44,13 @@ async function finUnlock() {
   fin.open = true; fin.message = null;
   finApply(r);
   renderFinance();
+  const head = $('#main h1');
+  if (head) { head.setAttribute('tabindex', '-1'); head.focus(); }
+  announce('Privater Bereich geöffnet.');
 }
 
 // Läuft vor app.js – deshalb window.zentrale statt api.
-window.zentrale.onFinLocked(() => finClear());
+window.zentrale.onFinLocked(() => { if (fin.open) finClear('Gesperrt.'); });
 
 function finInput(f, [key, , type, opt]) {
   const id = `fin-${key}`;
@@ -99,8 +102,12 @@ function finFormCard() {
   h('div', { class: 'actions full' },
     h('span', { class: 'hint', text: 'Nur die letzten 4 Ziffern von Karten oder Konten – volle Nummern, PIN oder Prüfziffer gehören hier nie hinein.' }),
     h('span', { class: 'spacer' }),
-    h('button', { type: 'button', class: 'btn ghost', onClick: () => { fin.form = null; renderFinanceBody(); } }, 'Abbrechen'),
+    h('button', { type: 'button', class: 'btn ghost', 'data-focus': `fin-add:${f.formKind}`, onClick: () => { fin.form = null; renderFinanceBody(); } }, 'Abbrechen'),
     h('button', { type: 'submit', class: 'btn' }, 'Speichern')));
+}
+
+function finFocusForm() {
+  setTimeout(() => { const el = document.querySelector('#fin-body form input, #fin-body form select'); if (el) el.focus(); }, 0);
 }
 
 function finTile(label, value, sub, tone) {
@@ -121,26 +128,28 @@ function finFlowChart(months) {
   const max = Math.max(...months.flatMap((m) => [m.in, m.out]), 1);
   return h('div', { class: 'fin-flow' },
     h('div', { class: 'fin-legend' }, h('span', { class: 'key in', text: 'rein' }), h('span', { class: 'key out', text: 'raus' })),
-    h('div', { class: 'fin-cols', role: 'list', 'aria-label': 'Geld rein und raus je Monat' }, months.map((m) => {
+    h('div', { class: 'fin-cols', role: 'list', tabindex: '0', 'aria-label': 'Geld rein und raus je Monat' }, months.map((m) => {
       const label = new Date(`${m.month}-15`).toLocaleDateString('de-DE', { month: 'short', year: '2-digit' });
-      return h('div', { class: 'col', role: 'listitem', title: `${label}: rein ${eur(m.in)} · raus ${eur(m.out)} · ${eur(m.in - m.out)}`, 'aria-label': `${label}: rein ${eur(m.in)}, raus ${eur(m.out)}` },
+      return h('div', { class: 'col', role: 'listitem', title: `${label}: rein ${eur(m.in)} · raus ${eur(m.out)} · ${eur(m.in - m.out)}` },
+        h('span', { class: 'sr-only', text: `${label}: rein ${eur(m.in)}, raus ${eur(m.out)}, Saldo ${eur(m.in - m.out)}` }),
         h('div', { class: 'pair', 'aria-hidden': 'true' },
           h('span', { class: 'in', style: { height: `${(m.in / max) * 100}%` } }), h('span', { class: 'out', style: { height: `${(m.out / max) * 100}%` } })),
-        h('span', { class: 'm', text: label }));
+        h('span', { class: 'm', 'aria-hidden': 'true', text: label }),
+        h('span', { class: 'net', 'aria-hidden': 'true', text: `${m.in - m.out >= 0 ? '+' : '−'}${Math.abs(Math.round(m.in - m.out)).toLocaleString('de-DE')}` }));
     })));
 }
 
 function finList(kind, rows, render, empty) {
   return h('div', { class: 'card list' }, rows.length ? rows.map((x) => h('div', { class: 'row' }, render(x),
-    h('button', { class: 'link', onClick: () => { fin.form = { ...x, formKind: kind, error: null }; renderFinanceBody(); } }, 'Bearbeiten'),
-    h('button', { class: 'icon-btn', 'aria-label': `${x.name} löschen`, onClick: async () => { if (confirm(`„${x.name}“ löschen?`)) { finApply(await api.finRemove(kind, x.id)); renderFinanceBody(); } } }, trashIcon())))
+    h('button', { class: 'link', 'aria-label': `Bearbeiten: ${x.name}`, 'data-focus': `fin-edit:${x.id}`, onClick: () => { fin.form = { ...x, formKind: kind, error: null }; renderFinanceBody(); finFocusForm(); } }, 'Bearbeiten'),
+    h('button', { class: 'icon-btn', 'aria-label': `${x.name} löschen`, 'data-focus': `fin-add:${kind}`, onClick: async () => { if (confirm(`„${x.name}“ löschen?`)) { finApply(await api.finRemove(kind, x.id)); renderFinanceBody(); } } }, trashIcon())))
     : h('div', { class: 'empty', text: empty }));
 }
 
 function finSection(title, kind, body, extra) {
   return h('section', { class: 'section' },
     h('div', { class: 'section-head wrap' }, h('h2', { text: title }), h('span', { class: 'spacer' }), extra || null,
-      kind ? h('button', { class: 'btn ghost', 'data-focus': `fin-add:${kind}`, onClick: () => { fin.form = { formKind: kind, error: null }; renderFinanceBody(); } }, '+ Hinzufügen') : null),
+      kind ? h('button', { class: 'btn ghost', 'data-focus': `fin-add:${kind}`, 'aria-label': `Hinzufügen: ${title}`, onClick: () => { fin.form = { formKind: kind, error: null }; renderFinanceBody(); finFocusForm(); } }, '+ Hinzufügen') : null),
     body);
 }
 
@@ -150,14 +159,14 @@ function renderFinanceBody() {
   const d = fin.data; const s = fin.sum;
   const accName = (id) => (d.accounts.find((a) => a.id === id) || {}).name || '';
   keepFocus(() => fill(box,
-    fin.message ? h('div', { class: 'notice', role: 'status', text: fin.message }) : null,
+    noticeEl(fin.message),
     fin.form ? finFormCard() : null,
     h('div', { class: 'fin-tiles' },
-      finTile('Vermögen (alle Konten)', eur(s.netWorth), s.debt ? `davon ${eur(s.debt)} Schulden` : `${d.accounts.length} Konten`, s.netWorth < 0 ? 'neg' : ''),
+      finTile('Vermögen (alle Konten)', eur(s.netWorth), s.debt ? `davon ${eur(s.debt)} Schulden` : plural(d.accounts.length, 'Konto', 'Konten'), s.netWorth < 0 ? 'neg' : ''),
       finTile('Einnahmen im Monat', eur(s.incomeMonth), 'regelmäßige'),
-      finTile('Feste Kosten im Monat', eur(s.fixedMonth), `${d.fixed.length} Posten`),
+      finTile('Feste Kosten im Monat', eur(s.fixedMonth), plural(d.fixed.length, 'Posten', 'Posten')),
       finTile('Bleibt im Monat', eur(s.freeMonth), 'Einnahmen minus feste Kosten', s.freeMonth < 0 ? 'neg' : 'pos'),
-      finTile('Offene Rechnungen', eur(s.openBills), `${d.bills.filter((b) => !b.paid).length} offen`, s.openBills ? 'warn' : '')),
+      finTile('Offene Rechnungen', eur(s.openBills), `${d.bills.filter((b) => !b.paid).length} offen`, s.openBills ? 'due' : '')),
     s.upcoming.length || s.cancelSoon.length ? finSection('Die nächsten 30 Tage', null, h('div', { class: 'card list' },
       s.cancelSoon.map((f) => h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'title', text: `Kündigen bis ${dayDe(f.cancelBy)}: ${f.name}` }), h('div', { class: 'sub', text: `${eur(f.amount)} ${FIN_INTERVALS[f.interval]}` })), h('span', { class: 'pill amber', text: 'Frist' }))),
       s.upcoming.map((u) => h('div', { class: 'row' }, h('span', { class: 'when', text: dayDe(u.date) }), h('div', { class: 'grow' }, h('div', { class: 'title', text: u.name }), h('div', { class: 'sub', text: u.type === 'Fest' ? 'feste Abbuchung' : 'Rechnung' })),

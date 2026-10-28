@@ -110,6 +110,22 @@ function todayLabel() {
 }
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// Screenreader-Ansagen über einen festen Bereich (frisch eingefügte Live-Regionen liest nicht jeder vor).
+let lastAnnounced = '';
+function announce(text) {
+  const box = document.getElementById('sr-live');
+  if (!box || !text || text === lastAnnounced) return;
+  lastAnnounced = text;
+  box.textContent = '';
+  setTimeout(() => { box.textContent = text; }, 50);
+}
+// Hinweiszeile oben in einer Ansicht; die Ansage macht announce().
+function noticeEl(text) {
+  if (!text) return null;
+  announce(text);
+  return h('div', { class: 'notice', text });
+}
 function projectKey(p) { return p.path || p.name; }
 function projects() { return (ui.state && ui.state.projects) || []; }
 function settings() { return (ui.state && ui.state.settings) || { theme: 'system', connections: { mac: false, chrome: false } }; }
@@ -171,6 +187,8 @@ function setView(view) {
   // Privaten Bereich beim Verlassen sofort sperren.
   if (ui.view === 'finance' && view !== 'finance' && typeof fin !== 'undefined' && fin.open) { api.finLock(); finClear(); }
   ui.view = view;
+  // Im privaten Bereich gibt es kein Eingabefeld zu Claude – so landet nichts versehentlich dort.
+  $('#quick-section').hidden = view === 'finance';
   ui.sig.main = null;
   renderNav();
   renderMain();
@@ -308,7 +326,7 @@ function renderCockpit() {
   return h('section', { class: 'section' },
     h('div', { class: 'section-head wrap' }, h('h2', { text: 'Lage' }), h('span', { class: 'spacer' }),
       h('label', { class: 'toggle-line' },
-        h('button', { class: 'switch', role: 'switch', 'aria-checked': String(m.enabled), 'aria-label': 'Jeden Morgen eine Zusammenfassung als Mitteilung', 'data-focus': 'morning-on',
+        h('button', { class: 'switch', role: 'switch', 'aria-checked': String(m.enabled), 'aria-label': 'Morgen-Mitteilung: jeden Morgen eine Zusammenfassung', 'data-focus': 'morning-on',
           onClick: () => api.updateSettings({ morning: { enabled: !m.enabled } }) }), 'Morgen-Mitteilung um'), time),
     h('div', { class: 'cockpit' },
       tile('Ungelesen', unread, unread ? c.web.slice(0, 3).map((p) => `${p.name} ${p.unread}`).join(' · ') : 'in deinen Web-Tabs', () => setView('web')),
@@ -572,6 +590,9 @@ function renderChat() {
   const sendBtn = h('button', { type: 'submit', class: 'send', 'aria-label': 'Senden' });
   const shotBtn = isMac() ? h('button', { type: 'button', class: 'icon-btn shot-btn', 'aria-label': 'Bildschirm zeigen', title: 'Bildschirm zeigen (Cmd+Shift+Leertaste): Bereich wählen, Leertaste für ein Fenster, Esc bricht ab',
     onClick: async () => { const r = await api.screenCapture(); if (r && r.ok) attachScreenshot(r.path); else if (r && r.error) alert(r.error); } }) : null;
+  const fileBtn = h('button', { type: 'button', class: 'icon-btn shot-btn', 'aria-label': 'Datei anhängen', title: 'Datei anhängen (oder einfach ins Feld ziehen)',
+    onClick: async () => { const files = await api.pickFiles(); if (files && files.length) insertPaths(input, files); } });
+  fileBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg>';
   if (shotBtn) shotBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>';
   sendBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
   const form = h('form', { class: 'composer', onSubmit: (e) => {
@@ -581,7 +602,7 @@ function renderChat() {
     input.value = '';
     input.style.height = 'auto';
     sendMessage(t);
-  } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input, shotBtn, sendBtn);
+  } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input, fileBtn, shotBtn, sendBtn);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
   });
@@ -608,14 +629,17 @@ function renderChat() {
 // Dateien in den Chat ziehen: der Pfad landet im Eingabefeld, Claude liest die Datei dann selbst
 // (Bilder, PDFs, Videos, Tabellen …). Hochgeladen oder kopiert wird nichts.
 const MAX_DROP_FILES = 10;
+function insertPaths(input, paths) {
+  const lines = paths.map((p) => `Datei: ${p}`).join('\n');
+  input.value = input.value.trim() ? `${input.value.trimEnd()}\n${lines}\n` : `${lines}\n`;
+  input.dispatchEvent(new Event('input'));
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  announce(paths.length === 1 ? 'Eine Datei angehängt.' : `${paths.length} Dateien angehängt.`);
+}
+
 function attachDrop(zone, input) {
-  const insert = (paths) => {
-    const lines = paths.map((p) => `Datei: ${p}`).join('\n');
-    input.value = input.value.trim() ? `${input.value.trimEnd()}\n${lines}\n` : `${lines}\n`;
-    input.dispatchEvent(new Event('input'));
-    input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
-  };
+  const insert = (paths) => insertPaths(input, paths);
   let depth = 0;
   zone.addEventListener('dragenter', (e) => { if (e.dataTransfer.types.includes('Files')) { depth += 1; zone.classList.add('drop-on'); } });
   zone.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) zone.classList.remove('drop-on'); });

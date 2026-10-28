@@ -70,3 +70,14 @@ test('Ohne n8n-Schlüssel oder wenn n8n nicht läuft: still', async () => {
   await b.check();
   assert.strictEqual(sent.length, 0);
 });
+
+test('n8n: ein Lauf, der beim ersten Blick noch läuft und dann scheitert, wird gemeldet', async () => {
+  let execs = [{ id: '9', workflowId: 'w1', status: 'running' }];
+  const sent = [];
+  const a = new AlertWatch({ listServers: async () => [], listExecutions: async () => ({ ok: true, data: execs }),
+    listWorkflows: async () => ({ ok: true, data: [] }), notify: (t) => sent.push(t) });
+  await a.checkN8n();
+  execs = [{ id: '9', workflowId: 'w1', status: 'error' }];
+  await a.checkN8n();
+  assert.strictEqual(sent.length, 1);
+});

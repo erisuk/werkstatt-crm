@@ -32,10 +32,10 @@ test('Cookie-Datei enthält nur Cookies der einen Seite', () => {
 });
 
 test('Auftrag: Skill watch, Adresse als Daten, Speicherort erst nach Rückfrage', () => {
-  const p = analyzePrompt('https://www.youtube.com/watch?v=abc"&x=1', { name: 'YouTube' }, null);
+  const p = analyzePrompt('https://www.youtube.com/watch?v=abc"&x=1', { name: 'YouTube' });
   assert.match(p, /Skill „watch“/);
   assert.match(p, /"https:\/\/www\.youtube\.com\/watch\?v=abc\\"&x=1"/);
   assert.match(p, /speichere erst nach meiner Antwort/);
   assert.ok(!/VIDEOCHECK_COOKIES/.test(p));
-  assert.match(analyzePrompt('https://www.instagram.com/reel/x/', { name: 'Instagram' }, '/tmp/c.txt'), /VIDEOCHECK_COOKIES="\/tmp\/c\.txt"/);
+  assert.match(analyzePrompt('https://www.instagram.com/reel/x/', { name: 'Instagram' }, '/Users/x/v.mp4'), /schon heruntergeladen: "\/Users\/x\/v\.mp4"/);
 });

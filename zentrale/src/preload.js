@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   plannerStatus: (id, status) => ipcRenderer.invoke('planner-status', { id, status }),
   plannerUpload: (id, tabId) => ipcRenderer.invoke('planner-upload', { id, tabId }),
   pickVideo: () => ipcRenderer.invoke('pick-video'),
+  pickFiles: () => ipcRenderer.invoke('pick-files'),
   screenCapture: () => ipcRenderer.invoke('screen-capture'),
   screenShortcut: () => ipcRenderer.invoke('screen-shortcut'),
   onScreenShot: (fn) => ipcRenderer.on('screen-shot', (_e, p) => fn(p)),

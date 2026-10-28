@@ -90,3 +90,13 @@ test('Hilfen: Datum, Schwärzen, Kategorien', () => {
   assert.strictEqual(scrub('Karte 4111 1111 1111 1111'), 'Karte [Nr.]');
   assert.strictEqual(categorize('ANTHROPIC', 'Claude Pro'), 'KI & Werkzeuge');
 });
+
+test('Prüfung: UUIDs mit langen Ziffern, Tausenderpunkte, Ortszeit', () => {
+  assert.ok(clean('fixed', { id: '12345678-1234-4abc-8def-123456789012', name: 'Miete', amount: '600', account: '12345678-1234-4abc-8def-123456789012' }).ok);
+  assert.strictEqual(money('1.250'), 1250);
+  assert.strictEqual(money('12.500.000'), 12500000);
+  assert.strictEqual(money('1.25'), 1.25);
+  // 00:30 Ortszeit: „heute“ ist der lokale Tag, nicht der UTC-Tag davor
+  const sum = summary({ accounts: [], fixed: [], incomes: [], moves: [], snapshots: [], bills: [{ name: 'X', amount: 1, due: '2026-10-27', paid: false }] }, new Date(2026, 9, 28, 0, 30));
+  assert.strictEqual(sum.upcoming[0].overdue, true);
+});

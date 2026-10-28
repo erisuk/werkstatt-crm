@@ -39,7 +39,9 @@ function cleanPost(raw, old = {}) {
   if (!targets.length) return { ok: false, error: 'Bitte mindestens einen Web-Tab (YouTube, Instagram oder TikTok) wählen.' };
   const title = clip(r.title, LIMITS.title).trim();
   if (!title) return { ok: false, error: 'Bitte einen Titel angeben.' };
-  const status = STATUS.includes(r.status) ? r.status : (old.status || 'geplant');
+  let status = STATUS.includes(r.status) ? r.status : (old.status || 'geplant');
+  // Fälligen Beitrag auf eine neue Zeit verschoben: wieder „geplant“, damit er erneut gemeldet wird.
+  if (status === 'fällig' && old.dueAt && old.dueAt !== dueAt) status = 'geplant';
   return { ok: true, post: {
     id: typeof old.id === 'string' ? old.id : crypto.randomUUID(),
     video, title, description: clip(r.description, LIMITS.description), hashtags: cleanHashtags(r.hashtags),

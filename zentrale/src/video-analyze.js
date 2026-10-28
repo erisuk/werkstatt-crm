@@ -34,11 +34,12 @@ function cookieFileText(cookies, domain) {
   return { count: own.length, text: `# Netscape HTTP Cookie File\n${lines.join('\n')}\n` };
 }
 
-function analyzePrompt(url, site, cookieFile) {
+// localFile: bei Seiten mit Anmeldung hat die Zentrale das Video schon geladen – Claude bekommt nur die Datei.
+function analyzePrompt(url, site, localFile) {
   const q = JSON.stringify(url);
   return [
-    `Schau dir bitte dieses ${site.name}-Video mit dem Skill „watch“ an und analysiere es: ${q}`,
-    cookieFile ? `Das Video braucht eine Anmeldung. Ruf videocheck dafür mit der Umgebungsvariable VIDEOCHECK_COOKIES=${JSON.stringify(cookieFile)} auf (die Datei enthält nur die ${site.name}-Anmeldung und wird gleich wieder gelöscht – lies sie nicht aus und gib sie nirgends weiter).` : null,
+    localFile ? `Schau dir bitte dieses ${site.name}-Video mit dem Skill „watch“ an und analysiere es. Ich habe es schon heruntergeladen: ${JSON.stringify(localFile)} (Quelle: ${q}).`
+      : `Schau dir bitte dieses ${site.name}-Video mit dem Skill „watch“ an und analysiere es: ${q}`,
     '',
     'Danach:',
     '1. Fass kurz zusammen, was im Video passiert, wie es wirkt (Hook, Schnitte, Ton, Text) und was man daraus lernen kann.',

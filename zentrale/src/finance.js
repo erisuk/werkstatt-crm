@@ -19,11 +19,15 @@ function hasSecretNumber(v) {
   return LONG_NUMBER.test(s) || IBAN.test(s);
 }
 
+// Datum in Ortszeit (toISOString wäre UTC – nachts bis 2 Uhr noch „gestern“).
+const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const text = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
 function money(v) {
   if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v * 100) / 100 : null;
   const s = String(v || '').trim().replace(/\s|€|EUR/gi, '');
   if (!s) return null;
+  // 1.250 oder 12.500.000 = Tausenderpunkte ohne Nachkommastellen
+  if (/^-?\d{1,3}(\.\d{3})+$/.test(s)) return Number(s.replace(/\./g, ''));
   // 1.234,56 · 1234,56 · 1234.56 · -12
   const n = Number(/,\d{1,2}$/.test(s) ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, ''));
   return Number.isFinite(n) && Math.abs(n) < 1e9 ? Math.round(n * 100) / 100 : null;
@@ -38,7 +42,8 @@ function day(v) {
 // Jedes Eingabefeld läuft hier durch. Gibt { ok, item } oder { ok:false, error } zurück.
 function clean(kind, raw) {
   const r = raw && typeof raw === 'object' ? raw : {};
-  const strings = Object.values(r).filter((v) => typeof v === 'string');
+  // Nur Freitext prüfen – interne Kennungen (UUIDs) enthalten manchmal lange Ziffernfolgen.
+  const strings = Object.entries(r).filter(([k, v]) => typeof v === 'string' && k !== 'id' && k !== 'account').map(([, v]) => v);
   if (strings.some(hasSecretNumber)) return { ok: false, error: 'Bitte keine vollständigen Karten- oder Kontonummern eintragen – nur die letzten 4 Ziffern.' };
   const id = typeof r.id === 'string' && /^[\w-]{8,64}$/.test(r.id) ? r.id : crypto.randomUUID();
   if (kind === 'accounts') {
@@ -71,7 +76,7 @@ function clean(kind, raw) {
     const amount = money(r.amount);
     if (!name || amount === null || amount <= 0) return { ok: false, error: 'Bitte Quelle und Betrag (größer 0) angeben.' };
     const interval = r.interval === 'einmal' ? 'einmal' : (INTERVALS[r.interval] ? r.interval : 'monat');
-    return { ok: true, item: { id, name, amount, interval, date: day(r.date) || new Date().toISOString().slice(0, 10), account: text(r.account, 64), note: text(r.note, 200) } };
+    return { ok: true, item: { id, name, amount, interval, date: day(r.date) || localDay(), account: text(r.account, 64), note: text(r.note, 200) } };
   }
   return { ok: false, error: 'Unbekannte Art.' };
 }
@@ -146,7 +151,7 @@ function netWorth(accounts) {
 }
 
 function snapshot(d) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDay();
   const rest = (d.snapshots || []).filter((s) => s.date !== today);
   return [...rest, { date: today, total: netWorth(d.accounts) }].slice(-730);
 }
@@ -156,11 +161,11 @@ const perMonth = (amount, interval) => Math.round(amount * (INTERVALS[interval] 
 // Zahlen fürs Dashboard – alles aus den eigenen Einträgen, nichts geschätzt.
 function summary(d, now = new Date()) {
   const r2 = (n) => Math.round(n * 100) / 100;
-  const today = now.toISOString().slice(0, 10);
-  const in30 = new Date(now.getTime() + 30 * 86400000).toISOString().slice(0, 10);
+  const today = localDay(now);
+  const in30 = localDay(new Date(now.getTime() + 30 * 86400000));
   const fixedMonth = r2(d.fixed.reduce((n, f) => n + perMonth(f.amount, f.interval), 0));
   const incomeMonth = r2(d.incomes.filter((i) => i.interval !== 'einmal').reduce((n, i) => n + perMonth(i.amount, i.interval), 0));
-  const byCategory = {};
+  const byCategory = Object.create(null);
   for (const f of d.fixed) byCategory[f.category] = r2((byCategory[f.category] || 0) + perMonth(f.amount, f.interval));
   const debts = d.accounts.filter((a) => a.balance < 0);
   const upcoming = [
@@ -169,9 +174,9 @@ function summary(d, now = new Date()) {
   ].sort((a, b) => a.date.localeCompare(b.date));
   const cancelSoon = d.fixed.filter((f) => f.cancelBy && f.cancelBy >= today && f.cancelBy <= in30);
   // Kontobewegungen: je Monat rein/raus, wohin das Geld ging, woher es kam.
-  const months = {};
-  const outTo = {};
-  const inFrom = {};
+  const months = Object.create(null);
+  const outTo = Object.create(null);
+  const inFrom = Object.create(null);
   for (const m of d.moves) {
     const k = m.date.slice(0, 7);
     months[k] = months[k] || { month: k, in: 0, out: 0 };
