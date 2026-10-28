@@ -44,7 +44,7 @@ function clean(kind, raw) {
   if (kind === 'accounts') {
     const name = text(r.name, 60);
     if (!name) return { ok: false, error: 'Bitte einen Namen angeben (z. B. „Sparkasse Giro“).' };
-    const last4 = text(r.last4, 4);
+    const last4 = String(r.last4 == null ? '' : r.last4).trim();
     if (last4 && !/^\d{4}$/.test(last4)) return { ok: false, error: 'Bei „Endet auf“ bitte genau 4 Ziffern.' };
     const balance = money(r.balance);
     if (balance === null) return { ok: false, error: 'Bitte einen Kontostand angeben (z. B. 1.250,00 oder -300).' };

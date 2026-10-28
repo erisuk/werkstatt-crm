@@ -168,6 +168,8 @@ darkQuery.addEventListener('change', renderTheme);
 // Der Chat setzt seinen Fokus selbst ins Eingabefeld.
 function setView(view) {
   if ((ui.view === 'web' || ui.view === 'local') && view !== ui.view) leaveWeb();
+  // Privaten Bereich beim Verlassen sofort sperren.
+  if (ui.view === 'finance' && view !== 'finance' && typeof fin !== 'undefined' && fin.open) { api.finLock(); finClear(); }
   ui.view = view;
   ui.sig.main = null;
   renderNav();
@@ -804,6 +806,7 @@ function renderMain() {
   else if (ui.view === 'kommentare') renderKommentare();
   else if (ui.view === 'planner') renderPlanner();
   else if (ui.view === 'websites') renderWebsites();
+  else if (ui.view === 'finance') renderFinance();
   else renderTasks();
 }
 
@@ -836,7 +839,7 @@ function applyState(s) {
     renderRunning();
   } else if (ui.view === 'automations') {
     renderAssistant(); // Status, Freigaben und Antworten des Assistenten
-  } else if (['mac', 'web', 'local', 'brain', 'projects', 'kommentare', 'planner', 'websites'].includes(ui.view)) {
+  } else if (['mac', 'web', 'local', 'brain', 'projects', 'kommentare', 'planner', 'websites', 'finance'].includes(ui.view)) {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');

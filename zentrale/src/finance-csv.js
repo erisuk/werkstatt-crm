@@ -3,12 +3,14 @@
 const crypto = require('crypto');
 const { money, hasSecretNumber } = require('./finance');
 
+// Je Spalte mehrere Namen, der erste Treffer in dieser Reihenfolge gewinnt (z. B. Verwendungszweck vor Buchungstext).
 const COLS = {
-  date: /^(buchungs?tag|buchungsdatum|datum|date|booking date|wertstellung|valuta)/i,
-  amount: /^(betrag|umsatz|amount|betrag \(eur\)|betrag \(€\))/i,
-  party: /^(beguenstigter|begünstigter|zahlungsempfänger|empfänger|auftraggeber|name|payee|partner|gegenkonto.?name|zahlungspflichtige)/i,
-  purpose: /^(verwendungszweck|buchungstext|beschreibung|purpose|description|vorgang|text)/i,
+  date: [/^(buchungs?tag|buchungsdatum|booking date)/i, /^(datum|date)/i, /^(wertstellung|valuta)/i],
+  amount: [/^(betrag|umsatz|amount)/i],
+  party: [/^(beguenstigter|begünstigter|zahlungsempfänger|empfänger|auftraggeber|zahlungspflichtige|payee|partner|gegenkonto.?name)/i, /^name/i],
+  purpose: [/^verwendungszweck/i, /^(beschreibung|purpose|description)/i, /^(buchungstext|vorgang|text)/i],
 };
+const anyOf = (list, c) => list.some((re) => re.test(c));
 
 // Einfache Zuordnung nach Stichwörtern; alles Unbekannte landet in „Sonstiges“.
 const RULES = [
@@ -71,10 +73,10 @@ function importCsv(text, accountId = '') {
   if (text.length > 20 * 1024 * 1024) return { ok: false, error: 'Die Datei ist zu groß.' };
   const rows = parseCsv(text.replace(/^﻿/, ''));
   // Kopfzeile suchen: die erste Zeile, in der Datum und Betrag vorkommen (manche Banken haben Vorspann-Zeilen).
-  const headIdx = rows.findIndex((r) => r.some((c) => COLS.date.test(c.trim())) && r.some((c) => COLS.amount.test(c.trim())));
+  const headIdx = rows.findIndex((r) => r.some((c) => anyOf(COLS.date, c.trim())) && r.some((c) => anyOf(COLS.amount, c.trim())));
   if (headIdx < 0) return { ok: false, error: 'In der Datei wurden keine Spalten „Datum“ und „Betrag“ gefunden. Bitte den Umsatz-Export als CSV aus dem Online-Banking nehmen.' };
   const head = rows[headIdx].map((c) => c.trim());
-  const col = (re) => head.findIndex((c) => re.test(c));
+  const col = (list) => { for (const re of list) { const i = head.findIndex((c) => re.test(c)); if (i >= 0) return i; } return -1; };
   const ix = { date: col(COLS.date), amount: col(COLS.amount), party: col(COLS.party), purpose: col(COLS.purpose) };
   const moves = [];
   let bad = 0;
