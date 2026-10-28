@@ -89,3 +89,13 @@ test('Mehrere Konten: eigener Speicher je Konto, alte Tabs bleiben im Standard-K
   assert.deepStrictEqual(store.profiles(), ['standard', 'konto-2']);
   assert.strictEqual(store.nextProfile(), 'konto-3');
 });
+
+test('BIT AI News: eigenes Konto „bit“, getrennter Anmelde-Speicher', () => {
+  const { BIT_TABS, BIT_PROFILE, partitionFor } = require('../src/portals');
+  assert.strictEqual(partitionFor(BIT_PROFILE), 'persist:portale-bit');
+  const store = new PortalStore(tmpFile());
+  for (const t of BIT_TABS) assert.ok(store.add(t.name, t.url, BIT_PROFILE).ok);
+  assert.deepStrictEqual(store.get().portals.map((p) => p.profile), ['bit', 'bit', 'bit']);
+  assert.ok(store.profiles().includes('bit'));
+  assert.strictEqual(store.nextProfile(), 'konto-2');
+});

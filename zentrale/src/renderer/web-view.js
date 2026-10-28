@@ -10,7 +10,8 @@ const isLocalUrl = (u) => { try { return /^(localhost|127\.0\.0\.1|\[::1\]|.+\.l
 const inWebView = () => ui.view === 'web' || ui.view === 'local';
 const modePortals = () => (webv.state ? webv.state.portals.filter((p) => (webv.mode === 'local') === isLocalUrl(p.url)) : []);
 
-const profileLabel = (p) => (p === 'standard' ? 'Standard-Konto' : `Konto ${(/(\d+)$/.exec(p) || [])[1] || p}`);
+const profileLabel = (p) => (p === 'standard' ? 'Standard-Konto' : p === 'bit' ? 'Bit-Konto' : `Konto ${(/(\d+)$/.exec(p) || [])[1] || p}`);
+const BIT_URLS = ['https://studio.youtube.com/', 'https://www.instagram.com/', 'https://www.tiktok.com/'];
 const ACTIVITY_MS = 20000; // so lange gilt „Claude bedient gerade …“ nach der letzten Aktion
 
 function activePortal() {
@@ -94,6 +95,11 @@ function renderAddForm() {
     addPortal(name.value, url.value);
   } },
     h('h2', { class: 'full', text: 'Seite hinzufügen' }),
+    BIT_URLS.every((u) => s.portals.some((p) => p.profile === 'bit' && p.url === u)) ? null
+      : h('div', { class: 'full bit-setup' },
+        h('div', { class: 'grow' }, h('strong', { text: 'BIT AI News einrichten' }),
+          h('div', { class: 'sub', text: 'Legt YouTube Studio, Instagram und TikTok in einem eigenen Bit-Konto an – getrennt von deinen privaten und MURIS-Anmeldungen. Danach meldest du dich dort einmal mit den Bit-Konten an.' })),
+        h('button', { type: 'button', class: 'btn', 'data-focus': 'bit-setup', onClick: async () => { const r = await api.webSetupBit(); if (!r.ok) { webv.addError = r.error; renderWebChrome(); return; } webv.adding = false; renderWebChrome(); } }, 'Einrichten')),
     h('div', { class: 'field full' }, h('label', { for: 'web-profile', text: 'Konto' }), profile,
       h('span', { class: 'hint', text: 'Jedes Konto hat eine eigene Anmeldung. Für ein zweites Gmail oder Outlook: „Neues Konto“ wählen und dann Gmail anklicken.' })),
     [...new Set(s.presets.map((p) => p.group))].map((group) => {
@@ -120,7 +126,7 @@ function webTab(p, active) {
       onClick: () => { webv.adding = false; api.webShow(p.id); } },
     p.loading ? h('span', { class: 'dot amber pulse', 'aria-hidden': 'true' }) : null,
     h('span', { class: 'web-tab-name', text: p.name }),
-    p.profile && p.profile !== 'standard' ? h('span', { class: 'profile-dot', title: profileLabel(p.profile), 'aria-label': profileLabel(p.profile), text: (/(\d+)$/.exec(p.profile) || [])[1] || '•' }) : null,
+    p.profile && p.profile !== 'standard' ? h('span', { class: 'profile-dot', title: profileLabel(p.profile), 'aria-label': profileLabel(p.profile), text: p.profile === 'bit' ? 'B' : (/(\d+)$/.exec(p.profile) || [])[1] || '•' }) : null,
     p.unread ? h('span', { class: 'count', 'aria-label': `${p.unread} ungelesen`, text: p.unread > 99 ? '99+' : String(p.unread) }) : null),
     h('button', { class: 'web-tab-close', 'aria-label': `${p.name} schließen`, title: 'Tab entfernen', 'data-focus': `web-close:${p.id}`,
       onClick: async () => {

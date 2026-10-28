@@ -1,5 +1,5 @@
 // Hauptprozess: öffnet das Fenster, startet Claude automatisch und hält alles synchron.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard, globalShortcut, systemPreferences, powerMonitor } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
 const os = require('os');
@@ -21,10 +21,12 @@ const { FolderWatcher } = require('./watcher');
 const { AlertWatch } = require('./alerts');
 const morning = require('./morning');
 const { PlanStore, uploadPrompt } = require('./planner');
-const { PortalStore, PRESETS, partitionFor } = require('./portals');
+const { PortalStore, PRESETS, partitionFor, BIT_PROFILE, BIT_TABS } = require('./portals');
 const { WebTabs, portalSession } = require('./web-tabs');
 const { videoSite, cookieFileText, analyzePrompt } = require('./video-analyze');
 const { WebsiteStudio, AGENT: WEB_AGENT } = require('./website-studio');
+const { FinanceStore, summary: financeSummary } = require('./finance');
+const { importCsv } = require('./finance-csv');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
 const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require('./n8n');
@@ -278,12 +280,12 @@ function setup() {
     if (raw.key && safeStorage.isEncryptionAvailable()) {
       try { key = safeStorage.decryptString(Buffer.from(raw.key, 'base64')); } catch { key = null; }
     }
-    n8nConfig = { url: normalizeBase(raw.url) || N8N_DEFAULT_URL, key };
+    n8nConfig = { url: normalizeBase(raw.url) || N8N_DEFAULT_URL, key, off: raw.off === true };
   }
 
   function saveN8n(next) {
     if (next.key && !safeStorage.isEncryptionAvailable()) return false;
-    const data = { url: next.url, key: next.key ? safeStorage.encryptString(next.key).toString('base64') : null };
+    const data = { url: next.url, key: next.key ? safeStorage.encryptString(next.key).toString('base64') : null, off: next.off === true };
     try {
       fs.mkdirSync(path.dirname(n8nFile()), { recursive: true });
       fs.writeFileSync(`${n8nFile()}.tmp`, JSON.stringify(data), { mode: 0o600 });
@@ -395,7 +397,10 @@ function setup() {
     win.on('close', (e) => {
       if (isMac && !quitting) { e.preventDefault(); win.hide(); }
     });
-    win.on('closed', () => { win = null; });
+    win.on('closed', () => { win = null; finLock(); });
+    // Fenster weg oder minimiert: privater Bereich sofort zu.
+    win.on('hide', () => finLock());
+    win.on('minimize', () => finLock());
   }
 
   ipcMain.handle('get-state', () => snapshot());
@@ -713,6 +718,66 @@ function setup() {
     } catch {}
   };
 
+  // ---------- Privat: Finanzen ----------
+  // Nur dieses Fenster darf fragen, nur nach Touch ID, nach 5 Minuten ohne Nutzung wieder zu.
+  // Keine Verbindung zu Claude, seinen Werkzeugen oder dem Netz; Bildschirmfotos sind gesperrt, solange offen.
+  const FIN_IDLE_MS = 5 * 60000;
+  let finUntil = 0;
+  const finStore = () => new FinanceStore(path.join(app.getPath('userData'), 'privat', 'finanzen.bin'), {
+    encrypt: (s) => safeStorage.encryptString(s), decrypt: (b) => safeStorage.decryptString(b) });
+  const fromWindow = (e) => !!win && e.sender === win.webContents;
+  const finIsOpen = () => Date.now() < finUntil;
+  function finLock() {
+    const was = finUntil > 0;
+    finUntil = 0;
+    if (win && !win.isDestroyed()) win.setContentProtection(false);
+    if (was) send('fin-locked');
+  }
+  const finGuard = (e) => {
+    if (!fromWindow(e)) return { ok: false, error: 'Nicht erlaubt.' };
+    if (!finIsOpen()) { finLock(); return { ok: false, locked: true, error: 'Der private Bereich ist gesperrt.' }; }
+    finUntil = Date.now() + FIN_IDLE_MS;
+    return null;
+  };
+  const finData = () => { const d = finStore().load(); return { ok: true, data: d, summary: financeSummary(d) }; };
+  ipcMain.handle('fin-unlock', async (e) => {
+    if (!fromWindow(e)) return { ok: false, error: 'Nicht erlaubt.' };
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'Der Schlüsselbund ist nicht verfügbar – ohne ihn speichert die Zentrale keine Finanzdaten.' };
+    if (process.platform === 'darwin' && systemPreferences.canPromptTouchID()) {
+      try { await systemPreferences.promptTouchID('deinen privaten Finanzbereich zu öffnen'); } catch { return { ok: false, cancelled: true }; }
+    } else {
+      const { response } = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Abbrechen', 'Trotzdem öffnen'], defaultId: 0, cancelId: 0,
+        message: 'Touch ID ist hier nicht verfügbar.', detail: 'Der Bereich bleibt verschlüsselt gespeichert, lässt sich aber ohne Fingerabdruck öffnen.' });
+      if (response !== 1) return { ok: false, cancelled: true };
+    }
+    finUntil = Date.now() + FIN_IDLE_MS;
+    win.setContentProtection(true);
+    try { return finData(); } catch { finLock(); return { ok: false, error: 'Die Finanzdaten ließen sich nicht entschlüsseln.' }; }
+  });
+  ipcMain.handle('fin-lock', (e) => { if (fromWindow(e)) finLock(); });
+  ipcMain.handle('fin-get', (e) => finGuard(e) || finData());
+  ipcMain.handle('fin-save', (e, a) => finGuard(e) || (() => { const r = finStore().upsert(a && a.kind, a && a.item); return r.ok ? finData() : r; })());
+  ipcMain.handle('fin-remove', (e, a) => finGuard(e) || (() => { finStore().remove(a && a.kind, a && a.id); return finData(); })());
+  ipcMain.handle('fin-clear-moves', (e) => finGuard(e) || (() => { finStore().clearMoves(); return finData(); })());
+  ipcMain.handle('fin-import', async (e, accountId) => {
+    const g = finGuard(e);
+    if (g) return g;
+    const res = await dialog.showOpenDialog(win, { title: 'Kontoauszug (CSV) wählen', properties: ['openFile'], filters: [{ name: 'CSV', extensions: ['csv', 'txt'] }] });
+    if (res.canceled) return { ok: false, cancelled: true };
+    let buf;
+    try { buf = fs.readFileSync(res.filePaths[0]); } catch (err) { return { ok: false, error: err.message }; }
+    // Viele Banken exportieren noch in Windows-1252 statt UTF-8.
+    let text = buf.toString('utf8');
+    if (text.includes('\uFFFD')) text = new TextDecoder('windows-1252').decode(buf);
+    const parsed = importCsv(text, typeof accountId === 'string' ? accountId.slice(0, 64) : '');
+    if (!parsed.ok) return parsed;
+    const r = finStore().addMoves(parsed.moves);
+    return { ...finData(), imported: r.added, duplicates: r.skipped, unreadable: parsed.skipped };
+  });
+  const finTimer = setInterval(() => { if (finUntil && !finIsOpen()) finLock(); }, 15000);
+  powerMonitor.on('lock-screen', finLock);
+  powerMonitor.on('suspend', finLock);
+
   // Website-Werkstatt
   let studioObj = null;
   function studio() { return studioObj || (studioObj = new WebsiteStudio(path.join(app.getPath('userData'), 'websites.json'))); }
@@ -987,7 +1052,18 @@ function setup() {
 
   ipcMain.handle('n8n-connect', async (_e, args) => connectN8n(args && args.url, args && args.key));
 
-  ipcMain.handle('n8n-disconnect', () => saveN8n({ url: n8nConfig.url, key: null }));
+  // Schlüssel, den die Bit-Automatik schon auf dem Mac hat (~/.config/bitai, nur für dich lesbar):
+  // die Zentrale liest ihn selbst und legt ihn in den Schlüsselbund – angezeigt wird er nie.
+  const BIT_N8N_KEY = path.join(os.homedir(), '.config', 'bitai', 'n8n_api_key');
+  const bitKeyUsable = () => { try { const st = fs.statSync(BIT_N8N_KEY); return st.isFile() && (st.mode & 0o077) === 0 && st.size < 4000; } catch { return false; } };
+  ipcMain.handle('n8n-file-available', () => bitKeyUsable());
+  ipcMain.handle('n8n-connect-file', async (_e, args) => {
+    if (!bitKeyUsable()) return { ok: false, error: 'Kein passender n8n-Schlüssel auf dem Mac gefunden.' };
+    return connectN8n((args && args.url) || n8nConfig.url, fs.readFileSync(BIT_N8N_KEY, 'utf8'));
+  });
+
+  // Bewusst getrennt: dann verbindet die Zentrale auch beim Start nicht von selbst wieder.
+  ipcMain.handle('n8n-disconnect', () => saveN8n({ url: n8nConfig.url, key: null, off: true }));
   ipcMain.handle('n8n-workflows', () => n8nClient().listWorkflows());
   ipcMain.handle('n8n-executions', () => n8nClient().listExecutions(50));
   ipcMain.handle('n8n-set-active', (_e, args) => (args && typeof args.id === 'string'
@@ -1015,6 +1091,18 @@ function setup() {
     const res = webTabs.store.add(args && args.name, args && args.url, args && args.profile);
     if (res.ok) webTabs.show(res.portal.id);
     return res.ok ? { ok: true, id: res.portal.id } : res;
+  });
+  // „BIT AI News einrichten“: die drei Kanal-Tabs im eigenen Bit-Konto anlegen (Anmelden machst du).
+  ipcMain.handle('web-setup-bit', () => {
+    const have = webTabs.store.get().portals.filter((p) => p.profile === BIT_PROFILE).map((p) => p.url);
+    let first = null;
+    for (const t of BIT_TABS.filter((x) => !have.includes(x.url))) {
+      const r = webTabs.store.add(t.name, t.url, BIT_PROFILE);
+      if (!r.ok) return r;
+      first = first || r.portal.id;
+    }
+    if (first) webTabs.show(first);
+    return { ok: true, added: !!first };
   });
   ipcMain.handle('web-show', (_e, id) => typeof id === 'string' && webTabs.show(id));
   ipcMain.handle('web-close', (_e, id) => { if (typeof id === 'string') webTabs.close(id); });
@@ -1096,6 +1184,10 @@ function setup() {
     browserProxy = startProxy(makeBrowserOps(browser), n8nSocketPath(app.getPath('userData'), 'browser'));
     nativeTheme.themeSource = settings.get().theme;
     loadN8n();
+    // Noch nicht verbunden (und nicht bewusst getrennt): mit dem Schlüssel der Bit-Automatik verbinden.
+    if (!n8nConfig.key && !n8nConfig.off && bitKeyUsable()) {
+      connectN8n(n8nConfig.url, fs.readFileSync(BIT_N8N_KEY, 'utf8')).then((r) => { if (r.ok) pushState(); }).catch(() => {});
+    }
     n8nProxy = startProxy(makeOps(n8nClient), n8nSocketPath(app.getPath('userData')));
     startFolderWatcher();
     startAlerts();
@@ -1147,6 +1239,7 @@ function setup() {
     if (folderWatcher) folderWatcher.stop();
     if (alerts) alerts.stop();
     clearInterval(morningTimer);
+    clearInterval(finTimer);
     globalShortcut.unregisterAll();
     clearCookieFiles(true);
     if (sessionWatcher) sessionWatcher.close();
