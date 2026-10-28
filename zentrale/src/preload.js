@@ -1,7 +1,9 @@
 // Schmale, sichere Brücke zwischen Oberfläche und Hauptprozess.
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('zentrale', {
+  // Pfad einer hineingezogenen Datei (nur lesen, die Datei selbst bleibt, wo sie ist).
+  pathForFile: (file) => { try { return webUtils.getPathForFile(file) || null; } catch { return null; } },
   platform: process.platform,
   getState: () => ipcRenderer.invoke('get-state'),
   openSession: (args) => ipcRenderer.invoke('open-session', args),
@@ -54,6 +56,9 @@ contextBridge.exposeInMainWorld('zentrale', {
   macHealth: () => ipcRenderer.invoke('mac-health'),
   macBigFolders: (refresh) => ipcRenderer.invoke('mac-big-folders', refresh === true),
   macEmptyTrash: () => ipcRenderer.invoke('mac-empty-trash'),
+  alertsRecent: () => ipcRenderer.invoke('alerts-recent'),
+  cockpit: () => ipcRenderer.invoke('cockpit'),
+  onAlerts: (fn) => ipcRenderer.on('alerts', (_e, list) => fn(list)),
   watchState: () => ipcRenderer.invoke('watch-state'),
   watchSave: (rule) => ipcRenderer.invoke('watch-save', rule),
   watchRemove: (id) => ipcRenderer.invoke('watch-remove', id),

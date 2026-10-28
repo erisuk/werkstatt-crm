@@ -5,7 +5,9 @@ const path = require('path');
 const DEFAULTS = {
   theme: 'system', // 'system' | 'light' | 'dark'
   connections: { mac: false, chrome: false, web: false },
+  morning: { enabled: false, time: '08:00' }, // tägliche Morgen-Mitteilung
 };
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 const THEMES = ['system', 'light', 'dark'];
 
@@ -15,6 +17,8 @@ function sanitize(raw) {
   return {
     theme: THEMES.includes(s.theme) ? s.theme : DEFAULTS.theme,
     connections: { mac: c.mac === true, chrome: c.chrome === true, web: c.web === true },
+    morning: { enabled: !!(s.morning && s.morning.enabled === true),
+      time: s.morning && TIME.test(s.morning.time) ? s.morning.time : DEFAULTS.morning.time },
   };
 }
 
@@ -36,7 +40,10 @@ class Settings {
     const pc = p.connections && typeof p.connections === 'object' ? p.connections : {};
     const connections = { ...this.value.connections };
     for (const key of Object.keys(DEFAULTS.connections)) if (typeof pc[key] === 'boolean') connections[key] = pc[key];
-    this.value = sanitize({ theme: THEMES.includes(p.theme) ? p.theme : this.value.theme, connections });
+    const pm = p.morning && typeof p.morning === 'object' ? p.morning : {};
+    const morning = { enabled: typeof pm.enabled === 'boolean' ? pm.enabled : this.value.morning.enabled,
+      time: TIME.test(pm.time) ? pm.time : this.value.morning.time };
+    this.value = sanitize({ theme: THEMES.includes(p.theme) ? p.theme : this.value.theme, connections, morning });
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       fs.writeFileSync(`${this.file}.tmp`, JSON.stringify(this.value, null, 2));

@@ -17,6 +17,8 @@ const vault = require('./vault');
 const servers = require('./servers');
 const health = require('./health');
 const { FolderWatcher } = require('./watcher');
+const { AlertWatch } = require('./alerts');
+const morning = require('./morning');
 const { PortalStore, PRESETS } = require('./portals');
 const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
@@ -656,6 +658,44 @@ function setup() {
     bigFoldersCache = null;
     return res.ok ? { ok: true } : res;
   });
+  // Fehler-Meldungen: wichtige Server und fehlgeschlagene n8n-Workflows (jede Minute).
+  let alerts = null;
+  ipcMain.handle('alerts-recent', () => (alerts ? alerts.get() : []));
+  const startAlerts = () => {
+    alerts = new AlertWatch({
+      listServers: () => currentServers(false),
+      listExecutions: () => (n8nConfig.key ? n8nClient().listExecutions(30) : null),
+      listWorkflows: () => n8nClient().listWorkflows(),
+      notify: (title, body, view) => { notify(title, body, view); send('alerts', alerts.get()); },
+    });
+    alerts.start(60000);
+  };
+
+  // Morgen-Cockpit: Lage für „Heute“ und einmal täglich als Mitteilung.
+  // Erst beim ersten Gebrauch anlegen – „store“ steht weiter unten.
+  const morningStore = () => store('morning.json', { lastSent: null });
+  async function cockpitNow() {
+    const w = folderWatcher ? folderWatcher.get() : { log: [], unsorted: [] };
+    return morning.cockpit({ portals: webTabs ? webTabs.info().portals : [], alerts: alerts ? alerts.get() : [],
+      watcherLog: w.log, unsorted: w.unsorted, servers: await currentServers(false).catch(() => []) });
+  }
+  ipcMain.handle('cockpit', () => cockpitNow());
+  let morningTimer = null;
+  const startMorning = () => {
+    morningTimer = setInterval(async () => {
+      const m = settings.get().morning;
+      const now = new Date();
+      if (!m.enabled || !morning.isDue(now, m.time, morningStore().get().lastSent)) return;
+      morningStore().set({ lastSent: morning.dayKey(now) });
+      let events = null;
+      if (process.platform === 'darwin' && settings.get().connections.mac) {
+        const r = await mac.todayPart('events', { launch: false }).catch(() => null);
+        if (r && r.ok && Array.isArray(r.data)) events = r.data;
+      }
+      notify('Guten Morgen', morning.summaryText(await cockpitNow(), events), 'overview');
+    }, 30000);
+  };
+
   // Ordner-Wächter
   let folderWatcher = null;
   ipcMain.handle('watch-state', () => folderWatcher.get());
@@ -706,7 +746,7 @@ function setup() {
     const match = (await currentServers(true)).find((s) => s.pid === pid && s.port === port);
     if (!match) return { ok: false, error: 'Dieser Server läuft nicht mehr.' };
     const res = await servers.stopServer(match, { force: !!(args && args.force), selfPids: [process.pid] });
-    if (res.ok) startedStore.set(startedStore.get().filter((s) => s.pid !== pid));
+    if (res.ok) { startedStore.set(startedStore.get().filter((s) => s.pid !== pid)); if (alerts) alerts.expectStop(port); }
     return res;
   });
 
@@ -942,6 +982,8 @@ function setup() {
     loadN8n();
     n8nProxy = startProxy(makeOps(n8nClient), n8nSocketPath(app.getPath('userData')));
     startFolderWatcher();
+    startAlerts();
+    startMorning();
     writeMacConfig();
     refreshProjects();
     createWindow();
@@ -986,6 +1028,8 @@ function setup() {
     cleanedUp = true;
     if (scheduler) scheduler.stop();
     if (folderWatcher) folderWatcher.stop();
+    if (alerts) alerts.stop();
+    clearInterval(morningTimer);
     if (sessionWatcher) sessionWatcher.close();
     const jobs = [stopAllTasks()];
     if (webTabs) jobs.push(webTabs.saveLogins());
