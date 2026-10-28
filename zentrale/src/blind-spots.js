@@ -3,7 +3,7 @@
 const DAY = 24 * 3600 * 1000;
 const VIEWS = { overview: 'Übersicht', chat: 'Chat', brain: 'Gehirn', web: 'Web', websites: 'Websites', planner: 'Planer', bitvideos: 'Bit-Videos',
   automations: 'Automatisierungen', local: 'Localhost', projects: 'Projekte & Server', mac: 'Mein Mac', library: 'Skills & Agenten',
-  tasks: 'Tägliche Aufgaben', finance: 'Privat', connections: 'Verbindungen', kontrolle: 'Kontrollraum' };
+  tasks: 'Tägliche Aufgaben', finance: 'Privat', connections: 'Verbindungen', kontrolle: 'Kontrollraum', lernen: 'Lernen & Training' };
 
 // level: rot = kaputt/gefährlich, gelb = fehlt/vergessen, info = Hinweis
 function blindSpots(f, now = Date.now()) {

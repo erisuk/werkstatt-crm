@@ -29,6 +29,8 @@ const { FinanceStore, summary: financeSummary, simulate: financeSimulate } = req
 const { importCsv } = require('./finance-csv');
 const { MusicWatch } = require('./music-watch');
 const simulation = require('./simulation');
+const learning = require('./learning');
+const training = require('./training');
 const { DataLayer } = require('./data-layer');
 const { blindSpots } = require('./blind-spots');
 const security = require('./security');
@@ -270,6 +272,7 @@ function setup() {
     const v = currentVault();
     if (v) hints.push(vaultHint(v.path));
     if (c.web && browserConfigFile) hints.push(WEB_HINT);
+    hints.push(learning.systemHint(learnStore().activeLesson()));
     if (hints.length) args.push('--append-system-prompt', hints.join('\n\n'));
     if (allowed.length) args.push(`--allowedTools=${allowed.join(',')}`);
     if (c.chrome) args.push('--chrome');
@@ -926,6 +929,7 @@ function setup() {
     let sending = false;
     morningTimer = setInterval(async () => {
       try { checkPlanner(); } catch {}
+      dailyLearning().catch(() => {});
       const m = settings.get().morning;
       const now = new Date();
       if (sending || !m.enabled || !morning.isDue(now, m.time, morningStore().get().lastSent)) return;
@@ -1397,6 +1401,115 @@ function setup() {
       logins, tasks: scheduler ? scheduler.list() : [], alerts: alerts ? alerts.get() : [], disk, unsorted: w.unsorted.length, data, security: sec });
     return { ok: true, spots, data, security: sec };
   });
+  // ---------- Lernen & Training ----------
+  let learnObj = null;
+  function learnStore() {
+    if (learnObj) return learnObj;
+    const v = currentVault();
+    const dir = v ? path.join(v.path, 'Lernen') : path.join(app.getPath('userData'), 'lernen-protokolle');
+    learnObj = new learning.LearningStore(path.join(app.getPath('userData'), 'lernen.json'), dir);
+    return learnObj;
+  }
+  let trainObj = null;
+  const trainStore = () => trainObj || (trainObj = new training.TrainingStore(path.join(app.getPath('userData'), 'training.json')));
+  const restartForLearning = () => { if (chat) chat.needsRestart = true; }; // neues Lernthema gilt ab der nächsten Nachricht
+  ipcMain.handle('learn-list', () => learnStore().refresh());
+  ipcMain.handle('learn-add', (_e, raw) => { const r = learnStore().add(raw); if (r.ok) restartForLearning(); return r; });
+  ipcMain.handle('learn-remove', (_e, id) => { learnStore().remove(id); restartForLearning(); return learnStore().list(); });
+  ipcMain.handle('learn-activate', (_e, id) => { learnStore().setActive(typeof id === 'string' ? id : null); restartForLearning(); return learnStore().list(); });
+  ipcMain.handle('learn-prompt', (_e, a) => {
+    const st = learnStore();
+    const l = st.lessons.find((x) => x.id === (a && a.id));
+    if (!l) return { ok: false, error: 'Thema nicht gefunden.' };
+    fs.mkdirSync(st.protocolDir, { recursive: true });
+    const file = st.protocolPath(l);
+    return { ok: true, prompt: a.review ? learning.reviewPrompt(l, file) : learning.learnPrompt(l, file) };
+  });
+  ipcMain.handle('learn-open', (_e, id) => { const st = learnStore(); const l = st.lessons.find((x) => x.id === id); if (l && fs.existsSync(st.protocolPath(l))) shell.openPath(st.protocolPath(l)); });
+  ipcMain.handle('learn-open-lessons', () => { if (fs.existsSync(learning.LESSONS_FILE)) shell.openPath(learning.LESSONS_FILE); else return { ok: false, error: 'Noch keine Lektionen – nach der ersten Lernrunde gibt es sie.' }; });
+
+  // Ideen aus allen Projekten + aus dem Data Layer (langsame/kaputte Abläufe der Zentrale selbst).
+  async function scanTraining() {
+    const roots = new Set();
+    const ideas = [];
+    for (const p of projectsCache) {
+      if (!p.path || !isDir(p.path) || p.path === os.homedir() || p.path.startsWith(training.ROOT())) continue;
+      for (const i of await training.scanProject(p.path).catch(() => [])) {
+        if (roots.has(i.key)) continue;
+        roots.add(i.key);
+        ideas.push(i);
+      }
+    }
+    const extra = [];
+    // Das Repo der Zentrale selbst (in der installierten App liegt der Code in app.asar, nicht im Repo).
+    const repo = [path.join(os.homedir(), 'werkstatt-crm', 'zentrale'), path.resolve(__dirname, '..')].find((d) => fs.existsSync(path.join(d, '.git')) || fs.existsSync(path.join(path.dirname(d), '.git')));
+    const r = dataLayer.report();
+    for (const x of (repo ? r.slowest : []).filter((y) => y.avgMs > 800 && y.count >= 3).slice(0, 1)) {
+      extra.push({ key: `zentrale|langsam|${x.name}`, kind: 'tempo', target: x.name, project: 'zentrale', dir: repo,
+        title: `Zentrale schneller machen: ${x.name}`, why: `im Schnitt ${x.avgMs} ms bei ${x.count} Aufrufen (Data Layer).` });
+    }
+    const added = trainStore().addIdeas(ideas.sort(() => Math.random() - 0.5), extra);
+    return { ok: true, added, ...trainStore().list() };
+  }
+  ipcMain.handle('train-list', () => trainStore().list());
+  ipcMain.handle('train-scan', () => scanTraining());
+  ipcMain.handle('train-settings', (_e, s) => { trainStore().setSettings(s); return trainStore().list(); });
+  ipcMain.handle('train-start', async (_e, id) => {
+    const t = trainStore().tasks.find((x) => x.id === id);
+    if (!t) return { ok: false, error: 'Aufgabe nicht gefunden.' };
+    let task = t;
+    if (!t.worktree || !fs.existsSync(t.worktree)) {
+      const w = await training.createWorktree(t);
+      if (!w.ok) return w;
+      task = trainStore().update(id, { worktree: w.worktree, branch: w.branch, status: 'läuft', startedAt: Date.now() });
+    }
+    await claudeReady;
+    if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const info = await openChat({ cwd: task.worktree });
+    return { ok: true, chat: info, prompt: training.trainPrompt(task) };
+  });
+  ipcMain.handle('train-changes', async (_e, id) => {
+    const t = trainStore().tasks.find((x) => x.id === id);
+    return t ? training.changes(t) : { ok: false, error: 'Aufgabe nicht gefunden.' };
+  });
+  ipcMain.handle('train-done', (_e, id) => ({ ok: !!trainStore().update(id, { status: 'fertig', doneAt: Date.now() }) }));
+  ipcMain.handle('train-adopt', async (_e, id) => {
+    const t = trainStore().tasks.find((x) => x.id === id);
+    if (!t) return { ok: false, error: 'Aufgabe nicht gefunden.' };
+    const c = await training.changes(t);
+    if (!c.ok) return c;
+    const { response } = await dialog.showMessageBox(win, { type: 'question', buttons: ['Abbrechen', 'Übernehmen'], defaultId: 1, cancelId: 0,
+      message: `„${t.title}“ ins Projekt ${t.project} übernehmen?`, detail: `${c.stat || 'Keine Änderungen.'}\n\nDas holt die Änderungen in den aktuellen Zweig von ${t.dir}.` });
+    if (response !== 1) return { ok: false, cancelled: true };
+    const r = await training.adopt(t);
+    if (r.ok) { trainStore().update(id, { status: 'übernommen', adoptedAt: Date.now(), worktree: null }); trainStore().drop(id); }
+    return r;
+  });
+  ipcMain.handle('train-discard', async (_e, id) => {
+    const t = trainStore().tasks.find((x) => x.id === id);
+    if (!t) return { ok: true };
+    await training.discard(t);
+    trainStore().drop(id);
+    return { ok: true };
+  });
+  ipcMain.handle('train-reveal', (_e, id) => { const t = trainStore().tasks.find((x) => x.id === id); if (t && t.worktree && fs.existsSync(t.worktree)) shell.openPath(t.worktree); });
+
+  // Täglich: Projekte durchsuchen und fällige Nachprüfungen melden (im Minuten-Takt des Morgen-Cockpits).
+  let learnNotifiedDay = null;
+  async function dailyLearning() {
+    const ts = trainStore();
+    if (ts.isDue()) {
+      const r = await scanTraining().catch(() => null);
+      if (r && r.added) notify('Neue Mini-Aufgaben', `${r.added} neue Trainings-Aufgaben aus deinen Projekten – isoliert, dein Code bleibt unberührt.`, 'lernen');
+    }
+    const due = learnStore().dueReviews();
+    const today = training.localDay();
+    if (due.length && learnNotifiedDay !== today) {
+      learnNotifiedDay = today;
+      notify('Nachprüfung fällig', `${due.map((l) => `„${l.topic}“`).join(', ')} – kurz testen, ob es sitzt.`, 'lernen');
+    }
+  }
+
   // ---------- Simulation ----------
   ipcMain.handle('sim-notfall', () => simulation.emergencyProbe());
   ipcMain.handle('sim-test-notify', () => { notify('Probe-Mitteilung', 'So sieht eine Warnung der Zentrale aus. Alles in Ordnung.', 'kontrolle'); return { ok: true }; });
@@ -1434,6 +1547,7 @@ function setup() {
     topicStore = new TopicStore(path.join(app.getPath('userData'), 'topics.json'));
     webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
     webTabs.on('change', () => send('web-state', webState()));
+    webTabs.on('shortcut', (name) => { if (name === 'switcher') send('switcher-toggle'); });
     // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
     browser = new BrowserControl(webTabs);
     browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));

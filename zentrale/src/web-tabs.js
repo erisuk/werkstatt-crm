@@ -65,6 +65,13 @@ class WebTabs extends EventEmitter {
     this.views.set(id, entry);
     const wc = view.webContents;
     const changed = () => this.emit('change');
+    // Cmd+K (Schnellsprung) auch dann, wenn gerade die Webseite den Fokus hat.
+    wc.on('before-input-event', (e, input) => {
+      if (input.type === 'keyDown' && (input.meta || input.control) && !input.shift && !input.alt && String(input.key).toLowerCase() === 'k') {
+        e.preventDefault();
+        this.emit('shortcut', 'switcher');
+      }
+    });
 
     wc.on('page-title-updated', (_e, title) => { entry.title = title; entry.unread = unreadFromTitle(title); changed(); });
     wc.on('did-start-loading', () => { entry.loading = true; entry.error = null; changed(); });

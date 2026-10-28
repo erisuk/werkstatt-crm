@@ -839,6 +839,7 @@ function renderMain() {
   else if (ui.view === 'websites') renderWebsites();
   else if (ui.view === 'finance') renderFinance();
   else if (ui.view === 'kontrolle') renderKontrolle();
+  else if (ui.view === 'lernen') renderLernen();
   else if (ui.view === 'bitvideos') renderBitVideos();
   else renderTasks();
 }
@@ -874,7 +875,7 @@ function applyState(next) {
     renderRunning();
   } else if (ui.view === 'automations') {
     renderAssistant(); // Status, Freigaben und Antworten des Assistenten
-  } else if (['mac', 'web', 'local', 'brain', 'projects', 'planner', 'websites', 'finance', 'bitvideos', 'kontrolle'].includes(ui.view)) {
+  } else if (['mac', 'web', 'local', 'brain', 'projects', 'planner', 'websites', 'finance', 'bitvideos', 'kontrolle', 'lernen'].includes(ui.view)) {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');
