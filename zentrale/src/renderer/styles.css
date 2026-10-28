@@ -521,3 +521,6 @@ h2 { font-size: 16px; font-weight: 600; }
 .link.danger { color: var(--pill-red); }
 .bit-meldung { position: sticky; top: 0; z-index: 2; box-shadow: var(--shadow); }
 .bit-fehler { background: var(--pill-red-bg, var(--notice-bg)); color: var(--pill-red); }
+.komm-editor { border-bottom: 1px solid var(--border); background: var(--fill); }
+.komm-mehr { margin: 4px 18px 10px; align-self: flex-start; }
+.komm-video { display: flex; flex-direction: column; }

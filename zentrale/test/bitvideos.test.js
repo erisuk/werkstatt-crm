@@ -137,3 +137,22 @@ test('Kürzen zerschneidet keine Emojis', () => {
   assert.strictEqual(Array.from(fokus).length, 300);
   assert.ok(fokus.endsWith('🤖'));
 });
+
+test('Kommentar-Aktion je Video: aus dem Video abgeleitet, in der Zentrale änderbar', () => {
+  const s = fakeStudio();
+  const w = (rel, d) => fs.writeFileSync(path.join(s, rel), JSON.stringify(d));
+  w('videos/015-mods/skript.json', { thema: 'Mods', kommentar_wort: 'mod' });
+  w('videos/015-mods/post.json', { pin_kommentar: 'Link: https://claude.com/x' });
+  w('videos/016-zentrale/skript.json', { thema: 'Zentrale', kommentar_wort: 'ZENTRALE' });
+  let a = b.aktionen(s);
+  assert.deepStrictEqual(a.map((x) => [x.video, x.stichwort, x.aktiv]), [['v016', 'ZENTRALE', true], ['v015', 'MOD', true]]);
+  assert.strictEqual(a[1].nachricht, 'Hey {name}! Link: https://claude.com/x');
+  assert.match(a[0].nachricht, /auf der Liste/);
+  assert.ok(b.aktionSetzen('v016', { nachricht: 'Hier ist der Code: https://example.org', aktiv: false }, s).ok);
+  assert.ok(!b.aktionSetzen('v016', { stichwort: 'zwei Wörter' }, s).ok);
+  assert.ok(!b.aktionSetzen('v999', { aktiv: true }, s).ok);
+  assert.ok(!b.aktionSetzen('../x', { aktiv: true }, s).ok);
+  a = b.aktionen(s);
+  assert.deepStrictEqual([a[0].nachricht, a[0].aktiv, a[0].geaendert], ['Hier ist der Code: https://example.org', false, true]);
+  assert.strictEqual(b.uebersicht(s).data.videos[0].aktion.stichwort, 'ZENTRALE');
+});

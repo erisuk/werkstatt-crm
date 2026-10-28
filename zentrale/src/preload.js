@@ -65,6 +65,8 @@ contextBridge.exposeInMainWorld('zentrale', {
   kommentareRemove: (id) => ipcRenderer.invoke('kommentare-remove', id),
   kommentareSettings: (patch) => ipcRenderer.invoke('kommentare-settings', patch),
   kommentareAuftrag: (art, id) => ipcRenderer.invoke('kommentare-auftrag', { art, id }),
+  kommentareAutomatik: (an) => ipcRenderer.invoke('kommentare-automatik', !!an),
+  bitAktion: (video, patch) => ipcRenderer.invoke('bit-aktion', { video, patch }),
   bit: () => ipcRenderer.invoke('bit-get'),
   bitPause: (bis) => ipcRenderer.invoke('bit-pause', bis),
   bitSettings: (patch) => ipcRenderer.invoke('bit-settings', patch),

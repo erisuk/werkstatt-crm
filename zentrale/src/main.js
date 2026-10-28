@@ -27,6 +27,11 @@ const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
 const kommentare = require('./kommentare');
 const bitvideos = require('./bitvideos');
 
+const KOMMENTARE_TASK = 'Bit: Kommentare einsammeln';
+const KOMMENTARE_ZEIT = '18:00';
+const KOMMENTARE_PROMPT = 'Hol dir mit dem Werkzeug kommentare_auftrag den aktuellen Auftrag und führe ihn genau so aus. '
+  + 'Schreib, like und sende nichts. Bricht der Auftrag ab (z. B. weil ein anderes Konto angemeldet ist), melde nur den Grund.';
+
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
   'https://claude.ai/settings/connectors',
@@ -734,16 +739,28 @@ function setup() {
     if (!v) return { ok: false, error: 'Kein Obsidian-Vault gefunden. Öffne Obsidian einmal mit deinem Vault.' };
     try { return fn(v.path); } catch (e) { return { ok: false, error: e.message }; }
   };
-  // ---------- Kommentare („Wer will den Code?“) ----------
+  // ---------- Kommentare unter Bits Videos (Stichwort + Antwort je Video aus bitvideos.aktionen) ----------
   ipcMain.handle('kommentare-get', () => {
     const d = kommentare.load(kommentareFile());
-    return { ok: true, data: { ...d, nochFrei: kommentare.nochFrei(d.eintraege) } };
+    const task = scheduler && scheduler.list().find((t) => t.name === KOMMENTARE_TASK);
+    return { ok: true, data: { ...d, nochFrei: kommentare.nochFrei(d.eintraege), aktionen: bitvideos.aktionen(),
+      automatik: task ? { an: !!task.enabled, zeit: task.time, laeuft: !!task.running, zuletzt: task.lastStatus || null } : null } };
   });
   ipcMain.handle('kommentare-status', (_e, a) => kommentare.status(kommentareFile(), a && a.id, a && a.status));
   ipcMain.handle('kommentare-remove', (_e, id) => kommentare.entfernen(kommentareFile(), id));
   ipcMain.handle('kommentare-auftrag', (_e, a) => {
     const d = kommentare.load(kommentareFile());
-    return a && a.art === 'einsammeln' ? kommentare.auftragEinsammeln(d) : kommentare.auftragVorbereiten(d, a && a.id);
+    return a && a.art === 'einsammeln' ? kommentare.auftragEinsammeln(d, bitvideos.aktionen())
+      : kommentare.auftragVorbereiten(d, a && a.id, bitvideos.aktionen());
+  });
+  // Tägliches Einsammeln = eine normale Aufgabe (Seite „Aufgaben“), die sich ihren Auftrag selbst holt.
+  ipcMain.handle('kommentare-automatik', (_e, an) => {
+    const task = scheduler.list().find((t) => t.name === KOMMENTARE_TASK);
+    if (an && !task) scheduler.upsert({ name: KOMMENTARE_TASK, time: KOMMENTARE_ZEIT, prompt: KOMMENTARE_PROMPT });
+    else if (an && !task.enabled) scheduler.toggle(task.id);
+    else if (!an && task) scheduler.remove(task.id);
+    pushState();
+    return { ok: true };
   });
   ipcMain.handle('kommentare-settings', (_e, patch) => kommentare.einstellen(kommentareFile(), patch || {}));
 
@@ -754,6 +771,7 @@ function setup() {
   ipcMain.handle('bit-wunsch-add', (_e, a) => bitvideos.wunschHinzu(a && a.thema, a && a.link));
   ipcMain.handle('bit-wunsch-remove', (_e, id) => bitvideos.wunschEntfernen(id));
   ipcMain.handle('bit-wunsch-vor', (_e, id) => bitvideos.wunschVor(id));
+  ipcMain.handle('bit-aktion', (_e, a) => bitvideos.aktionSetzen(a && a.video, a && a.patch));
   ipcMain.handle('bit-sperren', (_e, a) => bitvideos.sperren(a && a.thema, !!(a && a.an)));
 
   ipcMain.handle('vault-info', () => ({ vault: currentVault() }));

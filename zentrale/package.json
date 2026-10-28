@@ -28,6 +28,7 @@
       "src/n8n.js",
       "src/n8n-proxy.js",
       "src/kommentare.js",
+      "src/bitvideos.js",
       "src/mcp/**"
     ],
     "mac": {

@@ -31,6 +31,9 @@ const MAX_THEMA = 200;
 const MAX_WUENSCHE = 30;
 const MAX_VERSUCHE = 2;   // wie pipeline/einstellungen.py: danach wird der Wunsch übersprungen
 const KAPUTT = Symbol('kaputt');
+const STICHWORT = /^[\p{L}\p{N}]{2,30}$/u;
+const MAX_NACHRICHT = 500;
+const ANTWORT_OHNE_LINK = 'Hey {name}, danke für deinen Kommentar! 🙌 Du bist auf der Liste – ich schick dir alles, sobald es fertig ist.';
 
 // Kürzt nach Zeichen wie Python (Emoji = 1 Zeichen), nie mitten in einem Emoji.
 const kurz = (s, n) => Array.from(String(s == null ? '' : s).trim()).slice(0, n).join('');
@@ -90,13 +93,56 @@ function videos(studio) {
   const status = istObjekt(roh) ? roh : {};
   let ordner = [];
   try { ordner = fs.readdirSync(path.join(studio, 'videos')).filter((n) => /^\d{3}-/.test(n) && Number(n.slice(0, 3)) < 900).sort().reverse(); } catch {}
+  const eigeneRoh = lesen(datei(studio, 'kommentar_aktionen.json'), {});
+  const eigene = istObjekt(eigeneRoh) ? eigeneRoh : {};
   return ordner.map((n) => {
-    const skRoh = lesen(path.join(studio, 'videos', n, 'skript.json'), {});
-    const sk = istObjekt(skRoh) ? skRoh : {};
-    const s = istObjekt(status[`v${n.slice(0, 3)}`]) ? status[`v${n.slice(0, 3)}`] : {};
-    return { nr: Number(n.slice(0, 3)), thema: String(sk.thema || n.slice(4)), format: String(sk.format || ''),
-      status: String(s.status || 'in Arbeit'), gepostet: Array.isArray(s.gepostet) ? s.gepostet.map(String) : [], zeit: String(s.zeit || '') };
+    const id = `v${n.slice(0, 3)}`;
+    const objekt = (f) => { const x = lesen(path.join(studio, 'videos', n, f), {}); return istObjekt(x) ? x : {}; };
+    const sk = objekt('skript.json');
+    const s = istObjekt(status[id]) ? status[id] : {};
+    return { id, nr: Number(n.slice(0, 3)), thema: String(sk.thema || n.slice(4)), format: String(sk.format || ''),
+      status: String(s.status || 'in Arbeit'), gepostet: Array.isArray(s.gepostet) ? s.gepostet.map(String) : [], zeit: String(s.zeit || ''),
+      aktion: aktionVon(sk, objekt('post.json'), istObjekt(eigene[id]) ? eigene[id] : {}) };
   });
+}
+
+// Kommentar-Aktion eines Videos: das Stichwort, das Bit im Video nennt („Schreib MOD in die Kommentare“), und die
+// Antwort, die jeder bekommt, der es kommentiert. Standard kommt aus dem Video selbst (skript.json kommentar_wort,
+// post.json pin_kommentar mit dem Link); in der Zentrale geänderte Werte liegen in gedaechtnis/kommentar_aktionen.json.
+function aktionVon(sk, post, eigen) {
+  const wort = String(eigen.stichwort || sk.kommentar_wort || '').trim().toUpperCase();
+  if (!STICHWORT.test(wort)) return null;
+  const pin = String(post.pin_kommentar || '').trim();
+  const standard = pin ? `Hey {name}! ${pin}` : ANTWORT_OHNE_LINK;
+  const eigeneNachricht = kurz(eigen.nachricht || '', MAX_NACHRICHT);
+  return { stichwort: wort, nachricht: eigeneNachricht || standard, aktiv: eigen.aktiv !== false, geaendert: !!(eigen.stichwort || eigeneNachricht) };
+}
+
+// Alle Videos mit Kommentar-Aktion, neueste zuerst.
+function aktionen(studio = studioPfad()) {
+  return videos(studio).filter((v) => v.aktion).map((v) => ({ video: v.id, nr: v.nr, thema: v.thema, ...v.aktion }));
+}
+
+function aktionSetzen(video, patch, studio = studioPfad()) {
+  if (!/^v\d{3}$/.test(String(video)) || !istObjekt(patch)) return { ok: false, error: 'Ungültige Angaben.' };
+  if (!videos(studio).some((v) => v.id === video)) return { ok: false, error: 'Dieses Video gibt es nicht.' };
+  const f = datei(studio, 'kommentar_aktionen.json');
+  const roh = lesen(f, {});
+  if (!istObjekt(roh)) return { ok: false, error: 'Die Kommentar-Einstellungen sind gerade nicht lesbar.' };
+  const neu = { ...(istObjekt(roh[video]) ? roh[video] : {}) };
+  if ('stichwort' in patch) {
+    const w = String(patch.stichwort || '').trim().toUpperCase();
+    if (!STICHWORT.test(w)) return { ok: false, error: 'Das Stichwort muss ein Wort aus 2–30 Buchstaben oder Ziffern sein.' };
+    neu.stichwort = w;
+  }
+  if ('nachricht' in patch) {
+    const t = kurz(patch.nachricht, MAX_NACHRICHT);
+    if (!t) return { ok: false, error: 'Die Antwort darf nicht leer sein.' };
+    neu.nachricht = t;
+  }
+  if ('aktiv' in patch) neu.aktiv = !!patch.aktiv;
+  schreiben(f, { ...roh, [video]: neu });
+  return { ok: true };
 }
 
 // Neueste Themenliste des Radars.
@@ -232,5 +278,5 @@ function sperren(thema, an, studio = studioPfad()) {
   return { ok: true };
 }
 
-module.exports = { uebersicht, pauseSetzen, einstellen, wunschHinzu, wunschEntfernen, wunschVor, sperren, einstellungen, linkOk,
+module.exports = { uebersicht, aktionen, aktionSetzen, pauseSetzen, einstellen, wunschHinzu, wunschEntfernen, wunschVor, sperren, einstellungen, linkOk,
   STANDARD, QUELLEN_IDS, MAX_VERSUCHE };

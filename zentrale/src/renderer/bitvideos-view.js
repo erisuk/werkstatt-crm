@@ -1,7 +1,7 @@
 // Ansicht „Bit-Videos“: worüber Bit jeden Tag ein Video macht – Status, Wunschthemen, Radar-Themen, Suchradius, letzte Videos.
 // Alles wirkt ab dem nächsten automatischen Lauf (täglich 10:00). Nutzt die Helfer aus app.js (h, fill, ui, api …).
 
-const bit = { daten: null, meldung: null, fehler: false, timer: null, meldungTimer: null, entwurf: {} };
+const bit = { daten: null, komm: null, meldung: null, fehler: false, timer: null, meldungTimer: null, entwurf: {} };
 const BIT_POLL_MS = 10000;      // Radar und Telegram-Freigaben ändern die Dateien auch von außen
 const BIT_MELDUNG_MS = 4000;
 const BIT_VIDEOS_ANZAHL = 8;
@@ -18,12 +18,15 @@ const morgenISO = () => { const d = new Date(); d.setDate(d.getDate() + 1); retu
 async function loadBitVideos() {
   if (ui.view !== 'bitvideos') { clearInterval(bit.timer); bit.timer = null; return; }
   let res;
-  try { res = await api.bit(); } catch (e) { res = { ok: false, error: String(e.message || e) }; }
+  let kres;
+  try { [res, kres] = await Promise.all([api.bit(), api.kommentare()]); } catch (e) { res = { ok: false, error: String(e.message || e) }; }
   if (!res) return;
   if (!res.ok) { bit.daten = null; zeigeMeldung(res.error, true); return; }
   if (bit.fehler) zeigeMeldung(null);   // alte Ladefehler-Meldung weg, sobald es wieder geht
-  if (!changed('bitvideos', res.data)) return;
+  const komm = kres && kres.ok ? kres.data : null;
+  if (!changed('bitvideos', [res.data, komm, ui.state.claude.found])) return;
   bit.daten = res.data;
+  bit.komm = komm;
   renderBitBody();
 }
 
@@ -205,11 +208,13 @@ function bitVideos(d) {
   if (!d.videos.length) return h('div', { class: 'card empty', text: 'Noch keine Videos.' });
   return h('div', { class: 'card list' }, d.videos.slice(0, BIT_VIDEOS_ANZAHL).map((v) => {
     const [label, farbe] = VIDEO_STATUS[v.status] || [v.status, ''];
+    const wort = v.aktion ? h('span', { class: `pill ${v.aktion.aktiv ? 'blue' : ''}`, title: 'Stichwort für die Kommentare', text: `💬 ${v.aktion.stichwort}` }) : null;
     const gepostet = v.gepostet.length ? `gepostet: ${v.gepostet.map((p) => PLATTFORM_KURZ[p] || p).join(', ')}` : 'noch nicht gepostet';
     const wann = /^\d{4}-\d{2}-\d{2}/.test(v.zeit) ? ` · ${v.zeit.slice(8, 10)}.${v.zeit.slice(5, 7)}.` : '';
     return h('div', { class: 'row bit-row' },
       h('span', { class: 'pill', text: `#${String(v.nr).padStart(3, '0')}` }),
       h('div', { class: 'grow' }, h('div', { class: 'title', text: v.thema }), h('div', { class: 'sub', text: gepostet + wann })),
+      wort,
       h('span', { class: `pill ${farbe}`, text: label }));
   }));
 }
@@ -223,10 +228,12 @@ function renderBitBody() {
   const radarText = d.radar.datum ? `Stand ${datumDE(d.radar.datum)}. Punkte: Superkraft, Ersparnis, Wow, einfach, aktuell – je bis 5.` : '';
   keepFocus(() => fill(box, meldung,
     h('section', { class: 'section' }, bitSchritt(1, 'Läuft die Automatik?'), bitStatus(d)),
-    h('section', { class: 'section' }, bitSchritt(2, 'Deine Wunschthemen', 'Kommen vor dem Radar dran – das oberste als Nächstes.'), bitWuensche(d)),
-    h('section', { class: 'section' }, bitSchritt(3, 'Themen vom Radar', radarText), bitRadar(d)),
-    h('section', { class: 'section' }, bitSchritt(4, 'Wo Bit nach Themen sucht', 'Schalter wirken sofort, die Felder darunter erst mit „Speichern“.'), bitSuchradius(d)),
-    h('section', { class: 'section' }, bitSchritt(5, 'Letzte Videos', `die letzten ${BIT_VIDEOS_ANZAHL}`), bitVideos(d))));
+    h('section', { class: 'section' }, bitSchritt(2, 'Kommentare & Antworten',
+      'Bit sagt im Video „Schreib WORT in die Kommentare“. Wer das macht, landet hier und bekommt die Antwort des Videos.'), bitKommentare(bit.komm)),
+    h('section', { class: 'section' }, bitSchritt(3, 'Deine Wunschthemen', 'Kommen vor dem Radar dran – das oberste als Nächstes.'), bitWuensche(d)),
+    h('section', { class: 'section' }, bitSchritt(4, 'Themen vom Radar', radarText), bitRadar(d)),
+    h('section', { class: 'section' }, bitSchritt(5, 'Wo Bit nach Themen sucht', 'Schalter wirken sofort, die Felder darunter erst mit „Speichern“.'), bitSuchradius(d)),
+    h('section', { class: 'section' }, bitSchritt(6, 'Letzte Videos', `die letzten ${BIT_VIDEOS_ANZAHL}`), bitVideos(d))));
 }
 
 function renderBitVideos() {
