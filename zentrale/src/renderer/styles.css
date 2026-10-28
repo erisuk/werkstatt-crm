@@ -582,3 +582,19 @@ h2 { font-size: 16px; font-weight: 600; }
 
 .fin-cols:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .fin-cols .net { font-size: 10px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+/* Bit-Videos */
+.bit-status { display: flex; flex-direction: column; gap: 4px; }
+.bit-status .title { font-size: 16px; font-weight: 700; }
+.bit-status .hint { font-size: 13px; color: var(--text-2); line-height: 1.5; }
+.section-head .bit-sub { white-space: normal; flex-basis: 100%; }
+.bit-row { flex-wrap: wrap; row-gap: 6px; }
+.bit-row .grow { flex: 1 1 240px; }
+.bit-row .title { white-space: normal; }
+.bit-quelle .sub { white-space: normal; }
+.bit-row .link, .bit-quelle .link { padding: 8px 4px; }
+.link.danger { color: var(--pill-red); }
+.bit-meldung { position: sticky; top: 0; z-index: 2; box-shadow: var(--shadow); }
+.bit-fehler { background: var(--pill-red-bg, var(--notice-bg)); color: var(--pill-red); }
+.komm-editor { border-bottom: 1px solid var(--border); background: var(--fill); }
+.komm-mehr { margin: 4px 18px 10px; align-self: flex-start; }
+.komm-video { display: flex; flex-direction: column; }

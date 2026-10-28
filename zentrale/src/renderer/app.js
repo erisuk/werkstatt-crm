@@ -827,10 +827,10 @@ function renderMain() {
   else if (ui.view === 'automations') renderAutomations();
   else if (ui.view === 'brain') renderBrain();
   else if (ui.view === 'projects') renderProjects();
-  else if (ui.view === 'kommentare') renderKommentare();
   else if (ui.view === 'planner') renderPlanner();
   else if (ui.view === 'websites') renderWebsites();
   else if (ui.view === 'finance') renderFinance();
+  else if (ui.view === 'bitvideos') renderBitVideos();
   else renderTasks();
 }
 
@@ -863,7 +863,7 @@ function applyState(s) {
     renderRunning();
   } else if (ui.view === 'automations') {
     renderAssistant(); // Status, Freigaben und Antworten des Assistenten
-  } else if (['mac', 'web', 'local', 'brain', 'projects', 'kommentare', 'planner', 'websites', 'finance'].includes(ui.view)) {
+  } else if (['mac', 'web', 'local', 'brain', 'projects', 'planner', 'websites', 'finance', 'bitvideos'].includes(ui.view)) {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');
