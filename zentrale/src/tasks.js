@@ -134,7 +134,11 @@ class TaskScheduler extends EventEmitter {
     this.save();
   }
 
+  // Nach dem Aufwachen kurz warten, bis das Netz wieder da ist – sonst ist der heutige Lauf verbraucht.
+  pause(ms) { this.pausedUntil = Date.now() + ms; }
+
   tick(now = new Date()) {
+    if (this.pausedUntil && Date.now() < this.pausedUntil) return;
     for (const t of this.tasks) if (isDue(t, now)) this.run(t.id, { now, scheduled: true });
   }
 

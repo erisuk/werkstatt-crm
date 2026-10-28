@@ -193,4 +193,27 @@ function summary(d, now = new Date()) {
   };
 }
 
-module.exports = { FinanceStore, clean, summary, money, hasSecretNumber, perMonth, KINDS, INTERVALS, CATEGORIES };
+// Was wäre wenn: Verlauf des Vermögens über n Monate mit geänderten Annahmen. Nur Rechnung, nichts wird gespeichert.
+// scenario: { cancel: [IDs fester Kosten], addIncome, addCost (je Monat), oneTime: { amount, month }, months }
+function simulate(d, scenario = {}, now = new Date()) {
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const months = [6, 12, 24, 36].includes(scenario.months) ? scenario.months : 12;
+  const cancel = new Set(Array.isArray(scenario.cancel) ? scenario.cancel : []);
+  const num = (v) => { const n = money(v); return n === null ? 0 : n; };
+  const base = summary(d, now);
+  const saved = r2(d.fixed.filter((f) => cancel.has(f.id)).reduce((n, f) => n + perMonth(f.amount, f.interval), 0));
+  const monthly = r2(base.incomeMonth - base.fixedMonth + saved + num(scenario.addIncome) - num(scenario.addCost));
+  const one = scenario.oneTime && Number.isInteger(scenario.oneTime.month) ? { amount: num(scenario.oneTime.amount), month: scenario.oneTime.month } : null;
+  const points = [];
+  let balance = base.netWorth;
+  for (let i = 1; i <= months; i += 1) {
+    balance = r2(balance + monthly + (one && one.month === i ? one.amount : 0));
+    const at = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    points.push({ month: `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}`, balance });
+  }
+  const firstNegative = points.find((p) => p.balance < 0);
+  return { start: base.netWorth, monthly, savedPerMonth: saved, savedPerYear: r2(saved * 12), end: balance, points,
+    withoutChange: r2(base.netWorth + (base.incomeMonth - base.fixedMonth) * months), firstNegative: firstNegative ? firstNegative.month : null };
+}
+
+module.exports = { simulate, FinanceStore, clean, summary, money, hasSecretNumber, perMonth, KINDS, INTERVALS, CATEGORIES };

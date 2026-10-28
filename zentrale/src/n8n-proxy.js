@@ -91,6 +91,7 @@ function startProxy(ops, file = socketPath()) {
     const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
     if (req.method !== 'POST' || req.url !== '/call') return send(404, { ok: false, error: 'Unbekannt.' });
     let raw = '';
+    req.setEncoding('utf8'); // sonst zerbrechen Umlaute/Emoji, wenn sie über zwei Pakete verteilt ankommen
     req.on('data', (d) => { raw += d; if (raw.length > MAX_BODY) req.destroy(); });
     req.on('end', async () => {
       let msg;
@@ -111,6 +112,7 @@ function callProxy(op, args, file = process.env.ZENTRALE_N8N_SOCKET || socketPat
     const body = JSON.stringify({ op, args });
     const req = http.request({ socketPath: file, path: '/call', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }, timeout }, (res) => {
       let raw = '';
+      res.setEncoding('utf8');
       res.on('data', (d) => { raw += d; });
       res.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve({ ok: false, error: 'Unerwartete Antwort der Zentrale.' }); } });
     });

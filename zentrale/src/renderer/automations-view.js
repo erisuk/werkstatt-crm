@@ -18,7 +18,7 @@ const EDIT_PROMPT = (w) => `Hilf mir mit meinem n8n-Workflow „${w.name}“ (ID
 
 async function startAssistant(text) {
   const t = String(text || '').trim();
-  if (!t) return;
+  if (!t || !okToLeaveBusyChat()) return;
   // Eigener, frischer Chat für den Assistenten – im Benutzerordner (kein Projekt nötig).
   const recent = projects().find((p) => p.path);
   const res = await api.newSession({ cwd: recent ? recent.path : null });

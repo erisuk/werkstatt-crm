@@ -47,14 +47,21 @@ async function addPortal(name, url) {
   if (!res || !res.ok) { webv.addError = (res && res.error) || 'Das hat nicht geklappt.'; renderWebChrome(); return; }
   webv.adding = false;
   webv.addError = null;
+  webv.draftName = ''; webv.draftUrl = ''; webv.draftLocal = '';
 }
 
 // Localhost: laufende Server mit einem Klick als Tab, oder eine eigene Adresse.
 function renderLocalAddForm() {
   const s = webv.state;
   const used = new Set(s.portals.map((p) => new URL(p.url).origin));
-  if (!webv.localServers) api.serversList(false).then((l) => { webv.localServers = l || []; renderWebChrome(); }).catch(() => { webv.localServers = []; });
-  const url = h('input', { id: 'web-url', type: 'text', placeholder: 'z. B. localhost:3000', 'aria-label': 'Lokale Adresse' });
+  if (!webv.localServers && !webv.localLoading) {
+    webv.localLoading = true;
+    api.serversList(false).then((l) => { webv.localServers = l || []; }).catch(() => { webv.localServers = []; })
+      .finally(() => { webv.localLoading = false; renderWebChrome(); });
+  }
+  const url = h('input', { id: 'web-url', type: 'text', placeholder: 'z. B. localhost:3000', 'aria-label': 'Lokale Adresse', 'data-focus': 'web-local-url' });
+  url.value = webv.draftLocal || '';
+  url.addEventListener('input', () => { webv.draftLocal = url.value; });
   const free = (webv.localServers || []).filter((x) => !used.has(new URL(x.url).origin));
   return h('form', { class: 'card form web-add', onSubmit: (e) => {
     e.preventDefault();
@@ -80,8 +87,12 @@ function renderAddForm() {
   if (webv.mode === 'local') return renderLocalAddForm();
   const s = webv.state;
   const used = new Set(s.portals.map((p) => p.url));
-  const name = h('input', { id: 'web-name', type: 'text', placeholder: 'z. B. Outlook', 'aria-label': 'Name der Seite' });
-  const url = h('input', { id: 'web-url', type: 'text', placeholder: 'Adresse, z. B. outlook.com', 'aria-label': 'Webadresse' });
+  // Eingaben überleben jedes Neuzeichnen (z. B. wenn ein anderer Tab seinen Titel ändert).
+  const name = h('input', { id: 'web-name', type: 'text', placeholder: 'z. B. Outlook', 'aria-label': 'Name der Seite', 'data-focus': 'web-name' });
+  const url = h('input', { id: 'web-url', type: 'text', placeholder: 'Adresse, z. B. outlook.com', 'aria-label': 'Webadresse', 'data-focus': 'web-url' });
+  name.value = webv.draftName || ''; url.value = webv.draftUrl || '';
+  name.addEventListener('input', () => { webv.draftName = name.value; });
+  url.addEventListener('input', () => { webv.draftUrl = url.value; });
   // Konto: Standard, ein schon benutztes weiteres Konto oder ein neues (eigene Anmeldung, z. B. zweites Gmail).
   const options = [...s.profiles, s.nextProfile];
   if (!options.includes(webv.profile)) webv.profile = 'standard';
@@ -246,7 +257,7 @@ function leaveWeb() {
 window.zentrale.onWebState((s) => {
   webv.state = s;
   renderWebBadge();
-  if (inWebView() && !webv.renaming) renderWebChrome();
+  if (inWebView() && !webv.renaming && changed('webchrome', s)) renderWebChrome();
 });
 window.zentrale.webState().then((s) => { webv.state = s; renderWebBadge(); }).catch(() => {});
 window.zentrale.onWebActivity((a) => {

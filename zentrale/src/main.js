@@ -1,5 +1,5 @@
 // Hauptprozess: öffnet das Fenster, startet Claude automatisch und hält alles synchron.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard, globalShortcut, systemPreferences, powerMonitor } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard, globalShortcut, systemPreferences, powerMonitor, net } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
 const os = require('os');
@@ -25,9 +25,16 @@ const { PortalStore, PRESETS, partitionFor, BIT_PROFILE, BIT_TABS } = require('.
 const { WebTabs, portalSession } = require('./web-tabs');
 const { videoSite, cookieFileText, analyzePrompt } = require('./video-analyze');
 const { WebsiteStudio, AGENT: WEB_AGENT } = require('./website-studio');
-const { FinanceStore, summary: financeSummary } = require('./finance');
+const { FinanceStore, summary: financeSummary, simulate: financeSimulate } = require('./finance');
 const { importCsv } = require('./finance-csv');
 const { MusicWatch } = require('./music-watch');
+const simulation = require('./simulation');
+const learning = require('./learning');
+const training = require('./training');
+const { DataLayer } = require('./data-layer');
+const { blindSpots } = require('./blind-spots');
+const security = require('./security');
+const backup = require('./backup');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
 const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require('./n8n');
@@ -97,9 +104,23 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 function setup() {
+  // Data Layer: misst jeden IPC-Kanal (Dauer, Fehler) und hält Daten kurz zwischengespeichert.
+  // Muss vor dem ersten ipcMain.handle stehen, damit alle Kanäle erfasst werden.
+  const dataLayer = new DataLayer({ file: path.join(app.getPath('userData'), 'datenschicht.json') });
+  dataLayer.wrapIpc(ipcMain);
+  // App-Sperre: solange gesperrt, beantwortet die Zentrale nur „Entsperren“ – sonst nichts.
+  let appLocked = false;
+  const LOCK_ALLOWED = new Set(['app-unlock']);
+  {
+    const handle = ipcMain.handle.bind(ipcMain);
+    ipcMain.handle = (channel, fn) => handle(channel, (e, ...a) => (appLocked && !LOCK_ALLOWED.has(channel) ? null : fn(e, ...a)));
+  }
   let win = null;
   let claude = { bin: null, env: process.env, version: null, checking: true };
   let chat = null;
+  let claudeAuthProblemAt = 0;
+  let dryRunUntil = 0;
+  const dryRunActive = () => Date.now() < dryRunUntil;
   let chatGen = 0;
   let scheduler = null;
   let settings = null;
@@ -108,6 +129,10 @@ function setup() {
   const iconCache = new Map();
   let sessionWatcher = null;
   let projectsCache = [];
+  // Die Gesprächsliste ist groß (500+ Gespräche ≈ 200 KB) – sie geht nur mit, wenn sie sich wirklich geändert hat.
+  let projectsRev = 0;
+  let projectsJson = '';
+  let sentProjectsRev = -1;
   let quitting = false;
   let cleanedUp = false;
   let macConfigFile = null;
@@ -152,6 +177,8 @@ function setup() {
       projectsCache = raw.map((p) => ({ ...p, sessions: p.sessions.map(({ snippet, ...x }) => ({
         ...x, topic: topicOf.get(x.id).topic, topicManual: topicOf.get(x.id).topicManual })) }));
     } catch { projectsCache = []; }
+    const json = JSON.stringify(projectsCache, (k, v) => (k === 'updatedAt' ? Math.floor(v / 60000) : v));
+    if (json !== projectsJson) { projectsJson = json; projectsRev += 1; }
     return projectsCache;
   }
 
@@ -170,6 +197,7 @@ function setup() {
 
   function snapshot() {
     return {
+      dryRun: dryRunActive() ? dryRunUntil : 0,
       claude: { found: !!claude.bin, checking: claude.checking, version: claude.version },
       projects: projectsCache,
       topics: TOPICS,
@@ -182,7 +210,10 @@ function setup() {
   }
 
   function pushState() {
-    send('state', snapshot());
+    const s = snapshot();
+    if (sentProjectsRev === projectsRev) delete s.projects; // unverändert: die Oberfläche behält ihre Liste
+    else sentProjectsRev = projectsRev;
+    send('state', s);
   }
 
   // Mac-Mitteilung (Klick holt die Zentrale nach vorn). view: welche Ansicht dabei geöffnet werden soll.
@@ -242,6 +273,7 @@ function setup() {
     const v = currentVault();
     if (v) hints.push(vaultHint(v.path));
     if (c.web && browserConfigFile) hints.push(WEB_HINT);
+    hints.push(learning.systemHint(learnStore().activeLesson()));
     if (hints.length) args.push('--append-system-prompt', hints.join('\n\n'));
     if (allowed.length) args.push(`--allowedTools=${allowed.join(',')}`);
     if (c.chrome) args.push('--chrome');
@@ -254,14 +286,19 @@ function setup() {
     return browser ? browser.approvalInfo(toolName, input) : null;
   }
 
-  // Die MCP-Server laufen mit der Node-Laufzeit, die in Electron steckt.
+  // Die MCP-Server laufen mit dem normalen Node (das Claude Code ohnehin braucht) – nicht „als Zentrale“.
+  // So darf in der installierten App niemand Code mit der Identität der Zentrale ausführen
+  // (Fuse RunAsNode ist aus) und damit an ihren Schlüsselbund-Eintrag kommen.
+  const NODE_BIN = ['/usr/local/bin/node', '/opt/homebrew/bin/node', path.join(os.homedir(), '.npm-global', 'bin', 'node')].find((x) => fs.existsSync(x)) || null;
   function writeMcpConfig(name, script, env = {}) {
     const server = path.join(__dirname, 'mcp', script).replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
     const file = path.join(app.getPath('userData'), `mcp-${name}.json`);
-    const config = { mcpServers: { [name]: { type: 'stdio', command: process.execPath, args: [server], env: { ELECTRON_RUN_AS_NODE: '1', ...env } } } };
+    const command = NODE_BIN || process.execPath;
+    const config = { mcpServers: { [name]: { type: 'stdio', command, args: [server], env: NODE_BIN ? env : { ELECTRON_RUN_AS_NODE: '1', ...env } } } };
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, JSON.stringify(config, null, 2));
+      fs.writeFileSync(file, JSON.stringify(config, null, 2), { mode: 0o600 });
+      fs.chmodSync(file, 0o600);
       return file;
     } catch {
       return null;
@@ -342,11 +379,19 @@ function setup() {
     const args = agent ? () => [...extraArgs(), '--agent', agent] : extraArgs;
     const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo });
     chat = c;
-    c.on('event', (ev) => send('chat-event', { ...ev, gen }));
+    c.on('event', (ev) => {
+      send('chat-event', { ...ev, gen });
+      // Abgemeldet? (Fehler mit Login/OAuth) – fällt im Kontrollraum als blinder Fleck auf.
+      if (ev.kind === 'error' && /log ?in|oauth|authent|401|anmeld/i.test(`${ev.text || ''} ${ev.details || ''}`)) claudeAuthProblemAt = Date.now();
+      else if (ev.kind === 'text' || ev.kind === 'result') claudeAuthProblemAt = 0;
+    });
     c.on('status', () => pushState());
     c.on('approvals', onApprovalsChanged);
     // Den alten Claude im Hintergrund beenden – nicht darauf warten, sonst dauert jeder Wechsel ~1 s.
-    if (old) old.dispose().catch(() => {});
+    // Ausnahme: dasselbe Gespräch – dann erst fertig beenden, sonst schreiben zwei Prozesse in dieselbe Datei.
+    if (old && old.sessionId === sessionId) await old.dispose().catch(() => {});
+    else if (old) old.dispose().catch(() => {});
+    if (gen !== chatGen || chat !== c) return chatInfo();
     c.start();
     pushState();
     return chatInfo();
@@ -389,7 +434,7 @@ function setup() {
         devTools: !app.isPackaged, // in der installierten App keine Entwicklerwerkzeuge (dort wären offene Finanzdaten lesbar)
       },
     });
-    win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    win.loadFile(path.join(__dirname, 'renderer', appLocked ? 'lock.html' : 'index.html'));
     if (webTabs) webTabs.attach(win);
     win.once('ready-to-show', () => win.show());
 
@@ -412,7 +457,7 @@ function setup() {
     win.on('minimize', () => finLock());
   }
 
-  ipcMain.handle('get-state', () => snapshot());
+  ipcMain.handle('get-state', () => { sentProjectsRev = projectsRev; return snapshot(); });
 
   ipcMain.handle('open-session', async (_e, args) => {
     const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : null;
@@ -430,7 +475,8 @@ function setup() {
   });
 
   ipcMain.handle('new-session', async (_e, args) => {
-    const cwd = args && args.cwd;
+    // Ohne Ordner: im Benutzerordner (Claude fragt dort vor jeder Änderung).
+    const cwd = args && args.cwd ? args.cwd : os.homedir();
     if (!isDir(cwd)) return { error: 'Dieser Ordner existiert nicht.' };
     await claudeReady;
     if (!claude.bin) return { error: 'Claude Code wurde nicht gefunden.' };
@@ -482,6 +528,7 @@ function setup() {
   // auch wenn er gerade arbeitet); neu eingeschaltete gelten sofort, wenn Claude nicht arbeitet.
   ipcMain.handle('settings-update', async (_e, patch) => {
     const before = settings.get().connections;
+    if (patch && typeof patch === 'object' && patch.backup && typeof patch.backup === 'object') patch = { ...patch, backup: { auto: patch.backup.auto } };
     const next = settings.update(patch);
     nativeTheme.themeSource = next.theme;
     let applied = true;
@@ -586,7 +633,9 @@ function setup() {
 
   // ---------- Bibliothek: Skills, Befehle, Plugins, Agenten ----------
 
-  ipcMain.handle('library', () => library.library());
+  // Skills, Agenten, Plugins: einmal lesen, 30 s halten; nach Änderungen mit force neu.
+  const librarySource = dataLayer.source('bibliothek', () => library.library(), { ttl: 30000 });
+  ipcMain.handle('library', (_e, force) => librarySource(force === true));
 
   ipcMain.handle('agent-toggle', (_e, args) => library.setAgentActive(args && args.id, !!(args && args.active)));
 
@@ -612,8 +661,9 @@ function setup() {
   });
   ipcMain.handle('marketplace', () => safely(() => library.listMarketplace()));
 
-  ipcMain.handle('running-work', () => {
-    const work = library.runningWork((id) => { const s = findSession(id); return s ? s.title : null; });
+  const runningSource = dataLayer.source('laufende-arbeit', () => library.runningWork((id) => { const s = findSession(id); return s ? s.title : null; }), { ttl: 4000 });
+  ipcMain.handle('running-work', async () => {
+    const work = await runningSource();
     const ownId = chat && chat.sessionId;
     return { ...work, sessions: work.sessions.filter((x) => x.id !== ownId) };
   });
@@ -648,6 +698,12 @@ function setup() {
 
   ipcMain.handle('fs-open', async (_e, p) => {
     if (!files.validPath(p) || !fs.existsSync(p)) return { ok: false, error: 'Nicht gefunden.' };
+    // Skripte und fremde Programme starten etwas – erst fragen.
+    if (files.needsRunConfirm(p)) {
+      const { response } = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Abbrechen', 'Starten'], defaultId: 0, cancelId: 0,
+        message: `„${path.basename(p)}“ starten?`, detail: 'Das ist ein Programm oder Skript – es läuft mit deinen Rechten. Starte es nur, wenn du weißt, woher es kommt.' });
+      if (response !== 1) return { ok: false, cancelled: true };
+    }
     const err = await shell.openPath(p);
     return err ? { ok: false, error: err } : { ok: true };
   });
@@ -710,7 +766,7 @@ function setup() {
   }
   async function captureScreen() {
     if (process.platform !== 'darwin') return { ok: false, error: 'Das geht nur auf dem Mac.' };
-    if (capturing) return { ok: false, cancelled: true };
+    if (capturing || appLocked) return { ok: false, cancelled: true };
     capturing = true;
     finLock(); // der private Bereich kommt nie aufs Bildschirmfoto
     try {
@@ -783,6 +839,8 @@ function setup() {
   ipcMain.handle('fin-get', (e) => finGuard(e) || finSafe(finData));
   ipcMain.handle('fin-save', (e, a) => finGuard(e) || finSafe(() => { const r = finStore().upsert(a && a.kind, a && a.item); return r.ok ? finData() : r; }));
   ipcMain.handle('fin-remove', (e, a) => finGuard(e) || finSafe(() => { finStore().remove(a && a.kind, a && a.id); return finData(); }));
+  // Was wäre wenn: nur rechnen, nichts speichern.
+  ipcMain.handle('fin-simulate', (e, scenario) => finGuard(e) || finSafe(() => ({ ok: true, data: financeSimulate(finStore().load(), scenario && typeof scenario === 'object' ? scenario : {}) })));
   ipcMain.handle('fin-clear-moves', (e) => finGuard(e) || finSafe(() => { finStore().clearMoves(); return finData(); }));
   ipcMain.handle('fin-import', async (e, accountId) => {
     const g = finGuard(e);
@@ -808,6 +866,7 @@ function setup() {
   const finTimer = setInterval(() => { if (finUntil && !finIsOpen()) finLock(); }, 15000);
   powerMonitor.on('lock-screen', finLock);
   powerMonitor.on('suspend', finLock);
+  powerMonitor.on('resume', () => { if (scheduler) scheduler.pause(60000); });
 
   // Website-Werkstatt
   let studioObj = null;
@@ -851,7 +910,9 @@ function setup() {
     return res.canceled ? null : res.filePaths[0];
   });
   const checkPlanner = () => {
-    for (const p of plannerStore().takeDue()) {
+    const due = plannerStore().takeDue();
+    if (due.length) send('planner-changed');
+    for (const p of due) {
       notify('Beitrag ist fällig', `„${p.title}“ für ${p.targets.map((t) => t.tabName).join(', ')} – in der Zentrale auf „Hochladen“ tippen.`, 'planner');
     }
   };
@@ -867,18 +928,24 @@ function setup() {
   ipcMain.handle('cockpit', () => cockpitNow());
   let morningTimer = null;
   const startMorning = () => {
+    let sending = false;
     morningTimer = setInterval(async () => {
-      checkPlanner();
+      try { checkPlanner(); } catch {}
+      dailyLearning().catch(() => {});
+      if (!appLocked) dailyBackup().catch(() => {});
       const m = settings.get().morning;
       const now = new Date();
-      if (!m.enabled || !morning.isDue(now, m.time, morningStore().get().lastSent)) return;
-      morningStore().set({ lastSent: morning.dayKey(now) });
-      let events = null;
-      if (process.platform === 'darwin' && settings.get().connections.mac) {
-        const r = await mac.todayPart('events', { launch: false }).catch(() => null);
-        if (r && r.ok && Array.isArray(r.data)) events = r.data;
-      }
-      notify('Guten Morgen', morning.summaryText(await cockpitNow(), events), 'overview');
+      if (sending || !m.enabled || !morning.isDue(now, m.time, morningStore().get().lastSent)) return;
+      sending = true;
+      try {
+        let events = null;
+        if (process.platform === 'darwin' && settings.get().connections.mac) {
+          const r = await mac.todayPart('events', { launch: false }).catch(() => null);
+          if (r && r.ok && Array.isArray(r.data)) events = r.data;
+        }
+        notify('Guten Morgen', morning.summaryText(await cockpitNow(), events), 'overview');
+        morningStore().set({ lastSent: morning.dayKey(now) });
+      } catch {} finally { sending = false; }
     }, 30000);
   };
 
@@ -912,12 +979,17 @@ function setup() {
   const projectStore = store('projects.json', { added: [], hidden: [] });
   const isTemp = (p) => /^\/(private\/)?(tmp|var\/folders)\//.test(`${p}/`);
 
-  async function currentServers(all = false) {
+  function scanServers(all) {
     // Nur noch laufende, von der Zentrale gestartete Server merken.
     const started = startedStore.get().filter((s) => { try { process.kill(s.pid, 0); return true; } catch { return false; } });
     startedStore.set(started);
     return servers.listServers({ all, selfPids: [process.pid], started });
   }
+  // lsof/ps sind teuer: 3 s zwischenspeichern; mehrere Seiten gleichzeitig teilen sich einen Lauf.
+  const serverSource = { false: dataLayer.source('server', () => scanServers(false), { ttl: 3000 }),
+    true: dataLayer.source('server-alle', () => scanServers(true), { ttl: 3000 }) };
+  const serversChanged = () => { serverSource.false.invalidate(); serverSource.true.invalidate(); };
+  function currentServers(all = false) { return serverSource[!!all](); }
 
   ipcMain.handle('servers-list', async (_e, args) => {
     const list = await currentServers(!!(args && args.all));
@@ -932,7 +1004,7 @@ function setup() {
     const match = (await currentServers(true)).find((s) => s.pid === pid && s.port === port);
     if (!match) return { ok: false, error: 'Dieser Server läuft nicht mehr.' };
     const res = await servers.stopServer(match, { force: !!(args && args.force), selfPids: [process.pid] });
-    if (res.ok) { startedStore.set(startedStore.get().filter((s) => s.pid !== pid)); if (alerts) alerts.expectStop(port); }
+    if (res.ok) { startedStore.set(startedStore.get().filter((s) => s.pid !== pid)); if (alerts) alerts.expectStop(port); serversChanged(); }
     return res;
   });
 
@@ -941,7 +1013,7 @@ function setup() {
   ipcMain.handle('servers-start', (_e, args) => {
     const res = servers.startServer({ dir: args && args.dir, command: args && args.command, port: args && args.port,
       env: claude.env, logDir: path.join(app.getPath('userData'), 'server-logs') });
-    if (res.ok) startedStore.set([...startedStore.get(), res.data]);
+    if (res.ok) { startedStore.set([...startedStore.get(), res.data]); serversChanged(); }
     return res.ok ? { ok: true, data: { pid: res.data.pid, id: res.data.id } } : res;
   });
 
@@ -1043,7 +1115,18 @@ function setup() {
   ipcMain.handle('bit-sperren', (_e, a) => bitvideos.sperren(a && a.thema, !!(a && a.an)));
 
   ipcMain.handle('vault-info', () => ({ vault: currentVault() }));
-  ipcMain.handle('vault-search', (_e, q) => withVault((dir) => vault.search(dir, typeof q === 'string' ? q : '')));
+  const vaultCache = new Map(); // Suchwort → { at, res }
+  ipcMain.handle('vault-search', (_e, q) => {
+    const query = typeof q === 'string' ? q.slice(0, 200) : '';
+    const hit = vaultCache.get(query);
+    if (hit && Date.now() - hit.at < 15000) return hit.res;
+    const t = Date.now();
+    const res = withVault((dir) => vault.search(dir, query));
+    dataLayer.measure('daten:gehirn-suche', Date.now() - t, !(res && res.ok === false));
+    if (vaultCache.size > 50) vaultCache.clear();
+    vaultCache.set(query, { at: Date.now(), res });
+    return res;
+  });
   ipcMain.handle('vault-read', (_e, rel) => withVault((dir) => vault.readNote(dir, rel)));
   ipcMain.handle('vault-add', (_e, args) => withVault((dir) => vault.addNote(dir, args && args.title, args && args.text)));
   ipcMain.handle('vault-open', (_e, rel) => withVault((dir) => {
@@ -1246,32 +1329,288 @@ function setup() {
     return true;
   });
 
+  // ---------- App-Sperre ----------
+  function lockApp() {
+    if (appLocked || !settings || !settings.get().appLock.enabled) return;
+    appLocked = true;
+    finLock();
+    if (webTabs) webTabs.setVisible(false);
+    if (win && !win.isDestroyed()) win.loadFile(path.join(__dirname, 'renderer', 'lock.html'));
+  }
+  async function verifyUser(method) {
+    if (process.platform !== 'darwin') return { ok: true };
+    if (method === 'touchid') {
+      if (!systemPreferences.canPromptTouchID()) return { ok: false, error: 'Touch ID ist gerade nicht verfügbar – nimm das Mac-Passwort.' };
+      try { await systemPreferences.promptTouchID('die Zentrale zu entsperren'); return { ok: true }; } catch { return { ok: false, cancelled: true }; }
+    }
+    // Mac-Passwort: macOS fragt selbst (die Zentrale sieht das Passwort nie).
+    const ok = await new Promise((resolve) => execFile('/usr/bin/osascript', ['-e', 'do shell script "/usr/bin/true" with prompt "Die Zentrale möchte entsperrt werden." with administrator privileges'],
+      { timeout: 120000 }, (err) => resolve(!err)));
+    return ok ? { ok: true } : { ok: false, cancelled: true };
+  }
+  ipcMain.handle('app-unlock', async (e, method) => {
+    if (!win || e.sender !== win.webContents) return { ok: false, error: 'Nicht erlaubt.' };
+    if (!appLocked) return { ok: true };
+    const r = await verifyUser(method === 'password' ? 'password' : 'touchid');
+    if (!r.ok) return r;
+    appLocked = false;
+    win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    return { ok: true };
+  });
+  ipcMain.handle('app-lock', () => { lockApp(); return { ok: true }; });
+  const lockTimer = setInterval(() => {
+    const l = settings && settings.get().appLock;
+    if (l && l.enabled && !appLocked && powerMonitor.getSystemIdleTime() >= l.minutes * 60) lockApp();
+  }, 20000);
+  powerMonitor.on('lock-screen', lockApp);
+  powerMonitor.on('suspend', lockApp);
+
+  // Nach dem Entsperren (Seite neu geladen) den Verlauf des offenen Gesprächs wieder zeigen.
+  ipcMain.handle('chat-history', () => {
+    const s = chat && findSession(chat.sessionId);
+    if (!s) return [];
+    try { return readMessages(s.file); } catch { return []; }
+  });
+
+  // ---------- Kontrollraum: blinde Flecken, Tempo, Fehler, Schutz ----------
+  const LOGIN_COOKIES = [[/instagram\.com$/, 'instagram.com', ['sessionid']], [/tiktok\.com$/, 'tiktok.com', ['sessionid', 'sid_tt']],
+    [/(youtube|google)\.com$/, 'google.com', ['SID', '__Secure-3PSID']], [/facebook\.com$/, 'facebook.com', ['c_user']]];
+  async function loginFacts() {
+    const out = [];
+    for (const p of (webTabs ? webTabs.info().portals : [])) {
+      let host = '';
+      try { host = new URL(p.url).hostname; } catch { continue; }
+      const rule = LOGIN_COOKIES.find(([re]) => re.test(host));
+      if (!rule || p.profile !== 'bit') continue; // geprüft werden die Kanäle von Bit
+      const cookies = await portalSession(partitionFor(p.profile)).cookies.get({ domain: rule[1] }).catch(() => []);
+      out.push({ id: p.id, name: p.name, loggedIn: cookies.some((c) => rule[2].includes(c.name)) });
+    }
+    return out;
+  }
+  function fuseFacts() {
+    try { return require('../package.json').build.electronFuses || {}; } catch { return {}; }
+  }
+  async function securityFacts() {
+    const sockets = [n8nSocketPath(app.getPath('userData')), n8nSocketPath(app.getPath('userData'), 'browser')];
+    return security.check({ pids: app.getAppMetrics().map((m) => m.pid), userData: app.getPath('userData'), sockets,
+      packaged: app.isPackaged, appLock: settings.get().appLock, touchId: process.platform === 'darwin' && systemPreferences.canPromptTouchID(),
+      safeStorage: safeStorage.isEncryptionAvailable(), nodeForTools: !!NODE_BIN, fuses: fuseFacts(),
+      backup: { dir: settings.get().backup.dir, lastAt: backupStore.get().lastAt } });
+  }
+  ipcMain.handle('kontrolle-report', async () => {
+    const [n8nHealth, disk, logins, sec] = await Promise.all([n8nClient().health().catch(() => ({ ok: false })), health.disk(), loginFacts(), securityFacts()]);
+    const data = dataLayer.report();
+    const w = folderWatcher ? folderWatcher.get() : { unsorted: [] };
+    const spots = blindSpots({ claudeFound: !!claude.bin, online: net.isOnline(), claudeAuthProblem: !!claudeAuthProblemAt, n8n: { running: !!n8nHealth.ok, hasKey: !!n8nConfig.key }, connections: settings.get().connections,
+      logins, tasks: scheduler ? scheduler.list() : [], alerts: alerts ? alerts.get() : [], disk, unsorted: w.unsorted.length, data, security: sec });
+    return { ok: true, spots, data, security: sec };
+  });
+  // ---------- Backup & Firewall ----------
+  const backupStore = store('backup.json', { lastDay: null, lastAt: null, lastDir: null, lastError: null });
+  async function backupState() {
+    const cfg = settings.get().backup;
+    const target = cfg.dir ? backup.checkTarget(cfg.dir, { userData: app.getPath('userData') }) : null;
+    const [tm, fw, exposed] = await Promise.all([backup.timeMachine(), backup.firewall(), backup.exposedApps()]);
+    return { ok: true, cfg, target, last: backupStore.get(), list: target && target.ok ? backup.listBackups(target.dir).slice(0, backup.KEEP) : [], tm, fw, exposed };
+  }
+  async function doBackup(auto) {
+    const cfg = settings.get().backup;
+    if (!cfg.dir) return { ok: false, error: 'Erst einen Sicherungs-Ordner wählen.' };
+    const r = await backup.runBackup({ userData: app.getPath('userData'), target: cfg.dir, trash: (p) => shell.trashItem(p) });
+    const last = backupStore.get();
+    if (r.ok) backupStore.set({ lastDay: backup.localDay(), lastAt: Date.now(), lastDir: r.dir, lastError: null });
+    else if (!(auto && r.missing)) backupStore.set({ ...last, lastError: r.error }); // abgesteckte Platte beim Automatik-Lauf ist kein Fehler
+    return r;
+  }
+  ipcMain.handle('schutz-state', () => backupState());
+  ipcMain.handle('backup-choose', async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: 'Ordner für die Sicherung wählen (am besten auf einer externen Platte)' });
+    if (res.canceled || !res.filePaths[0]) return { ok: false, cancelled: true };
+    const t = backup.checkTarget(res.filePaths[0], { userData: app.getPath('userData') });
+    if (!t.ok) return t;
+    settings.update({ backup: { dir: t.dir } });
+    pushState();
+    return { ok: true, ...t };
+  });
+  ipcMain.handle('backup-run', () => doBackup(false));
+  ipcMain.handle('backup-show', () => { const d = settings.get().backup.dir; if (d && fs.existsSync(d)) shell.openPath(d); return { ok: true }; });
+  ipcMain.handle('tm-start', () => backup.startTimeMachine());
+  ipcMain.handle('tm-open', () => { shell.openExternal(backup.TM_SETTINGS); return { ok: true }; });
+  ipcMain.handle('fw-open', () => { shell.openExternal(backup.FW_SETTINGS); return { ok: true }; });
+  ipcMain.handle('fw-enable', async (_e, opts) => {
+    const stealth = !!(opts && opts.stealth === true);
+    const ok = await dialog.showMessageBox(win, { type: 'question', buttons: ['Einschalten', 'Abbrechen'], defaultId: 0, cancelId: 1,
+      message: stealth ? 'Mac-Firewall und Tarnmodus einschalten?' : 'Mac-Firewall einschalten?',
+      detail: 'macOS fragt gleich nach deinem Mac-Passwort – die Zentrale sieht es nicht. Programme, die aus dem Netz erreichbar sein sollen, fragt macOS danach einmal, ob sie dürfen. Ausschalten geht jederzeit in Systemeinstellungen → Netzwerk → Firewall.' });
+    if (ok.response !== 0) return { ok: false, cancelled: true, error: 'Abgebrochen – nichts geändert.' };
+    return backup.enableFirewall({ stealth });
+  });
+  async function dailyBackup() {
+    const cfg = settings.get().backup;
+    if (!backup.isDue(cfg, backupStore.get().lastDay)) return;
+    const r = await doBackup(true);
+    if (r.ok) notify('Gesichert', `Die Daten der Zentrale liegen jetzt auch in ${path.basename(path.dirname(path.dirname(r.dir)))}.`, 'kontrolle');
+    else if (!r.missing) notify('Sicherung ging nicht', r.error, 'kontrolle');
+  }
+
+  // ---------- Lernen & Training ----------
+  let learnObj = null;
+  function learnStore() {
+    if (learnObj) return learnObj;
+    const v = currentVault();
+    const dir = v ? path.join(v.path, 'Lernen') : path.join(app.getPath('userData'), 'lernen-protokolle');
+    learnObj = new learning.LearningStore(path.join(app.getPath('userData'), 'lernen.json'), dir);
+    return learnObj;
+  }
+  let trainObj = null;
+  const trainStore = () => trainObj || (trainObj = new training.TrainingStore(path.join(app.getPath('userData'), 'training.json')));
+  const restartForLearning = () => { if (chat) chat.needsRestart = true; }; // neues Lernthema gilt ab der nächsten Nachricht
+  ipcMain.handle('learn-list', () => learnStore().refresh());
+  ipcMain.handle('learn-add', (_e, raw) => { const r = learnStore().add(raw); if (r.ok) restartForLearning(); return r; });
+  ipcMain.handle('learn-remove', (_e, id) => { learnStore().remove(id); restartForLearning(); return learnStore().list(); });
+  ipcMain.handle('learn-activate', (_e, id) => { learnStore().setActive(typeof id === 'string' ? id : null); restartForLearning(); return learnStore().list(); });
+  ipcMain.handle('learn-prompt', (_e, a) => {
+    const st = learnStore();
+    const l = st.lessons.find((x) => x.id === (a && a.id));
+    if (!l) return { ok: false, error: 'Thema nicht gefunden.' };
+    fs.mkdirSync(st.protocolDir, { recursive: true });
+    const file = st.protocolPath(l);
+    return { ok: true, prompt: a.review ? learning.reviewPrompt(l, file) : learning.learnPrompt(l, file) };
+  });
+  ipcMain.handle('learn-open', (_e, id) => { const st = learnStore(); const l = st.lessons.find((x) => x.id === id); if (l && fs.existsSync(st.protocolPath(l))) shell.openPath(st.protocolPath(l)); });
+  ipcMain.handle('learn-open-lessons', () => { if (fs.existsSync(learning.LESSONS_FILE)) shell.openPath(learning.LESSONS_FILE); else return { ok: false, error: 'Noch keine Lektionen – nach der ersten Lernrunde gibt es sie.' }; });
+
+  // Ideen aus allen Projekten + aus dem Data Layer (langsame/kaputte Abläufe der Zentrale selbst).
+  async function scanTraining() {
+    const roots = new Set();
+    const ideas = [];
+    for (const p of projectsCache) {
+      if (!p.path || !isDir(p.path) || p.path === os.homedir() || p.path.startsWith(training.ROOT())) continue;
+      for (const i of await training.scanProject(p.path).catch(() => [])) {
+        if (roots.has(i.key)) continue;
+        roots.add(i.key);
+        ideas.push(i);
+      }
+    }
+    const extra = [];
+    // Das Repo der Zentrale selbst (in der installierten App liegt der Code in app.asar, nicht im Repo).
+    const repo = [path.join(os.homedir(), 'werkstatt-crm', 'zentrale'), path.resolve(__dirname, '..')].find((d) => fs.existsSync(path.join(d, '.git')) || fs.existsSync(path.join(path.dirname(d), '.git')));
+    const r = dataLayer.report();
+    for (const x of (repo ? r.slowest : []).filter((y) => y.avgMs > 800 && y.count >= 3).slice(0, 1)) {
+      extra.push({ key: `zentrale|langsam|${x.name}`, kind: 'tempo', target: x.name, project: 'zentrale', dir: repo,
+        title: `Zentrale schneller machen: ${x.name}`, why: `im Schnitt ${x.avgMs} ms bei ${x.count} Aufrufen (Data Layer).` });
+    }
+    const added = trainStore().addIdeas(ideas.sort(() => Math.random() - 0.5), extra);
+    return { ok: true, added, ...trainStore().list() };
+  }
+  ipcMain.handle('train-list', () => trainStore().list());
+  ipcMain.handle('train-scan', () => scanTraining());
+  ipcMain.handle('train-settings', (_e, s) => { trainStore().setSettings(s); return trainStore().list(); });
+  ipcMain.handle('train-start', async (_e, id) => {
+    const t = trainStore().tasks.find((x) => x.id === id);
+    if (!t) return { ok: false, error: 'Aufgabe nicht gefunden.' };
+    let task = t;
+    if (!t.worktree || !fs.existsSync(t.worktree)) {
+      const w = await training.createWorktree(t);
+      if (!w.ok) return w;
+      task = trainStore().update(id, { worktree: w.worktree, branch: w.branch, status: 'läuft', startedAt: Date.now() });
+    }
+    await claudeReady;
+    if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const info = await openChat({ cwd: task.worktree });
+    return { ok: true, chat: info, prompt: training.trainPrompt(task) };
+  });
+  ipcMain.handle('train-changes', async (_e, id) => {
+    const t = trainStore().tasks.find((x) => x.id === id);
+    return t ? training.changes(t) : { ok: false, error: 'Aufgabe nicht gefunden.' };
+  });
+  ipcMain.handle('train-done', (_e, id) => ({ ok: !!trainStore().update(id, { status: 'fertig', doneAt: Date.now() }) }));
+  ipcMain.handle('train-adopt', async (_e, id) => {
+    const t = trainStore().tasks.find((x) => x.id === id);
+    if (!t) return { ok: false, error: 'Aufgabe nicht gefunden.' };
+    const c = await training.changes(t);
+    if (!c.ok) return c;
+    const { response } = await dialog.showMessageBox(win, { type: 'question', buttons: ['Abbrechen', 'Übernehmen'], defaultId: 1, cancelId: 0,
+      message: `„${t.title}“ ins Projekt ${t.project} übernehmen?`, detail: `${c.stat || 'Keine Änderungen.'}\n\nDas holt die Änderungen in den aktuellen Zweig von ${t.dir}.` });
+    if (response !== 1) return { ok: false, cancelled: true };
+    const r = await training.adopt(t);
+    if (r.ok) { trainStore().update(id, { status: 'übernommen', adoptedAt: Date.now(), worktree: null }); trainStore().drop(id); }
+    return r;
+  });
+  ipcMain.handle('train-discard', async (_e, id) => {
+    const t = trainStore().tasks.find((x) => x.id === id);
+    if (!t) return { ok: true };
+    await training.discard(t);
+    trainStore().drop(id);
+    return { ok: true };
+  });
+  ipcMain.handle('train-reveal', (_e, id) => { const t = trainStore().tasks.find((x) => x.id === id); if (t && t.worktree && fs.existsSync(t.worktree)) shell.openPath(t.worktree); });
+
+  // Täglich: Projekte durchsuchen und fällige Nachprüfungen melden (im Minuten-Takt des Morgen-Cockpits).
+  let learnNotifiedDay = null;
+  async function dailyLearning() {
+    const ts = trainStore();
+    if (ts.isDue()) {
+      const r = await scanTraining().catch(() => null);
+      if (r && r.added) notify('Neue Mini-Aufgaben', `${r.added} neue Trainings-Aufgaben aus deinen Projekten – isoliert, dein Code bleibt unberührt.`, 'lernen');
+    }
+    const due = learnStore().dueReviews();
+    const today = training.localDay();
+    if (due.length && learnNotifiedDay !== today) {
+      learnNotifiedDay = today;
+      notify('Nachprüfung fällig', `${due.map((l) => `„${l.topic}“`).join(', ')} – kurz testen, ob es sitzt.`, 'lernen');
+    }
+  }
+
+  // ---------- Simulation ----------
+  ipcMain.handle('sim-notfall', () => simulation.emergencyProbe());
+  ipcMain.handle('sim-test-notify', () => { notify('Probe-Mitteilung', 'So sieht eine Warnung der Zentrale aus. Alles in Ordnung.', 'kontrolle'); return { ok: true }; });
+  // Probelauf: 30 Minuten lang führen Claudes Web- und n8n-Werkzeuge nichts Echtes aus.
+  const DRY_MS = 30 * 60000;
+  ipcMain.handle('sim-dryrun-start', (_e, a) => {
+    const kinds = ['upload', 'n8n', 'kommentare', 'frei'];
+    const kind = a && kinds.includes(a.kind) ? a.kind : 'frei';
+    dryRunUntil = Date.now() + DRY_MS;
+    pushState();
+    return { ok: true, prompt: simulation.dryRunPrompt(kind, a && typeof a.detail === 'string' ? a.detail.slice(0, 2000) : '') };
+  });
+  ipcMain.handle('sim-dryrun-stop', () => { dryRunUntil = 0; pushState(); return { ok: true }; });
+  ipcMain.handle('sim-bit-preview', (_e, topic) => {
+    dryRunUntil = Date.now() + DRY_MS; // auch hier: nichts Echtes in den Web-Tabs
+    pushState();
+    return { ok: true, prompt: simulation.bitPreviewPrompt(typeof topic === 'string' ? topic.slice(0, 300) : '') };
+  });
+
+  ipcMain.handle('kontrolle-view', (_e, v) => { dataLayer.trackView(v); });
+  ipcMain.handle('kontrolle-error', (_e, a) => { dataLayer.trackRendererError(a && a.where, a && a.code); });
+  ipcMain.handle('kontrolle-reset', () => { dataLayer.reset(); return { ok: true }; });
+
   ipcMain.handle('open-external', (_e, url) => {
     if (typeof url === 'string' && EXTERNAL_LINKS.has(url)) shell.openExternal(url);
   });
 
   app.on('second-instance', () => {
-    if (!win) createWindow();
-    win.show();
-    win.focus();
+    app.whenReady().then(() => { if (!win) createWindow(); win.show(); win.focus(); });
   });
 
   app.whenReady().then(async () => {
     settings = new Settings(path.join(app.getPath('userData'), 'settings.json'));
+    appLocked = settings.get().appLock.enabled; // beim Start gesperrt
     topicStore = new TopicStore(path.join(app.getPath('userData'), 'topics.json'));
     webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
     webTabs.on('change', () => send('web-state', webState()));
+    webTabs.on('shortcut', (name) => { if (name === 'switcher') send('switcher-toggle'); });
     // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
     browser = new BrowserControl(webTabs);
     browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));
-    browserProxy = startProxy(makeBrowserOps(browser), n8nSocketPath(app.getPath('userData'), 'browser'));
+    browserProxy = startProxy(simulation.dryRunOps(makeBrowserOps(browser), simulation.DRY_BROWSER, dryRunActive, 'Web-Tab'), n8nSocketPath(app.getPath('userData'), 'browser'));
     nativeTheme.themeSource = settings.get().theme;
     loadN8n();
     // Noch nicht verbunden (und nicht bewusst getrennt): mit dem Schlüssel der Bit-Automatik verbinden.
     if (!n8nConfig.key && !n8nConfig.off && bitKeyUsable()) {
       connectN8n(n8nConfig.url, fs.readFileSync(BIT_N8N_KEY, 'utf8')).then((r) => { if (r.ok) pushState(); }).catch(() => {});
     }
-    n8nProxy = startProxy(makeOps(n8nClient), n8nSocketPath(app.getPath('userData')));
+    n8nProxy = startProxy(simulation.dryRunOps(makeOps(n8nClient), simulation.DRY_N8N, dryRunActive, 'n8n'), n8nSocketPath(app.getPath('userData')));
     startFolderWatcher();
     startAlerts();
     startMorning();
@@ -1325,6 +1664,8 @@ function setup() {
     if (alerts) alerts.stop();
     clearInterval(morningTimer);
     clearInterval(finTimer);
+    clearInterval(lockTimer);
+    dataLayer.stop();
     globalShortcut.unregisterAll();
     musicWatch.stop();
     clearCookieFiles(true);

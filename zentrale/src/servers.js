@@ -167,6 +167,7 @@ function startServer({ dir, command, port, env, logDir }) {
     return { ok: false, error: e.message };
   }
   fs.closeSync(fd);
+  child.on('error', () => {}); // z. B. Shell fehlt – darf die Zentrale nicht abstürzen lassen
   child.unref();
   return { ok: true, data: { id, dir, command: cmd, port: p, pid: child.pid, log, startedAt: Date.now() } };
 }

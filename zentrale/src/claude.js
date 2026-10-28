@@ -259,6 +259,11 @@ function isReadOnlyCommand(command, cwd) {
   if (!cwd || !c || c.length > 2000 || /[;&|<>`$(){}\\\n\r~*?[\]'"]/.test(c) || /[^\x20-\x7E -ɏ]/.test(c)) return false;
   const [bin, ...args] = c.split(/\s+/);
   if (!READ_ONLY_COMMANDS.has(bin)) return false;
+  // Rekursiv lesen geht auch in versteckte Ordner (.env, .git/config) und folgt Verknüpfungen nach draußen –
+  // das braucht immer eine Freigabe. Gilt auch für zusammengesetzte Schalter wie -rn.
+  const recursive = (a) => /^--(recursive|dereference-recursive|directories|include|exclude-dir)/.test(a)
+    || (/^-[^-]/.test(a) && (bin === 'grep' ? /[rRd]/ : /R/).test(a.slice(1)));
+  if (args.some(recursive)) return false;
   let root;
   try { root = fs.realpathSync.native(path.resolve(cwd)); } catch { return false; }
   const inside = (p) => p === root || p.startsWith(root + path.sep);
@@ -375,6 +380,7 @@ class ClaudeChat extends EventEmitter {
 
   start() {
     if (this.alive || this.disposed) return;
+    this.needsRestart = false; // startet ohnehin mit den aktuellen Einstellungen
     const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
       '--permission-mode', this.permissionMode, '--permission-prompt-tool', 'stdio',
       '--settings', safetySettings(this.permissionMode)];

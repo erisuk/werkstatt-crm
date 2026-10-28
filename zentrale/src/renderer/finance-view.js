@@ -2,7 +2,8 @@
 // Die Daten liegen nur im Speicher dieser Ansicht, solange sie offen ist – Claude bekommt davon nichts.
 // Nutzt die Helfer aus app.js (h, fill, ui, api …).
 
-const fin = { open: false, data: null, sum: null, form: null, message: null, busy: false };
+const fin = { open: false, data: null, sum: null, form: null, message: null, busy: false,
+  sim: { cancel: [], addIncome: '', addCost: '', oneAmount: '', oneMonth: '', months: 12 }, simResult: null };
 
 const FIN_KINDS = { giro: 'Girokonto', spar: 'Sparkonto', kredit: 'Kreditkarte', debit: 'Bankkarte', bar: 'Bargeld', depot: 'Depot', paypal: 'PayPal', sonst: 'Sonstiges' };
 const FIN_INTERVALS = { woche: 'wöchentlich', monat: 'monatlich', quartal: 'vierteljährlich', halbjahr: 'halbjährlich', jahr: 'jährlich' };
@@ -33,7 +34,8 @@ function finApply(r) {
 }
 
 function finClear(reason) {
-  fin.open = false; fin.data = null; fin.sum = null; fin.form = null; fin.message = reason || null;
+  fin.open = false; fin.data = null; fin.sum = null; fin.form = null; fin.message = reason || null; fin.simResult = null;
+  fin.sim = { cancel: [], addIncome: '', addCost: '', oneAmount: '', oneMonth: '', months: 12 };
   if (ui.view === 'finance') renderFinance();
 }
 
@@ -153,6 +155,56 @@ function finSection(title, kind, body, extra) {
     body);
 }
 
+// Was wäre wenn: Szenario einstellen, Verlauf über 6–36 Monate. Gerechnet wird nur, gespeichert nichts.
+async function finRunSim() {
+  const s = fin.sim;
+  const one = s.oneAmount && Number(s.oneMonth) ? { amount: s.oneAmount, month: Number(s.oneMonth) } : null;
+  const r = await api.finSimulate({ cancel: s.cancel, addIncome: s.addIncome, addCost: s.addCost, oneTime: one, months: Number(s.months) });
+  if (r && r.locked) { finClear('Gesperrt.'); return; }
+  fin.simResult = r && r.ok ? r.data : null;
+  renderFinanceBody();
+}
+
+function finSimSection() {
+  const s = fin.sim;
+  const inp = (key, id, label, ph) => {
+    const el = h('input', { id, type: 'text', inputmode: 'decimal', placeholder: ph, autocomplete: 'off', 'data-focus': id });
+    el.value = s[key];
+    el.addEventListener('input', () => { s[key] = el.value; });
+    return h('div', { class: 'field' }, h('label', { for: id, text: label }), el);
+  };
+  const months = h('select', { id: 'fin-sim-months', 'data-focus': 'fin-sim-months' }, [6, 12, 24, 36].map((m) => h('option', { value: String(m) }, `${m} Monate`)));
+  months.value = String(s.months);
+  months.addEventListener('change', () => { s.months = Number(months.value); });
+  const r = fin.simResult;
+  const max = r ? Math.max(...r.points.map((p) => Math.abs(p.balance)), 1) : 1;
+  return finSection('Was wäre wenn', null, h('div', { class: 'card form fin-sim' },
+    fin.data.fixed.length ? h('div', { class: 'field full', role: 'group', 'aria-labelledby': 'fin-sim-cancel' }, h('span', { class: 'label', id: 'fin-sim-cancel', text: 'Diese festen Kosten kündigen' }),
+      h('div', { class: 'check-list' }, fin.data.fixed.map((f) => h('label', { class: 'check-line' },
+        h('input', { type: 'checkbox', checked: s.cancel.includes(f.id), 'data-focus': `fin-sim-c:${f.id}`, onChange: (e) => { s.cancel = e.target.checked ? [...s.cancel, f.id] : s.cancel.filter((x) => x !== f.id); } }),
+        `${f.name} (${eur(f.amount)} ${FIN_INTERVALS[f.interval]})`)))) : null,
+    inp('addIncome', 'fin-sim-in', 'Mehr Einnahmen im Monat', 'z. B. 200'),
+    inp('addCost', 'fin-sim-out', 'Neue Kosten im Monat', 'z. B. 30'),
+    inp('oneAmount', 'fin-sim-one', 'Einmalig (minus = Ausgabe)', 'z. B. -500'),
+    inp('oneMonth', 'fin-sim-onem', 'in Monat Nr.', 'z. B. 3'),
+    h('div', { class: 'field' }, h('label', { for: 'fin-sim-months', text: 'Zeitraum' }), months),
+    h('div', { class: 'actions full' }, h('span', { class: 'hint', text: 'Nur eine Rechnung – an deinen Einträgen ändert sich nichts.' }), h('span', { class: 'spacer' }),
+      h('button', { type: 'button', class: 'btn', 'data-focus': 'fin-sim-go', onClick: finRunSim }, 'Durchrechnen')),
+    r ? h('div', { class: 'full fin-sim-result' },
+      h('div', { class: 'fin-tiles' },
+        finTile(`Nach ${r.points.length} Monaten`, eur(r.end), `ohne Änderung: ${eur(r.withoutChange)}`, r.end < 0 ? 'neg' : ''),
+        finTile('Jeden Monat', `${r.monthly >= 0 ? '+' : ''}${eur(r.monthly)}`, 'Einnahmen minus Kosten', r.monthly < 0 ? 'neg' : ''),
+        r.savedPerMonth ? finTile('Gespart durch Kündigen', eur(r.savedPerYear), `im Jahr (${eur(r.savedPerMonth)} im Monat)`) : null,
+        r.firstNegative ? finTile('Ins Minus ab', new Date(`${r.firstNegative}-15`).toLocaleDateString('de-DE', { month: 'long', year: 'numeric' }), 'wenn sich nichts ändert', 'neg') : null),
+      h('div', { class: 'fin-cols fin-sim-cols', role: 'list', tabindex: '0', 'aria-label': 'Vermögen je Monat' }, r.points.map((p) => {
+        const label = new Date(`${p.month}-15`).toLocaleDateString('de-DE', { month: 'short', year: '2-digit' });
+        return h('div', { class: 'col', role: 'listitem', title: `${label}: ${eur(p.balance)}` },
+          h('span', { class: 'sr-only', text: `${label}: ${eur(p.balance)}` }),
+          h('div', { class: 'pair', 'aria-hidden': 'true' }, h('span', { class: p.balance < 0 ? 'out' : 'in', style: { height: `${(Math.abs(p.balance) / max) * 100}%` } })),
+          h('span', { class: 'm', 'aria-hidden': 'true', text: label }));
+      }))) : null));
+}
+
 function renderFinanceBody() {
   const box = $('#fin-body');
   if (!box || !fin.data) return;
@@ -186,6 +238,7 @@ function renderFinanceBody() {
         renderFinanceBody();
       } }, 'Kontoauszug laden (CSV)'),
       d.moves.length ? h('button', { class: 'link', onClick: async () => { if (confirm('Alle importierten Buchungen löschen? Konten, Kosten und Rechnungen bleiben.')) { finApply(await api.finClearMoves()); renderFinanceBody(); } } }, 'Buchungen löschen') : null)),
+    finSimSection(),
     finSection('Konten & Karten', 'accounts', finList('accounts', d.accounts, (a) => h('div', { class: 'grow' },
       h('div', { class: 'title' }, a.name, h('span', { class: 'pill', text: FIN_KINDS[a.kind] })),
       h('div', { class: 'sub', text: [a.bank, a.last4 ? `•••• ${a.last4}` : null, a.limit ? `Rahmen ${eur(a.limit)}` : null, `Stand ${new Date(a.updatedAt).toLocaleDateString('de-DE')}`].filter(Boolean).join(' · ') }),

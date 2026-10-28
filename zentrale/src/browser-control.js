@@ -307,7 +307,7 @@ function pressKey(wc, keyCode) {
 function waitForLoad(wc, ms = 15000) {
   if (!wc.isLoading()) return Promise.resolve();
   return new Promise((resolve) => {
-    const done = () => { clearTimeout(timer); resolve(); };
+    const done = () => { clearTimeout(timer); wc.removeListener('did-stop-loading', done); resolve(); };
     const timer = setTimeout(done, ms);
     wc.once('did-stop-loading', done);
   });

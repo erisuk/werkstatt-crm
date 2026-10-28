@@ -38,9 +38,10 @@ async function trashItem(item) {
 // ---------- Apps ----------
 
 async function loadApps() {
-  if (macv.apps) return;
-  macv.apps = [];
-  try { macv.apps = (await api.macApps()) || []; macv.appsError = null; } catch (e) { macv.appsError = e.message || 'Unbekannter Fehler'; }
+  if (macv.apps || macv.appsLoading) return;
+  macv.appsLoading = true;
+  try { macv.apps = (await api.macApps()) || []; macv.appsError = null; } catch (e) { macv.apps = []; macv.appsError = e.message || 'Unbekannter Fehler'; }
+  macv.appsLoading = false;
   if (ui.view === 'mac') renderMacBody();
   loadAppIcons();
 }

@@ -11,8 +11,11 @@ async function loadBrain() {
   }
   if (!brain.vault) { renderBrainBody(); return; }
   brain.loading = true;
+  const my = (brain.seq = (brain.seq || 0) + 1);
   const res = await api.vaultSearch(brain.query);
+  if (my !== brain.seq) return; // eine neuere Suche läuft schon
   brain.loading = false;
+  if (ui.view !== 'brain') return;
   brain.results = res && res.ok ? res.data : [];
   brain.message = res && !res.ok ? res.error : null;
   renderBrainBody();

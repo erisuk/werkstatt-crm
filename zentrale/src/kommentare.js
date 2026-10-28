@@ -15,14 +15,21 @@ const STANDARD = { konto: '', eintraege: [] };
 
 const kurz = (s, n) => Array.from(String(s == null ? '' : s).trim()).slice(0, n).join('');
 
+// Ließ sich die Datei nicht lesen (außer: gibt es noch nicht), wird nicht gespeichert –
+// sonst würde ein kurzer Lesefehler alle Einträge durch eine leere Liste ersetzen.
+const KAPUTT = Symbol('kaputt');
 function load(file) {
   let daten = {};
-  try { daten = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
-  if (!daten || typeof daten !== 'object' || Array.isArray(daten)) daten = {};
-  return { ...STANDARD, konto: String(daten.konto || ''), eintraege: Array.isArray(daten.eintraege) ? daten.eintraege.filter((e) => e && typeof e === 'object') : [] };
+  let kaputt = false;
+  try { daten = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { kaputt = e.code !== 'ENOENT'; }
+  if (!daten || typeof daten !== 'object' || Array.isArray(daten)) { daten = {}; kaputt = true; }
+  const out = { ...STANDARD, konto: String(daten.konto || ''), eintraege: Array.isArray(daten.eintraege) ? daten.eintraege.filter((e) => e && typeof e === 'object') : [] };
+  if (kaputt) out[KAPUTT] = true;
+  return out;
 }
 
 function save(file, daten) {
+  if (daten && daten[KAPUTT]) throw new Error('Die Kommentar-Datei ließ sich nicht lesen – sie wird nicht überschrieben.');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(daten, null, 1));

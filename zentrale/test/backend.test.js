@@ -539,10 +539,10 @@ test('parseMcpList erkennt Namen und Status', () => {
 test('Settings speichert nur gültige Werte', () => {
   const file = path.join(tmp('settings-'), 'settings.json');
   const s = new Settings(file);
-  assert.deepStrictEqual(s.get(), { theme: 'system', connections: { mac: false, chrome: false, web: false }, morning: { enabled: false, time: '08:00' } });
+  assert.deepStrictEqual(s.get(), { theme: 'system', connections: { mac: false, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false } });
   s.update({ theme: 'dark', connections: { mac: true, boese: true } });
   s.update({ theme: 'lila', connections: { chrome: 'ja' } });
-  assert.deepStrictEqual(new Settings(file).get(), { theme: 'dark', connections: { mac: true, chrome: false, web: false }, morning: { enabled: false, time: '08:00' } });
+  assert.deepStrictEqual(new Settings(file).get(), { theme: 'dark', connections: { mac: true, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false } });
   fs.writeFileSync(file, 'kaputt');
   assert.strictEqual(new Settings(file).get().theme, 'system');
 });
