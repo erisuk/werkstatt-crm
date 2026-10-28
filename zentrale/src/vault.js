@@ -35,7 +35,10 @@ function inside(vault, rel) {
     const real = fs.realpathSync.native(full);
     return real === root || real.startsWith(root + path.sep) ? real : null;
   } catch {
-    return full; // gibt es (noch) nicht – z. B. eine neue Notiz
+    // Gibt es (noch) nicht – z. B. eine neue Notiz. Dann muss der vorhandene Elternordner im Vault liegen.
+    let dir = path.dirname(full);
+    while (!fs.existsSync(dir) && dir !== root) dir = path.dirname(dir);
+    try { const realDir = fs.realpathSync.native(dir); return realDir === root || realDir.startsWith(root + path.sep) ? full : null; } catch { return null; }
   }
 }
 

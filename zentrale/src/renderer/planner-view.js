@@ -123,3 +123,6 @@ function renderPlanner() {
   renderPlannerBody();
   loadPlanner();
 }
+
+// Wird ein Beitrag fällig, sofort anzeigen (nicht erst beim nächsten Öffnen).
+window.zentrale.onPlannerChanged(() => { if (typeof ui !== 'undefined' && ui.view === 'planner' && !plan.form) loadPlanner(); });

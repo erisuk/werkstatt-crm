@@ -10,7 +10,8 @@ async function loadProjectsView() {
     const [s, p] = await Promise.all([api.serversList(pv.showAll), api.projectsList()]);
     pv.servers = s; pv.projects = p;
   } catch (e) { pv.message = e.message; }
-  if (ui.view === 'projects') renderProjectsBody();
+  // Nur neu zeichnen, wenn sich etwas geändert hat – sonst springt das Log nach oben und verliert die Auswahl.
+  if (ui.view === 'projects' && changed('pv', [pv.servers, pv.projects, pv.message, pv.log, pv.form])) renderProjectsBody();
   else { clearInterval(pv.timer); pv.timer = null; }
 }
 
@@ -131,6 +132,8 @@ function renderProjectsBody() {
 }
 
 function renderProjects() {
+  pv.message = null; pv.log = null;
+  ui.sig.pv = null;
   fill($('#main'),
     h('div', { class: 'section-head wrap' }, h('h1', { text: 'Projekte & Server' }), h('span', { class: 'spacer' }),
       h('button', { class: 'btn ghost', onClick: loadProjectsView }, 'Aktualisieren')),

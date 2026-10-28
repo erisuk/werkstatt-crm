@@ -34,7 +34,7 @@ function siteForm() {
   };
   return h('form', { class: 'card form', onSubmit: async (e) => {
     e.preventDefault();
-    if (sites.busy) return;
+    if (sites.busy || !okToLeaveBusyChat()) return;
     sites.busy = true; renderWebsitesBody();
     const r = await api.studioCreate({ ...f, direction: f.direction.id });
     sites.busy = false;

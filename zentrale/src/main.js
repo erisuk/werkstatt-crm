@@ -156,7 +156,7 @@ function setup() {
       projectsCache = raw.map((p) => ({ ...p, sessions: p.sessions.map(({ snippet, ...x }) => ({
         ...x, topic: topicOf.get(x.id).topic, topicManual: topicOf.get(x.id).topicManual })) }));
     } catch { projectsCache = []; }
-    const json = JSON.stringify(projectsCache);
+    const json = JSON.stringify(projectsCache, (k, v) => (k === 'updatedAt' ? Math.floor(v / 60000) : v));
     if (json !== projectsJson) { projectsJson = json; projectsRev += 1; }
     return projectsCache;
   }
@@ -355,7 +355,10 @@ function setup() {
     c.on('status', () => pushState());
     c.on('approvals', onApprovalsChanged);
     // Den alten Claude im Hintergrund beenden – nicht darauf warten, sonst dauert jeder Wechsel ~1 s.
-    if (old) old.dispose().catch(() => {});
+    // Ausnahme: dasselbe Gespräch – dann erst fertig beenden, sonst schreiben zwei Prozesse in dieselbe Datei.
+    if (old && old.sessionId === sessionId) await old.dispose().catch(() => {});
+    else if (old) old.dispose().catch(() => {});
+    if (gen !== chatGen || chat !== c) return chatInfo();
     c.start();
     pushState();
     return chatInfo();
@@ -439,7 +442,8 @@ function setup() {
   });
 
   ipcMain.handle('new-session', async (_e, args) => {
-    const cwd = args && args.cwd;
+    // Ohne Ordner: im Benutzerordner (Claude fragt dort vor jeder Änderung).
+    const cwd = args && args.cwd ? args.cwd : os.homedir();
     if (!isDir(cwd)) return { error: 'Dieser Ordner existiert nicht.' };
     await claudeReady;
     if (!claude.bin) return { error: 'Claude Code wurde nicht gefunden.' };
@@ -657,6 +661,12 @@ function setup() {
 
   ipcMain.handle('fs-open', async (_e, p) => {
     if (!files.validPath(p) || !fs.existsSync(p)) return { ok: false, error: 'Nicht gefunden.' };
+    // Skripte und fremde Programme starten etwas – erst fragen.
+    if (files.needsRunConfirm(p)) {
+      const { response } = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Abbrechen', 'Starten'], defaultId: 0, cancelId: 0,
+        message: `„${path.basename(p)}“ starten?`, detail: 'Das ist ein Programm oder Skript – es läuft mit deinen Rechten. Starte es nur, wenn du weißt, woher es kommt.' });
+      if (response !== 1) return { ok: false, cancelled: true };
+    }
     const err = await shell.openPath(p);
     return err ? { ok: false, error: err } : { ok: true };
   });
@@ -817,6 +827,7 @@ function setup() {
   const finTimer = setInterval(() => { if (finUntil && !finIsOpen()) finLock(); }, 15000);
   powerMonitor.on('lock-screen', finLock);
   powerMonitor.on('suspend', finLock);
+  powerMonitor.on('resume', () => { if (scheduler) scheduler.pause(60000); });
 
   // Website-Werkstatt
   let studioObj = null;
@@ -860,7 +871,9 @@ function setup() {
     return res.canceled ? null : res.filePaths[0];
   });
   const checkPlanner = () => {
-    for (const p of plannerStore().takeDue()) {
+    const due = plannerStore().takeDue();
+    if (due.length) send('planner-changed');
+    for (const p of due) {
       notify('Beitrag ist fällig', `„${p.title}“ für ${p.targets.map((t) => t.tabName).join(', ')} – in der Zentrale auf „Hochladen“ tippen.`, 'planner');
     }
   };
@@ -876,18 +889,22 @@ function setup() {
   ipcMain.handle('cockpit', () => cockpitNow());
   let morningTimer = null;
   const startMorning = () => {
+    let sending = false;
     morningTimer = setInterval(async () => {
-      checkPlanner();
+      try { checkPlanner(); } catch {}
       const m = settings.get().morning;
       const now = new Date();
-      if (!m.enabled || !morning.isDue(now, m.time, morningStore().get().lastSent)) return;
-      morningStore().set({ lastSent: morning.dayKey(now) });
-      let events = null;
-      if (process.platform === 'darwin' && settings.get().connections.mac) {
-        const r = await mac.todayPart('events', { launch: false }).catch(() => null);
-        if (r && r.ok && Array.isArray(r.data)) events = r.data;
-      }
-      notify('Guten Morgen', morning.summaryText(await cockpitNow(), events), 'overview');
+      if (sending || !m.enabled || !morning.isDue(now, m.time, morningStore().get().lastSent)) return;
+      sending = true;
+      try {
+        let events = null;
+        if (process.platform === 'darwin' && settings.get().connections.mac) {
+          const r = await mac.todayPart('events', { launch: false }).catch(() => null);
+          if (r && r.ok && Array.isArray(r.data)) events = r.data;
+        }
+        notify('Guten Morgen', morning.summaryText(await cockpitNow(), events), 'overview');
+        morningStore().set({ lastSent: morning.dayKey(now) });
+      } catch {} finally { sending = false; }
     }, 30000);
   };
 
@@ -1260,9 +1277,7 @@ function setup() {
   });
 
   app.on('second-instance', () => {
-    if (!win) createWindow();
-    win.show();
-    win.focus();
+    app.whenReady().then(() => { if (!win) createWindow(); win.show(); win.focus(); });
   });
 
   app.whenReady().then(async () => {

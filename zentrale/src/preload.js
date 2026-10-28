@@ -74,6 +74,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   studioCreate: (brief) => ipcRenderer.invoke('studio-create', brief),
   studioForget: (id) => ipcRenderer.invoke('studio-forget', id),
   plannerList: () => ipcRenderer.invoke('planner-list'),
+  onPlannerChanged: (fn) => ipcRenderer.on('planner-changed', () => fn()),
   plannerSave: (post) => ipcRenderer.invoke('planner-save', post),
   plannerRemove: (id) => ipcRenderer.invoke('planner-remove', id),
   plannerStatus: (id, status) => ipcRenderer.invoke('planner-status', { id, status }),

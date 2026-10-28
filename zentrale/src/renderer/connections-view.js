@@ -86,7 +86,7 @@ function renderConnections() {
       right: connSwitch('mac', 'Mac verbinden', !mac),
       extra: !mac ? h('div', { class: 'sub warn', text: 'Das geht nur auf dem Mac.' }) : conn.mac ? h('div', { class: 'conn-extra' },
         h('div', { class: 'actions' },
-          h('button', { class: 'btn ghost', 'data-focus': 'mac-test', onClick: async () => { ui.macTest = {}; renderConnections(); ui.macTest = await api.macTest(); renderConnections(); } }, 'Zugriff testen'),
+          h('button', { class: 'btn ghost', 'data-focus': 'mac-test', onClick: async () => { ui.macTest = {}; renderConnections(); try { ui.macTest = await api.macTest(); } catch (e) { ui.macTest = { error: e.message || 'Test ging nicht.' }; } renderConnections(); } }, 'Zugriff testen'),
           link('x-apple.systempreferences:com.apple.preference.security?Privacy_Automation', 'Mac-Rechte öffnen')),
         h('div', { class: 'sub', text: 'Beim ersten Zugriff fragt macOS, ob die Zentrale die jeweilige App steuern darf. Bitte jeweils „OK“ klicken.' }),
         macTestResult()) : null }),

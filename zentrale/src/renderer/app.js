@@ -182,7 +182,7 @@ darkQuery.addEventListener('change', renderTheme);
 
 // Beim Wechsel landet der Fokus auf der Überschrift, damit Tastatur und Vorlesefunktion mitkommen.
 // Der Chat setzt seinen Fokus selbst ins Eingabefeld.
-function setView(view) {
+function setView(view, { focusHeading = true } = {}) {
   if ((ui.view === 'web' || ui.view === 'local') && view !== ui.view) leaveWeb();
   // Privaten Bereich beim Verlassen sofort sperren.
   if (ui.view === 'finance' && view !== 'finance' && typeof fin !== 'undefined' && fin.open) { api.finLock(); finClear(); }
@@ -193,7 +193,7 @@ function setView(view) {
   renderNav();
   renderMain();
   if (ui.state) renderApprovals();
-  const heading = view !== 'chat' && $('#main h1');
+  const heading = focusHeading && view !== 'chat' && $('#main h1');
   if (heading) { heading.setAttribute('tabindex', '-1'); heading.focus({ preventScroll: true }); }
 }
 
@@ -211,7 +211,7 @@ function approvalCard(a, compact) {
   const decide = async (decision) => {
     if (busy.done) return;
     busy.done = true;
-    await api.respondApproval(a.id, decision);
+    try { await api.respondApproval(a.id, decision); } catch (e) { busy.done = false; alert(`Die Antwort kam nicht an: ${e.message || e}`); }
   };
   return h('div', { class: `card approval${compact ? ' compact' : ''}` },
     h('div', { class: 'approval-head' },
@@ -664,6 +664,7 @@ async function attachScreenshot(file) {
     if (!recent) { alert('Öffne zuerst einen Chat – das Bildschirmfoto liegt hier:\n' + file); return; }
     ui.prefill = text;
     await newSession(recent.path);
+    if (!ui.state.chat) ui.prefill = null; // Start ging nicht – nicht später woanders einfügen
     return;
   }
   const input = $('#chat-input');
@@ -878,7 +879,7 @@ document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click'
 document.querySelectorAll('.theme-switch button').forEach((b) => b.addEventListener('click', () => api.updateSettings({ theme: b.dataset.theme })));
 $('#search').addEventListener('input', (e) => {
   ui.search = e.target.value.trim().toLowerCase();
-  if (ui.view !== 'overview') setView('overview'); else renderOverview();
+  if (ui.view !== 'overview') setView('overview', { focusHeading: false }); else renderOverview();
 });
 $('#aside-new-task').addEventListener('click', () => editTask({}));
 $('#quick-form').addEventListener('submit', (e) => {

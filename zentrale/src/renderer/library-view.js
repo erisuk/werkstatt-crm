@@ -13,10 +13,12 @@ const LIB_TABS = [
 const lib = { tab: 'agents', data: null, error: null, loading: false, filter: '', agentFilter: 'all', running: null, runningTimer: null };
 
 async function loadLibrary(force) {
-  if (lib.loading || (lib.data && !force)) return;
+  if (lib.loading) { if (force) lib.again = true; return; } // nach dem laufenden Laden noch einmal
+  if (lib.data && !force) return;
   lib.loading = true;
   try { lib.data = await api.library(); lib.error = null; } catch (e) { lib.data = null; lib.error = e.message || 'Unbekannter Fehler'; }
   lib.loading = false;
+  if (lib.again) { lib.again = false; loadLibrary(true); return; }
   if (ui.view === 'library') renderLibraryBody();
 }
 
