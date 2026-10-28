@@ -9,7 +9,7 @@ function run(cmd, args, timeout = 8000) {
 
 const mode = (p) => { try { return fs.statSync(p).mode & 0o777; } catch { return null; } };
 
-// facts: { pids, userData, sockets[], packaged, appLock, touchId, safeStorage, nodeForTools, fuses }
+// facts: { pids, userData, sockets[], packaged, appLock, touchId, safeStorage, nodeForTools, fuses, backup: { dir, lastAt } }
 async function check(facts) {
   const out = [];
   const add = (ok, title, detail, level = 'gelb') => out.push({ ok, title, detail, level: ok ? 'ok' : level });
@@ -50,11 +50,14 @@ async function check(facts) {
 
   // 6. Backup: sonst ist bei einem Defekt alles weg (auch Projekte und Finanzen).
   const tm = await run('/usr/bin/tmutil', ['destinationinfo']);
-  add(/Name\s*:/.test(tm), 'Backup (Time Machine)', /Name\s*:/.test(tm) ? 'Time Machine sichert den Mac – inklusive der Daten der Zentrale.' : 'Kein Backup eingerichtet. Geht der Mac kaputt oder verloren, sind alle lokalen Daten weg. Einrichten: Systemeinstellungen → Allgemein → Time Machine (externe Platte).', 'rot');
+  add(/Name\s*:/.test(tm), 'Backup (Time Machine)', /Name\s*:/.test(tm) ? 'Time Machine sichert den Mac – inklusive der Daten der Zentrale.' : 'Kein Backup eingerichtet. Geht der Mac kaputt oder verloren, sind alle lokalen Daten weg. Einrichten: unten unter „Backup“ → „Time Machine einrichten“ (externe Platte).', 'rot');
+  const b = facts.backup || {};
+  const fresh = b.lastAt && Date.now() - b.lastAt < 3 * 24 * 3600 * 1000;
+  add(!!fresh, 'Sicherung der Zentrale', fresh ? `Zuletzt gesichert am ${new Date(b.lastAt).toLocaleDateString('de-DE')}.` : b.dir ? 'Seit über 3 Tagen keine Sicherung – ist die Platte angesteckt?' : 'Noch kein Ordner für die eigene Sicherung gewählt (unten unter „Backup“).', b.dir ? 'gelb' : 'info');
 
   // 7. Mac-Firewall (Systemeinstellung – ändert nur Eris).
   const fw = await run('/usr/libexec/ApplicationFirewall/socketfilterfw', ['--getglobalstate']);
-  add(/enabled|State = [12]/.test(fw), 'Mac-Firewall', /enabled|State = [12]/.test(fw) ? 'Eingehende Verbindungen werden gefiltert.' : 'Aus. Die Zentrale selbst lauscht nicht, andere Programme vielleicht schon. Einschalten: Systemeinstellungen → Netzwerk → Firewall.', 'info');
+  add(/enabled|State = [12]/.test(fw), 'Mac-Firewall', /enabled|State = [12]/.test(fw) ? 'Eingehende Verbindungen werden gefiltert.' : 'Aus. Die Zentrale selbst lauscht nicht, andere Programme vielleicht schon. Einschalten: unten unter „Firewall“.', 'info');
 
   return out;
 }

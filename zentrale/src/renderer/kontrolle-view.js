@@ -113,8 +113,9 @@ function krSchutz() {
           h('button', { class: 'switch', role: 'switch', 'aria-checked': String(lock.enabled), 'aria-label': 'App-Sperre mit Touch ID', 'data-focus': 'kr-lock',
             onClick: async () => { if (lock.enabled && !confirm('App-Sperre wirklich ausschalten? Dann sieht jeder, der an deinen Mac kommt, alles in der Zentrale.')) return; await api.updateSettings({ appLock: { enabled: !lock.enabled } }); } }),
           'Sperre mit Touch ID beim Start und nach'), h('div', { class: 'field' }, h('label', { for: 'kr-lock-min', text: 'ohne Nutzung' }), minutes))),
+    ...krBackupSections(),
     h('section', { class: 'section' }, h('h2', { text: 'Sicherheits-Check' }),
-      !r ? h('div', { class: 'card empty', text: 'Prüft …' }) : h('div', { class: 'card list' }, r.security.map((s) => h('div', { class: 'row' },
+      !r ? h('div', { class: 'card empty', text: 'Prüft …' }) : h('div', { class: 'card list sb' }, r.security.map((s) => h('div', { class: 'row' },
         h('span', { class: `pill ${KR_LEVEL[s.ok ? 'ok' : s.level][1]}`, text: s.ok ? 'geschützt' : KR_LEVEL[s.level][0] }),
         h('div', { class: 'grow' }, h('div', { class: 'title', text: s.title }), h('div', { class: 'sub', text: s.detail })))))),
     h('p', { class: 'date', text: 'Ehrlich: Eine Garantie „unhackbar“ gibt es nicht. Die Zentrale schließt die Wege, die es gibt – kein Zugang aus dem Netz, verschlüsselte Daten, Sperre, keine fremden Programme mit ihrer Identität. Das Wichtigste bleibt bei dir: Mac-Passwort, Updates und ein Backup.' }),
@@ -140,4 +141,5 @@ function renderKontrolle() {
     h('div', { id: 'kr-body', class: 'section' }));
   renderKontrolleBody();
   loadKontrolle();
+  if (kr.tab === 'schutz' && sb.state) loadSchutz(); // im Hintergrund auffrischen
 }

@@ -630,3 +630,14 @@ h2 { font-size: 16px; font-weight: 600; }
 .switcher-list .sub { grid-column: 2; font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .switcher-list .empty { display: block; color: var(--text-2); }
 .switcher-hint { font-size: 12px; color: var(--text-2); padding: 2px 10px 4px; }
+
+/* Kontrollraum → Schutz: Erklärtexte ganz zeigen, Schalter und Hinweise mit Luft */
+.sb .row .sub { white-space: normal; line-height: 1.45; margin-top: 2px; }
+.sb .row .grow { min-width: 0; }
+.sb .row > .btn { flex-shrink: 0; }
+.sb > .toggle-line { padding: 12px 18px; border-bottom: 1px solid var(--border); }
+.sb > .date { padding: 12px 18px 14px; margin: 0; }
+.sb-sub { background: var(--surface-2, transparent); }
+.sb-sub .row { padding-left: 32px; }
+.sb-sub .row .kind { font-variant-numeric: tabular-nums; color: var(--text-2); font-size: 12px; min-width: 90px; }
+@media (max-width: 760px) { .sb .row { flex-wrap: wrap; } .sb .row .grow { flex-basis: 100%; order: -1; } }

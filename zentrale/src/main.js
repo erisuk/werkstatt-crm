@@ -34,6 +34,7 @@ const training = require('./training');
 const { DataLayer } = require('./data-layer');
 const { blindSpots } = require('./blind-spots');
 const security = require('./security');
+const backup = require('./backup');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
 const { READ_ONLY_TOOLS: N8N_READ_ONLY } = require('./mcp/n8n-server');
 const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require('./n8n');
@@ -527,6 +528,7 @@ function setup() {
   // auch wenn er gerade arbeitet); neu eingeschaltete gelten sofort, wenn Claude nicht arbeitet.
   ipcMain.handle('settings-update', async (_e, patch) => {
     const before = settings.get().connections;
+    if (patch && typeof patch === 'object' && patch.backup && typeof patch.backup === 'object') patch = { ...patch, backup: { auto: patch.backup.auto } };
     const next = settings.update(patch);
     nativeTheme.themeSource = next.theme;
     let applied = true;
@@ -930,6 +932,7 @@ function setup() {
     morningTimer = setInterval(async () => {
       try { checkPlanner(); } catch {}
       dailyLearning().catch(() => {});
+      if (!appLocked) dailyBackup().catch(() => {});
       const m = settings.get().morning;
       const now = new Date();
       if (sending || !m.enabled || !morning.isDue(now, m.time, morningStore().get().lastSent)) return;
@@ -1391,7 +1394,8 @@ function setup() {
     const sockets = [n8nSocketPath(app.getPath('userData')), n8nSocketPath(app.getPath('userData'), 'browser')];
     return security.check({ pids: app.getAppMetrics().map((m) => m.pid), userData: app.getPath('userData'), sockets,
       packaged: app.isPackaged, appLock: settings.get().appLock, touchId: process.platform === 'darwin' && systemPreferences.canPromptTouchID(),
-      safeStorage: safeStorage.isEncryptionAvailable(), nodeForTools: !!NODE_BIN, fuses: fuseFacts() });
+      safeStorage: safeStorage.isEncryptionAvailable(), nodeForTools: !!NODE_BIN, fuses: fuseFacts(),
+      backup: { dir: settings.get().backup.dir, lastAt: backupStore.get().lastAt } });
   }
   ipcMain.handle('kontrolle-report', async () => {
     const [n8nHealth, disk, logins, sec] = await Promise.all([n8nClient().health().catch(() => ({ ok: false })), health.disk(), loginFacts(), securityFacts()]);
@@ -1401,6 +1405,54 @@ function setup() {
       logins, tasks: scheduler ? scheduler.list() : [], alerts: alerts ? alerts.get() : [], disk, unsorted: w.unsorted.length, data, security: sec });
     return { ok: true, spots, data, security: sec };
   });
+  // ---------- Backup & Firewall ----------
+  const backupStore = store('backup.json', { lastDay: null, lastAt: null, lastDir: null, lastError: null });
+  async function backupState() {
+    const cfg = settings.get().backup;
+    const target = cfg.dir ? backup.checkTarget(cfg.dir, { userData: app.getPath('userData') }) : null;
+    const [tm, fw, exposed] = await Promise.all([backup.timeMachine(), backup.firewall(), backup.exposedApps()]);
+    return { ok: true, cfg, target, last: backupStore.get(), list: target && target.ok ? backup.listBackups(target.dir).slice(0, backup.KEEP) : [], tm, fw, exposed };
+  }
+  async function doBackup(auto) {
+    const cfg = settings.get().backup;
+    if (!cfg.dir) return { ok: false, error: 'Erst einen Sicherungs-Ordner wählen.' };
+    const r = await backup.runBackup({ userData: app.getPath('userData'), target: cfg.dir, trash: (p) => shell.trashItem(p) });
+    const last = backupStore.get();
+    if (r.ok) backupStore.set({ lastDay: backup.localDay(), lastAt: Date.now(), lastDir: r.dir, lastError: null });
+    else if (!(auto && r.missing)) backupStore.set({ ...last, lastError: r.error }); // abgesteckte Platte beim Automatik-Lauf ist kein Fehler
+    return r;
+  }
+  ipcMain.handle('schutz-state', () => backupState());
+  ipcMain.handle('backup-choose', async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: 'Ordner für die Sicherung wählen (am besten auf einer externen Platte)' });
+    if (res.canceled || !res.filePaths[0]) return { ok: false, cancelled: true };
+    const t = backup.checkTarget(res.filePaths[0], { userData: app.getPath('userData') });
+    if (!t.ok) return t;
+    settings.update({ backup: { dir: t.dir } });
+    pushState();
+    return { ok: true, ...t };
+  });
+  ipcMain.handle('backup-run', () => doBackup(false));
+  ipcMain.handle('backup-show', () => { const d = settings.get().backup.dir; if (d && fs.existsSync(d)) shell.openPath(d); return { ok: true }; });
+  ipcMain.handle('tm-start', () => backup.startTimeMachine());
+  ipcMain.handle('tm-open', () => { shell.openExternal(backup.TM_SETTINGS); return { ok: true }; });
+  ipcMain.handle('fw-open', () => { shell.openExternal(backup.FW_SETTINGS); return { ok: true }; });
+  ipcMain.handle('fw-enable', async (_e, opts) => {
+    const stealth = !!(opts && opts.stealth === true);
+    const ok = await dialog.showMessageBox(win, { type: 'question', buttons: ['Einschalten', 'Abbrechen'], defaultId: 0, cancelId: 1,
+      message: stealth ? 'Mac-Firewall und Tarnmodus einschalten?' : 'Mac-Firewall einschalten?',
+      detail: 'macOS fragt gleich nach deinem Mac-Passwort – die Zentrale sieht es nicht. Programme, die aus dem Netz erreichbar sein sollen, fragt macOS danach einmal, ob sie dürfen. Ausschalten geht jederzeit in Systemeinstellungen → Netzwerk → Firewall.' });
+    if (ok.response !== 0) return { ok: false, cancelled: true, error: 'Abgebrochen – nichts geändert.' };
+    return backup.enableFirewall({ stealth });
+  });
+  async function dailyBackup() {
+    const cfg = settings.get().backup;
+    if (!backup.isDue(cfg, backupStore.get().lastDay)) return;
+    const r = await doBackup(true);
+    if (r.ok) notify('Gesichert', `Die Daten der Zentrale liegen jetzt auch in ${path.basename(path.dirname(path.dirname(r.dir)))}.`, 'kontrolle');
+    else if (!r.missing) notify('Sicherung ging nicht', r.error, 'kontrolle');
+  }
+
   // ---------- Lernen & Training ----------
   let learnObj = null;
   function learnStore() {
