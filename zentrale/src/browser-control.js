@@ -2,6 +2,9 @@
 // klicken, tippen, Tasten, Adresse öffnen (nur mit Freigabe – die prüft Claude Code vor jedem Aufruf).
 // Passwort-, Karten- und Bankfelder werden hier technisch blockiert, egal was freigegeben wurde.
 const { EventEmitter } = require('events');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const WORLD = 1729; // eigene, isolierte Skriptwelt: Seiten-JavaScript sieht unsere Hilfen nicht
 const MAX_TEXT = 15000;
@@ -23,7 +26,9 @@ const READ_SCRIPT = `(() => {
   let n = 0;
   for (const el of document.querySelectorAll(sel)) {
     if (out.length >= ${MAX_ELEMENTS}) break;
-    if (!visible(el)) continue;
+    // Upload-Felder sind oft unsichtbar (eigener Knopf darüber) – die brauchen wir trotzdem.
+    const fileInput = el.tagName === 'INPUT' && el.type === 'file';
+    if (!fileInput && !visible(el)) continue;
     n += 1;
     el.setAttribute('data-zref', String(n));
     const kind = el.tagName.toLowerCase() === 'input' ? 'input:' + (el.type || 'text') : (el.getAttribute('role') || el.tagName.toLowerCase());
@@ -203,6 +208,33 @@ class BrowserControl extends EventEmitter {
     return { ok: true, data: `Taste ${key} gedrückt` };
   }
 
+  // Legt Dateien in ein Upload-Feld (z. B. Video bei YouTube Studio oder Instagram) – über die Entwicklerschnittstelle
+  // des Tabs, so wie der Dateiauswahl-Dialog es tun würde.
+  async upload(id, ref, list) {
+    const t = this.resolve(id);
+    if (!t) return { ok: false, error: 'Diesen Tab gibt es nicht.' };
+    const el = this.element(t.id, ref);
+    if (!el || el.kind !== 'input:file') return { ok: false, error: 'Das ist kein Upload-Feld. Lies die Seite mit zentrale_web_read und nimm ein Element vom Typ input:file.' };
+    const check = checkUploadFiles(list);
+    if (!check.ok) return check;
+    this.focus(t.id, 'lädt hoch');
+    const dbg = t.wc.debugger;
+    const attachedHere = !dbg.isAttached();
+    try {
+      if (attachedHere) dbg.attach('1.3');
+      const { root } = await dbg.sendCommand('DOM.getDocument', { depth: -1, pierce: true });
+      const { nodeId } = await dbg.sendCommand('DOM.querySelector', { nodeId: root.nodeId, selector: `[data-zref="${Number(ref)}"]` });
+      if (!nodeId) return { ok: false, error: 'Das Upload-Feld gibt es nicht mehr. Lies die Seite neu.' };
+      await dbg.sendCommand('DOM.setFileInputFiles', { nodeId, files: check.files });
+    } catch (e) {
+      return { ok: false, error: `Hochladen ging nicht: ${e.message}` };
+    } finally {
+      if (attachedHere) try { dbg.detach(); } catch {}
+    }
+    await sleep(800);
+    return { ok: true, data: `${check.files.length} Datei(en) ins Upload-Feld gelegt – lies die Seite neu, um den Fortschritt zu sehen.` };
+  }
+
   // Öffnet eine Adresse: im Tab derselben Website, sonst in einem eigenen Tab „Claude“.
   async open(url) {
     let u;
@@ -225,7 +257,7 @@ class BrowserControl extends EventEmitter {
   // Für die Freigabe: welcher Knopf, welches Feld, auf welcher Seite – und ob es heikel ist.
   approvalInfo(toolName, input) {
     const i = input || {};
-    if (!/^mcp__web__zentrale_web_(click|type|key)$/.test(toolName)) return null;
+    if (!/^mcp__web__zentrale_web_(click|type|key|upload)$/.test(toolName)) return null;
     const t = this.resolve(i.tab);
     const page = t ? t.wc.getURL() : '(unbekannter Tab)';
     const el = i.ref != null && t ? this.element(t.id, i.ref) : null;
@@ -235,6 +267,30 @@ class BrowserControl extends EventEmitter {
     if (el && RISKY_LABEL.test(el.label)) lines.push('⚠ Achtung: Dieser Knopf kann Geld kosten, etwas veröffentlichen, senden oder löschen.');
     return lines.join('\n');
   }
+}
+
+const MAX_UPLOAD_FILES = 10;
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024;
+
+// Nur echte Dateien aus dem Benutzerordner – nie aus versteckten Ordnern (.ssh, .claude …) oder Library.
+function checkUploadFiles(list) {
+  const home = os.homedir();
+  if (!Array.isArray(list) || !list.length) return { ok: false, error: 'Keine Dateien angegeben.' };
+  if (list.length > MAX_UPLOAD_FILES) return { ok: false, error: `Höchstens ${MAX_UPLOAD_FILES} Dateien auf einmal.` };
+  const out = [];
+  for (const raw of list) {
+    const given = String(raw || '').replace(/^~(?=\/)/, home);
+    let real;
+    try { real = fs.realpathSync.native(path.resolve(given)); } catch { return { ok: false, error: `Datei nicht gefunden: ${raw}` }; }
+    const rel = path.relative(home, real);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return { ok: false, error: `Nur Dateien aus deinem Benutzerordner: ${raw}` };
+    if (rel.split(path.sep).some((part) => part.startsWith('.')) || rel.split(path.sep)[0] === 'Library') return { ok: false, error: `Aus diesem Ordner lädt die Zentrale nichts hoch: ${raw}` };
+    const st = fs.statSync(real);
+    if (!st.isFile()) return { ok: false, error: `Das ist keine Datei: ${raw}` };
+    if (st.size > MAX_UPLOAD_BYTES) return { ok: false, error: `Zu groß: ${raw}` };
+    out.push(real);
+  }
+  return { ok: true, files: out };
 }
 
 function describeElement(el) {
@@ -268,8 +324,9 @@ function makeBrowserOps(control) {
     click: (a) => control.click(a && a.tab, a && a.ref),
     type: (a) => control.type(a && a.tab, a && a.ref, a && a.text, !!(a && a.submit)),
     key: (a) => control.key(a && a.tab, a && a.key),
+    upload: (a) => control.upload(a && a.tab, a && a.ref, a && a.files),
     open: (a) => control.open(a && a.url),
   };
 }
 
-module.exports = { BrowserControl, makeBrowserOps, RISKY_LABEL, describeElement, READ_SCRIPT };
+module.exports = { BrowserControl, makeBrowserOps, RISKY_LABEL, describeElement, READ_SCRIPT, checkUploadFiles };

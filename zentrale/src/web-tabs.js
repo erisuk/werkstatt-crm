@@ -3,7 +3,7 @@
 // Die Seiten laufen abgeschottet (Sandbox, kein Zugriff auf Node, den Mac oder Claude).
 const { EventEmitter } = require('events');
 const { WebContentsView, session, shell } = require('electron');
-const { chromeUserAgent, unreadFromTitle } = require('./portals');
+const { chromeUserAgent, unreadFromTitle, partitionFor } = require('./portals');
 
 const PARTITION = 'persist:portale';
 // Was Webseiten ohne Rückfrage dürfen. Kamera, Mikrofon, Standort usw. bleiben gesperrt.
@@ -12,13 +12,17 @@ const ALLOWED_PERMISSIONS = new Set(['notifications', 'fullscreen', 'clipboard-s
 const SESSION_COOKIE_DAYS = 30;
 const SAVE_EVERY_MS = 5 * 60 * 1000;
 
-const WEB_PREFS = { partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: true };
+const webPrefs = (partition = PARTITION) => ({ partition, sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: true });
+const WEB_PREFS = webPrefs();
 
+// Jede Partition (= jedes Konto) wird einmal eingerichtet: Browser-Kennung, Rechte.
+const readyPartitions = new Set();
 let sessionReady = false;
 
-function portalSession() {
-  const ses = session.fromPartition(PARTITION);
-  if (sessionReady) return ses;
+function portalSession(partition = PARTITION) {
+  const ses = session.fromPartition(partition);
+  if (readyPartitions.has(partition)) return ses;
+  readyPartitions.add(partition);
   sessionReady = true;
   ses.setUserAgent(chromeUserAgent(ses.getUserAgent()));
   ses.setPermissionRequestHandler((_wc, permission, done) => done(ALLOWED_PERMISSIONS.has(permission)));
@@ -53,8 +57,10 @@ class WebTabs extends EventEmitter {
     if (this.views.has(id)) return this.views.get(id);
     const portal = this.store.get().portals.find((p) => p.id === id);
     if (!portal || !this.win) return null;
-    portalSession();
-    const view = new WebContentsView({ webPreferences: WEB_PREFS });
+    const partition = partitionFor(portal.profile);
+    portalSession(partition);
+    const prefs = webPrefs(partition);
+    const view = new WebContentsView({ webPreferences: prefs });
     const entry = { view, title: '', unread: 0, loading: true, error: null };
     this.views.set(id, entry);
     const wc = view.webContents;
@@ -78,7 +84,7 @@ class WebTabs extends EventEmitter {
       if (!isWeb(url)) return { action: 'deny' };
       // Anmelde-Fenster (window.open mit Größe) bleiben in der Zentrale, damit das Login hier gespeichert wird.
       if (disposition === 'new-window' || features) {
-        return { action: 'allow', overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: WEB_PREFS } };
+        return { action: 'allow', overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: prefs } };
       }
       // Normale Links „in neuem Tab“ öffnen im Standardbrowser.
       shell.openExternal(url);
@@ -172,7 +178,11 @@ class WebTabs extends EventEmitter {
   // und schreiben alles sofort auf die Platte.
   async saveLogins() {
     if (!sessionReady) return;
-    const ses = portalSession();
+    for (const pr of this.store.profiles()) await this.saveLoginsFor(partitionFor(pr));
+  }
+
+  async saveLoginsFor(partition) {
+    const ses = portalSession(partition);
     const until = Math.floor(Date.now() / 1000) + SESSION_COOKIE_DAYS * 86400;
     let cookies = [];
     try { cookies = await ses.cookies.get({}); } catch { return; }
@@ -189,9 +199,11 @@ class WebTabs extends EventEmitter {
 
   // Meldet überall ab: löscht Cookies und gespeicherte Seitendaten aller Tabs.
   async clearLogins() {
-    const ses = portalSession();
-    await ses.clearStorageData();
-    await ses.clearCache();
+    for (const pr of this.store.profiles()) {
+      const ses = portalSession(partitionFor(pr));
+      await ses.clearStorageData();
+      await ses.clearCache();
+    }
     for (const { view } of this.views.values()) view.webContents.reload();
   }
 
@@ -202,7 +214,7 @@ class WebTabs extends EventEmitter {
       portals: portals.map((p) => {
         const e = this.views.get(p.id);
         const wc = e && e.view.webContents;
-        return { id: p.id, name: p.name, url: p.url, open: !!e, title: e ? e.title : '', unread: e ? e.unread : 0,
+        return { id: p.id, name: p.name, url: p.url, profile: p.profile, open: !!e, title: e ? e.title : '', unread: e ? e.unread : 0,
           loading: e ? e.loading : false, error: e ? e.error : null, current: wc ? wc.getURL() : (p.lastUrl || p.url),
           canGoBack: wc ? wc.navigationHistory.canGoBack() : false, canGoForward: wc ? wc.navigationHistory.canGoForward() : false };
       }),

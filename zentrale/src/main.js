@@ -1,5 +1,5 @@
 // Hauptprozess: öffnet das Fenster, startet Claude automatisch und hält alles synchron.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -13,6 +13,8 @@ const { desktopMeta } = require('./desktop-meta');
 const library = require('./library');
 const files = require('./files');
 const music = require('./music');
+const vault = require('./vault');
+const servers = require('./servers');
 const { PortalStore, PRESETS } = require('./portals');
 const { WebTabs } = require('./web-tabs');
 const { READ_ONLY_TOOLS } = require('./mcp/mac-server');
@@ -21,6 +23,8 @@ const { N8n, DEFAULT_URL: N8N_DEFAULT_URL, normalizeBase, isLoopback } = require
 const { startProxy, makeOps, socketPath: n8nSocketPath } = require('./n8n-proxy');
 const { BrowserControl, makeBrowserOps } = require('./browser-control');
 const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
+const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
+const kommentare = require('./kommentare');
 
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
@@ -30,12 +34,40 @@ const EXTERNAL_LINKS = new Set([
   'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
 ]);
 
+// Läuft im angemeldeten n8n-Tab (eigene, isolierte Skriptwelt) und legt dort einen API-Schlüssel an.
+// n8n verlangt bei Anfragen mit Anmelde-Cookie die browser-id aus dem localStorage der Seite.
+const N8N_WORLD = 1730;
+const N8N_CREATE_KEY = `(async () => {
+  const headers = { 'Content-Type': 'application/json', 'browser-id': localStorage.getItem('n8n-browserId') || '' };
+  const me = await fetch('/rest/login', { headers, credentials: 'include' });
+  if (!me.ok) return { error: 'login' };
+  let scopes = null;
+  try { const r = await fetch('/rest/api-keys/scopes', { headers, credentials: 'include' }); if (r.ok) { const j = await r.json(); if (Array.isArray(j.data)) scopes = j.data; } } catch (e) {}
+  const body = { label: 'Zentrale ' + new Date().toISOString().slice(0, 10), expiresAt: null };
+  if (scopes) body.scopes = scopes;
+  const r = await fetch('/rest/api-keys', { method: 'POST', headers, credentials: 'include', body: JSON.stringify(body) });
+  const text = await r.text();
+  let j = null;
+  try { j = JSON.parse(text); } catch (e) {}
+  if (!r.ok) return { error: 'http', status: r.status, message: (j && j.message) || text.slice(0, 160) };
+  const d = (j && j.data) || {};
+  const key = d.rawApiKey || (typeof d.apiKey === 'string' && !d.apiKey.includes('*') ? d.apiKey : null);
+  return key ? { key } : { error: 'nokey' };
+})()`;
+
+// Hinweis an Claude: das Gehirn des Nutzers ist sein Obsidian-Vault.
+const vaultHint = (dir) => `Das Gedächtnis („Gehirn“) des Nutzers ist sein Obsidian-Vault unter ${dir}. `
+  + 'Bevor du zu Personen, Projekten oder früheren Entscheidungen antwortest, schau dort nach (z. B. mit /was-weiss-ich oder Grep). '
+  + 'Neue wichtige Erkenntnisse legst du mit /merk-dir ab; Notizen im Vault nie löschen, nur ergänzen.';
+
 // Hinweis an Claude, wenn „Web-Tabs für Claude“ eingeschaltet ist.
 const WEB_HINT = 'Du läufst in der Zentrale des Nutzers. Webseiten (z. B. Meta Business, Shopify, Gmail, Instagram) bedienst du '
   + 'mit den Werkzeugen zentrale_web_* in den Web-Tabs der Zentrale, wo der Nutzer angemeldet ist und live zusieht – nicht mit '
   + 'Playwright und nicht mit einem separaten Chrome. Lies die Seite (zentrale_web_read) vor und nach jeder Aktion. '
   + 'Passwörter, Karten- und Bankdaten gibt nur der Nutzer selbst ein. Vor allem, was Geld kostet oder etwas veröffentlicht, '
-  + 'fasst du zusammen, was passieren wird, und lässt den Nutzer entscheiden.';
+  + 'fasst du zusammen, was passieren wird, und lässt den Nutzer entscheiden. '
+  + 'Bei Social Media (YouTube, Instagram, TikTok, Facebook, Meta) prüfst du vor jeder Aktion, welches Konto angemeldet ist, und nennst es. '
+  + 'Konten von MURIS (z. B. @shop.muris) bearbeitest du nie. Dateien wie Videos lädst du mit zentrale_web_upload hoch.';
 
 // So frisch geschriebene Gespräche benutzt vermutlich gerade ein anderes Claude-Fenster.
 const IN_USE_MS = 2 * 60 * 1000;
@@ -67,6 +99,8 @@ function setup() {
   let browserProxy = null;
   let browser = null;
   let browserConfigFile = null;
+  let kommentareConfigFile = null;
+  const kommentareFile = () => path.join(app.getPath('userData'), 'kommentare.json');
   let n8nConfig = { url: 'http://localhost:5678', key: null };
   const taskChats = new Map(); // laufende Aufgaben-Chats → Name der Aufgabe
   const notified = new Set();
@@ -169,9 +203,18 @@ function setup() {
     if (c.web && browserConfigFile) {
       args.push(`--mcp-config=${browserConfigFile}`);
       allowed.push(...BROWSER_READ_ONLY.map((t) => `mcp__web__${t}`));
-      // Nicht mit Playwright oder einem separaten Chrome verwechseln: Webseiten gehören in die Tabs der Zentrale.
-      args.push('--append-system-prompt', WEB_HINT);
     }
+    // Die Kommentar-Liste ist lokal – immer dabei, ohne Rückfrage.
+    if (kommentareConfigFile) {
+      args.push(`--mcp-config=${kommentareConfigFile}`);
+      allowed.push(...KOMMENTARE_TOOLS.map((t) => `mcp__kommentare__${t}`));
+    }
+    // Ein gemeinsamer Hinweis: wo das Gehirn (Obsidian) liegt und – falls an – wie Webseiten bedient werden.
+    const hints = [];
+    const v = currentVault();
+    if (v) hints.push(vaultHint(v.path));
+    if (c.web && browserConfigFile) hints.push(WEB_HINT);
+    if (hints.length) args.push('--append-system-prompt', hints.join('\n\n'));
     if (allowed.length) args.push(`--allowedTools=${allowed.join(',')}`);
     if (c.chrome) args.push('--chrome');
     return args;
@@ -202,6 +245,7 @@ function setup() {
     // Der n8n-Server bekommt nur den Weg zur Vermittlung in der Zentrale – keinen Schlüssel.
     n8nConfigFile = writeMcpConfig('n8n', 'n8n-server.js', { ZENTRALE_N8N_SOCKET: n8nSocketPath(app.getPath('userData')) });
     browserConfigFile = writeMcpConfig('web', 'browser-server.js', { ZENTRALE_BROWSER_SOCKET: n8nSocketPath(app.getPath('userData'), 'browser') });
+    kommentareConfigFile = writeMcpConfig('kommentare', 'kommentare-server.js', { ZENTRALE_KOMMENTARE_FILE: kommentareFile() });
   }
 
   // ---------- n8n: Adresse und verschlüsselter Schlüssel (macOS-Schlüsselbund) ----------
@@ -582,6 +626,137 @@ function setup() {
 
   ipcMain.handle('fs-search', (_e, q) => (typeof q === 'string' ? mac.spotlight(q, 60) : { ok: false, error: 'Suchbegriff fehlt.' }));
 
+  // ---------- Projekte & Server ----------
+
+  // Kleine JSON-Speicher in userData (von der Zentrale gestartete Server, selbst hinzugefügte/ausgeblendete Projekte).
+  const store = (name, fallback) => ({
+    file: () => path.join(app.getPath('userData'), name),
+    get() { try { const v = JSON.parse(fs.readFileSync(this.file(), 'utf8')); return v && typeof v === 'object' ? v : fallback; } catch { return fallback; } },
+    set(v) { try { fs.writeFileSync(`${this.file()}.tmp`, JSON.stringify(v, null, 2)); fs.renameSync(`${this.file()}.tmp`, this.file()); return true; } catch { return false; } },
+  });
+  const startedStore = store('servers.json', []);
+  const projectStore = store('projects.json', { added: [], hidden: [] });
+  const isTemp = (p) => /^\/(private\/)?(tmp|var\/folders)\//.test(`${p}/`);
+
+  async function currentServers(all = false) {
+    // Nur noch laufende, von der Zentrale gestartete Server merken.
+    const started = startedStore.get().filter((s) => { try { process.kill(s.pid, 0); return true; } catch { return false; } });
+    startedStore.set(started);
+    return servers.listServers({ all, selfPids: [process.pid], started });
+  }
+
+  ipcMain.handle('servers-list', async (_e, args) => {
+    const list = await currentServers(!!(args && args.all));
+    const started = new Map(startedStore.get().map((s) => [s.pid, s]));
+    return list.map((s) => ({ ...s, started: started.get(s.pid) ? { id: started.get(s.pid).id, command: started.get(s.pid).command } : null }));
+  });
+
+  // Gestoppt wird nur, was gerade wirklich auf diesem Port mit dieser Prozess-ID lauscht.
+  ipcMain.handle('servers-stop', async (_e, args) => {
+    const pid = Number(args && args.pid);
+    const port = Number(args && args.port);
+    const match = (await currentServers(true)).find((s) => s.pid === pid && s.port === port);
+    if (!match) return { ok: false, error: 'Dieser Server läuft nicht mehr.' };
+    const res = await servers.stopServer(match, { force: !!(args && args.force), selfPids: [process.pid] });
+    if (res.ok) startedStore.set(startedStore.get().filter((s) => s.pid !== pid));
+    return res;
+  });
+
+  ipcMain.handle('servers-suggest', (_e, dir) => (isDir(dir) ? servers.suggestCommands(dir) : []));
+
+  ipcMain.handle('servers-start', (_e, args) => {
+    const res = servers.startServer({ dir: args && args.dir, command: args && args.command, port: args && args.port,
+      env: claude.env, logDir: path.join(app.getPath('userData'), 'server-logs') });
+    if (res.ok) startedStore.set([...startedStore.get(), res.data]);
+    return res.ok ? { ok: true, data: { pid: res.data.pid, id: res.data.id } } : res;
+  });
+
+  ipcMain.handle('servers-log', (_e, id) => {
+    const s = startedStore.get().find((x) => x.id === id);
+    return s ? servers.readLog(s.log) : { ok: false, error: 'Für diesen Server gibt es kein Log (er wurde nicht von der Zentrale gestartet).' };
+  });
+
+  // Projekte = Ordner aus den Gesprächen + selbst hinzugefügte, ohne ausgeblendete; mit laufenden Servern.
+  ipcMain.handle('projects-list', async () => {
+    const { added, hidden } = projectStore.get();
+    const byPath = new Map();
+    for (const p of projectsCache) {
+      if (!p.path || !isDir(p.path) || p.path === os.homedir() || isTemp(p.path)) continue;
+      byPath.set(p.path, { path: p.path, name: p.name, sessions: p.sessions.length, added: false, updatedAt: p.updatedAt });
+    }
+    for (const dir of added) if (isDir(dir) && !byPath.has(dir)) byPath.set(dir, { path: dir, name: path.basename(dir), sessions: 0, added: true, updatedAt: 0 });
+    for (const dir of added) if (byPath.has(dir)) byPath.get(dir).added = true;
+    let running = [];
+    try { running = await currentServers(false); } catch {}
+    // Ordner mit laufendem Server sind auch Projekte, selbst wenn es dazu kein Gespräch gibt.
+    for (const sv of running) {
+      const dir = sv.projectDir;
+      if (dir && isDir(dir) && dir !== os.homedir() && !isTemp(dir) && !byPath.has(dir)) {
+        byPath.set(dir, { path: dir, name: path.basename(dir), sessions: 0, added: false, fromServer: true, updatedAt: 0 });
+      }
+    }
+    return [...byPath.values()].filter((p) => !hidden.includes(p.path)).map((p) => ({
+      ...p, servers: running.filter((s) => s.projectDir && (s.projectDir === p.path || s.projectDir.startsWith(p.path + path.sep)))
+        .map((s) => ({ port: s.port, url: s.url, title: s.title })) }))
+      .sort((a, b) => (b.servers.length - a.servers.length) || (b.updatedAt - a.updatedAt) || a.name.localeCompare(b.name, 'de'));
+  });
+  ipcMain.handle('projects-add', (_e, dir) => {
+    if (!isDir(dir) || dir === os.homedir() || files.isProtected(dir)) return { ok: false, error: 'Diesen Ordner kann man nicht als Projekt hinzufügen.' };
+    const { added, hidden } = projectStore.get();
+    projectStore.set({ added: [...new Set([...added, dir])], hidden: hidden.filter((x) => x !== dir) });
+    return { ok: true };
+  });
+  // Entfernt nur aus der Liste – der Ordner selbst bleibt unangetastet.
+  ipcMain.handle('projects-remove', (_e, dir) => {
+    if (typeof dir !== 'string') return { ok: false };
+    const { added, hidden } = projectStore.get();
+    projectStore.set({ added: added.filter((x) => x !== dir), hidden: [...new Set([...hidden, dir])] });
+    return { ok: true };
+  });
+  ipcMain.handle('open-in-tab', (_e, url) => {
+    let u;
+    try { u = new URL(String(url)); } catch { return { ok: false, error: 'Ungültige Adresse.' }; }
+    if (!['localhost', '127.0.0.1'].includes(u.hostname)) return { ok: false, error: 'Nur lokale Adressen.' };
+    let portal = webTabs.store.get().portals.find((p) => new URL(p.url).origin === u.origin);
+    if (!portal) { const r = webTabs.store.add(`localhost:${u.port}`, u.origin); if (!r.ok) return r; portal = r.portal; }
+    webTabs.show(portal.id);
+    return { ok: true };
+  });
+
+  // ---------- Gehirn (Obsidian) ----------
+
+  function currentVault() {
+    try { return vault.findVaults()[0] || null; } catch { return null; }
+  }
+  const withVault = (fn) => {
+    const v = currentVault();
+    if (!v) return { ok: false, error: 'Kein Obsidian-Vault gefunden. Öffne Obsidian einmal mit deinem Vault.' };
+    try { return fn(v.path); } catch (e) { return { ok: false, error: e.message }; }
+  };
+  // ---------- Kommentare („Wer will den Code?“) ----------
+  ipcMain.handle('kommentare-get', () => {
+    const d = kommentare.load(kommentareFile());
+    return { ok: true, data: { ...d, nochFrei: kommentare.nochFrei(d.eintraege) } };
+  });
+  ipcMain.handle('kommentare-status', (_e, a) => kommentare.status(kommentareFile(), a && a.id, a && a.status));
+  ipcMain.handle('kommentare-remove', (_e, id) => kommentare.entfernen(kommentareFile(), id));
+  ipcMain.handle('kommentare-auftrag', (_e, a) => {
+    const d = kommentare.load(kommentareFile());
+    return a && a.art === 'einsammeln' ? kommentare.auftragEinsammeln(d) : kommentare.auftragVorbereiten(d, a && a.id);
+  });
+  ipcMain.handle('kommentare-settings', (_e, patch) => kommentare.einstellen(kommentareFile(), patch || {}));
+
+  ipcMain.handle('vault-info', () => ({ vault: currentVault() }));
+  ipcMain.handle('vault-search', (_e, q) => withVault((dir) => vault.search(dir, typeof q === 'string' ? q : '')));
+  ipcMain.handle('vault-read', (_e, rel) => withVault((dir) => vault.readNote(dir, rel)));
+  ipcMain.handle('vault-add', (_e, args) => withVault((dir) => vault.addNote(dir, args && args.title, args && args.text)));
+  ipcMain.handle('vault-open', (_e, rel) => withVault((dir) => {
+    const found = vault.readNote(dir, rel);
+    if (!found.ok) return found;
+    shell.openExternal(vault.obsidianUrl(dir, rel));
+    return { ok: true };
+  }));
+
   // ---------- Musik ----------
 
   const musicAllowed = () => process.platform === 'darwin' && settings.get().connections.mac;
@@ -595,18 +770,51 @@ function setup() {
     const health = await n8nClient().health();
     return { url: n8nConfig.url, running: health.ok, hasKey: !!n8nConfig.key };
   });
-  // Prüft den Schlüssel sofort an n8n, bevor er gespeichert wird.
-  ipcMain.handle('n8n-connect', async (_e, args) => {
-    const url = normalizeBase(args && args.url);
+  // Prüft Adresse und Schlüssel an n8n und speichert erst dann (verschlüsselt). Der Schlüssel geht nie zurück an die Oberfläche.
+  async function connectN8n(rawUrl, rawKey) {
+    const url = normalizeBase(rawUrl);
     if (!url) return { ok: false, error: 'Das ist keine gültige Adresse (z. B. http://localhost:5678).' };
     if (url.startsWith('http:') && !isLoopback(url)) return { ok: false, error: 'Für ein n8n außerhalb deines Macs bitte eine https-Adresse – sonst ginge der Schlüssel unverschlüsselt durchs Netz.' };
-    const key = args && typeof args.key === 'string' ? args.key.trim() : '';
+    const key = typeof rawKey === 'string' ? rawKey.trim() : '';
     if (!key || key.length > 4000) return { ok: false, error: 'Bitte den API-Schlüssel aus n8n einfügen.' };
     const test = await new N8n({ baseUrl: url, apiKey: key }).listWorkflows();
     if (!test.ok) return test;
     if (!saveN8n({ url, key })) return { ok: false, error: 'Der Schlüssel konnte nicht sicher gespeichert werden (Schlüsselbund nicht verfügbar).' };
     return { ok: true, count: test.data.length };
+  }
+
+  // „Aus Zwischenablage verbinden“: Die Zentrale liest den kopierten Schlüssel selbst und leert danach die Zwischenablage.
+  ipcMain.handle('n8n-connect-clipboard', async (_e, args) => {
+    // Seit Electron 44 liefert readText ein Promise.
+    const read = async () => String((await clipboard.readText()) || '').trim();
+    const text = await read();
+    if (!text || /\s/.test(text) || text.length < 20) return { ok: false, error: 'In der Zwischenablage ist kein API-Schlüssel. Kopiere ihn in n8n mit „Copy“ und versuch es noch einmal.' };
+    const res = await connectN8n(args && args.url, text);
+    if (res.ok && (await read()) === text) await clipboard.clear();
+    return res;
   });
+
+  // „Automatisch verbinden“: Im angemeldeten n8n-Tab legt die Zentrale selbst einen Schlüssel an –
+  // er geht direkt in den Schlüsselbund, niemand bekommt ihn zu sehen.
+  ipcMain.handle('n8n-auto-connect', async (_e, args) => {
+    const url = normalizeBase(args && args.url) || n8nConfig.url;
+    if (url.startsWith('http:') && !isLoopback(url)) return { ok: false, error: 'Automatisch verbinden geht nur mit https oder dem n8n auf deinem Mac.' };
+    let portal = webTabs.store.get().portals.find((p) => new URL(p.url).origin === url);
+    if (!portal) { const r = webTabs.store.add('n8n', `${url}/`); if (!r.ok) return r; portal = r.portal; }
+    const entry = webTabs.ensure(portal.id);
+    if (!entry) return { ok: false, error: 'Der n8n-Tab ließ sich nicht öffnen.' };
+    const wc = entry.view.webContents;
+    if (wc.isLoading()) await new Promise((r) => { const t = setTimeout(r, 15000); wc.once('did-stop-loading', () => { clearTimeout(t); r(); }); });
+    if (new URL(wc.getURL() || portal.url).origin !== url) return { ok: false, needLogin: true, id: portal.id, error: 'Bitte melde dich zuerst im n8n-Tab an.' };
+    let res;
+    try { res = await wc.executeJavaScriptInIsolatedWorld(N8N_WORLD, [{ code: N8N_CREATE_KEY }]); } catch (e) { res = { error: 'script', message: e.message }; }
+    if (!res || res.error === 'login') return { ok: false, needLogin: true, id: portal.id, error: 'Bitte melde dich zuerst im n8n-Tab an – danach noch einmal „Automatisch verbinden“.' };
+    if (res.error) return { ok: false, error: `n8n hat keinen Schlüssel erstellt${res.status ? ` (Fehler ${res.status})` : ''}${res.message ? `: ${res.message}` : ''}. Nimm dann den Weg über „Aus Zwischenablage verbinden“.` };
+    return connectN8n(url, res.key);
+  });
+
+  ipcMain.handle('n8n-connect', async (_e, args) => connectN8n(args && args.url, args && args.key));
+
   ipcMain.handle('n8n-disconnect', () => saveN8n({ url: n8nConfig.url, key: null }));
   ipcMain.handle('n8n-workflows', () => n8nClient().listWorkflows());
   ipcMain.handle('n8n-executions', () => n8nClient().listExecutions(50));
@@ -629,10 +837,10 @@ function setup() {
 
   // ---------- Web: Seiten mit dauerhaftem Login ----------
 
-  const webState = () => ({ ...webTabs.info(), presets: PRESETS });
+  const webState = () => ({ ...webTabs.info(), presets: PRESETS, profiles: webTabs.store.profiles(), nextProfile: webTabs.store.nextProfile() });
   ipcMain.handle('web-state', () => webState());
   ipcMain.handle('web-add', (_e, args) => {
-    const res = webTabs.store.add(args && args.name, args && args.url);
+    const res = webTabs.store.add(args && args.name, args && args.url, args && args.profile);
     if (res.ok) webTabs.show(res.portal.id);
     return res.ok ? { ok: true, id: res.portal.id } : res;
   });

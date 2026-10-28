@@ -167,7 +167,7 @@ darkQuery.addEventListener('change', renderTheme);
 // Beim Wechsel landet der Fokus auf der Überschrift, damit Tastatur und Vorlesefunktion mitkommen.
 // Der Chat setzt seinen Fokus selbst ins Eingabefeld.
 function setView(view) {
-  if (ui.view === 'web' && view !== 'web') leaveWeb();
+  if ((ui.view === 'web' || ui.view === 'local') && view !== ui.view) leaveWeb();
   ui.view = view;
   ui.sig.main = null;
   renderNav();
@@ -628,16 +628,23 @@ function renderMessages() {
   ui.forceScroll = false;
 }
 
-async function sendMessage(text) {
+// stay: true = in der aktuellen Ansicht bleiben (z. B. der n8n-Assistent zeigt den Chat selbst an).
+async function sendMessage(text, { stay = false } = {}) {
   if (ui.state && ui.state.chat && ui.chatGen !== ui.state.chat.gen) resetChat(ui.state.chat.gen, []);
   ui.messages.push({ kind: 'user', text });
   ui.forceScroll = true;
-  if (ui.view !== 'chat') setView('chat'); else renderMessages();
+  if (stay) notifyChatMirror();
+  else if (ui.view !== 'chat') setView('chat'); else renderMessages();
   const res = await api.send(text);
   if (!res.ok) {
     ui.messages.push({ kind: 'error', text: res.error || 'Die Nachricht konnte nicht gesendet werden.' });
-    renderMessages();
+    if (ui.view === 'chat') renderMessages(); else notifyChatMirror();
   }
+}
+
+// Ansichten mit eigenem Chat-Fenster (n8n-Assistent) zeichnen bei neuen Nachrichten nach.
+function notifyChatMirror() {
+  if (ui.view === 'automations' && typeof renderAssistant === 'function') renderAssistant();
 }
 
 api.onChatEvent((ev) => {
@@ -647,6 +654,7 @@ api.onChatEvent((ev) => {
   else if (ev.kind === 'error') ui.messages.push({ kind: 'error', text: ev.text, details: ev.details });
   else return;
   if (ui.view === 'chat') renderMessages();
+  else notifyChatMirror();
 });
 
 // ---------- Seitenleiste rechts ----------
@@ -699,8 +707,12 @@ function renderMain() {
   else if (ui.view === 'connections') { renderConnections(); if (!ui.connections) loadConnections(); }
   else if (ui.view === 'library') renderLibrary();
   else if (ui.view === 'mac') renderMac();
-  else if (ui.view === 'web') renderWeb();
+  else if (ui.view === 'web') renderWeb('web');
+  else if (ui.view === 'local') renderWeb('local');
   else if (ui.view === 'automations') renderAutomations();
+  else if (ui.view === 'brain') renderBrain();
+  else if (ui.view === 'projects') renderProjects();
+  else if (ui.view === 'kommentare') renderKommentare();
   else renderTasks();
 }
 
@@ -731,7 +743,9 @@ function applyState(s) {
     if (changed('connView', [settings(), s.claude.found])) renderConnections();
   } else if (ui.view === 'library') {
     renderRunning();
-  } else if (ui.view === 'mac' || ui.view === 'web' || ui.view === 'automations') {
+  } else if (ui.view === 'automations') {
+    renderAssistant(); // Status, Freigaben und Antworten des Assistenten
+  } else if (['mac', 'web', 'local', 'brain', 'projects', 'kommentare'].includes(ui.view)) {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');

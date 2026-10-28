@@ -1,7 +1,72 @@
 // Ansicht „Automatisierungen“: dein n8n – Status, Workflows an/aus, letzte Läufe,
 // Editor als Tab und „Mit Claude bauen“. Nutzt die Helfer aus app.js (h, fill, ui, api …).
 
-const auto = { status: null, workflows: null, runs: null, error: null, filter: '', connectError: null, loading: false, wish: '', formUrl: null, formKey: '' };
+const auto = { status: null, workflows: null, runs: null, error: null, filter: '', connectError: null, loading: false, wish: '', formUrl: null, formKey: '',
+  assistant: false, reply: '', reloadedAt: 0 };
+
+// Auftrag an Claude als n8n-Bauhelfer: erst fragen, dann Plan, erst nach dem Ja bauen.
+const ASSISTANT_PROMPT = (wish) => `Du bist mein n8n-Bauhelfer in der Zentrale. Ich möchte diese Automatisierung: ${wish}
+
+Arbeite Schritt für Schritt mit mir:
+1. Stell mir zuerst nur die Fragen, die du wirklich brauchst (höchstens 3, kurz) – z. B. wann es starten soll, woher die Daten kommen, wohin das Ergebnis soll.
+2. Fasse dann den Plan in einfachen Worten zusammen: Auslöser → Schritte → Ergebnis. Frag, ob es so passt oder ob ich etwas ändern will.
+3. Erst nach meinem Ja baust du ihn mit n8n_create_workflow – ausgeschaltet und ohne Zugangsdaten. Schau vorher mit n8n_list_workflows nach Ähnlichem.
+4. Danach: welche Zugangsdaten ich in n8n verbinden muss, wie ich ihn teste und wie ich ihn einschalte.
+Antworte kurz, auf Deutsch, ohne Fachchinesisch. Wenn ich zwischendurch etwas selbst eintippe oder ändere, übernimm es.`;
+
+const EDIT_PROMPT = (w) => `Hilf mir mit meinem n8n-Workflow „${w.name}“ (ID ${w.id}). Lies ihn mit n8n_get_workflow, erklär mir in 3–5 einfachen Sätzen, was er tut, und frag mich, was ich ändern möchte. Ändere erst nach meinem Ja (ist er eingeschaltet, schalte ihn vorher aus und danach wieder ein).`;
+
+async function startAssistant(text) {
+  const t = String(text || '').trim();
+  if (!t) return;
+  // Eigener, frischer Chat für den Assistenten – im Benutzerordner (kein Projekt nötig).
+  const recent = projects().find((p) => p.path);
+  const res = await api.newSession({ cwd: recent ? recent.path : null });
+  if (!res || res.error || !res.chat) { alert((res && res.error) || 'Claude konnte nicht starten.'); return; }
+  resetChat(res.chat.gen, []);
+  auto.assistant = true;
+  auto.reloadedAt = 0;
+  renderAutomationsBody();
+  sendMessage(t, { stay: true });
+}
+
+// Der Chat des Assistenten direkt auf dieser Seite: Antworten, Freigaben, Eingabe.
+function renderAssistant() {
+  const box = $('#auto-assistant');
+  if (!box || !auto.assistant) return;
+  const msgs = ui.messages.filter((m) => m.kind !== 'tool').slice(-30);
+  const steps = ui.messages.filter((m) => m.kind === 'tool').length;
+  const busy = chatBusy();
+  const approvals = chatApprovals();
+  if (!changed('assistant', [msgs.length, msgs.length ? msgs[msgs.length - 1].text.length : 0, steps, busy, approvals.map((a) => a.id)])) return;
+  const reply = h('textarea', { id: 'auto-reply', rows: '2', placeholder: busy ? 'Claude arbeitet … du kannst schon weiterschreiben' : 'Antworten, ergänzen oder selbst etwas eintippen …', 'data-focus': 'auto-reply' });
+  reply.value = auto.reply;
+  reply.addEventListener('input', () => { auto.reply = reply.value; });
+  reply.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); reply.form.requestSubmit(); } });
+  keepFocus(() => fill(box, h('div', { class: 'card assistant' },
+    h('div', { class: 'section-head' }, h('h2', { text: 'Assistent' }), h('span', { class: `pill ${busy ? 'amber' : 'green'}`, text: busy ? 'arbeitet' : 'bereit' }),
+      h('span', { class: 'spacer' }),
+      busy ? h('button', { class: 'btn ghost', onClick: () => api.stopChat() }, 'Stoppen') : null,
+      h('button', { class: 'link', onClick: () => setView('chat') }, 'Im großen Chat öffnen'),
+      h('button', { class: 'link', onClick: () => { auto.assistant = false; renderAutomationsBody(); } }, 'Schließen')),
+    h('div', { class: 'assistant-log', id: 'assistant-log' },
+      msgs.map((m) => h('div', { class: `msg ${m.kind}`, text: m.text })),
+      steps ? h('div', { class: 'sub', text: `Claude hat ${plural(steps, 'Schritt', 'Schritte')} in n8n erledigt` }) : null,
+      busy && !approvals.length ? h('div', { class: 'typing' }, h('span'), h('span'), h('span')) : null),
+    approvals.length ? h('div', { class: 'chat-approvals' }, approvals.map((a) => approvalCard(a, false))) : null,
+    h('form', { class: 'composer', onSubmit: (e) => {
+      e.preventDefault();
+      const t = reply.value.trim();
+      if (!t) return;
+      auto.reply = '';
+      sendMessage(t, { stay: true });
+    } }, h('label', { for: 'auto-reply', class: 'sr-only', text: 'Antwort an den Assistenten' }), reply,
+    h('button', { type: 'submit', class: 'send', 'aria-label': 'Senden' }, '↑')))));
+  const log = $('#assistant-log');
+  if (log) log.scrollTop = log.scrollHeight;
+  // Hat der Assistent etwas Neues erledigt, die Liste einmal auffrischen (nicht bei jedem Neuzeichnen).
+  if (!busy && steps && steps !== auto.reloadedAt) { auto.reloadedAt = steps; loadAutomations(); }
+}
 
 const RUN_LABEL = { success: ['erfolgreich', 'green'], error: ['Fehler', 'red'], crashed: ['abgestürzt', 'red'], running: ['läuft', 'amber'],
   waiting: ['wartet', 'amber'], canceled: ['abgebrochen', ''], new: ['neu', ''] };
@@ -34,18 +99,7 @@ function lastRuns() {
 async function openN8nEditor(id) {
   const res = await api.n8nOpenEditor(id || null);
   if (res && res.ok === false) { alert(res.error); return; }
-  setView('web');
-}
-
-function buildWithClaude(text) {
-  const wish = text.trim();
-  if (!wish) return;
-  sendMessage(`Baue mir in meinem n8n einen Workflow: ${wish}
-
-So gehst du vor:
-1. Schau mit n8n_list_workflows nach, ob es schon etwas Ähnliches gibt, und nutze bei Bedarf n8n_get_workflow als Vorlage.
-2. Lege den Workflow mit n8n_create_workflow an – ausgeschaltet und ohne Zugangsdaten.
-3. Erkläre mir danach in einfachen Worten, was der Workflow tut, welche Zugangsdaten ich in n8n noch verbinden muss, und gib mir den Link zum Workflow.`);
+  setView(viewForTab(res.id)); // dein n8n läuft lokal → Bereich „Localhost“
 }
 
 function connectForm() {
@@ -66,7 +120,23 @@ function connectForm() {
     await loadAutomations();
   } },
   h('h2', { class: 'full', text: 'n8n verbinden' }),
-  h('p', { class: 'full sub', text: 'Damit die Zentrale (und Claude) deine Workflows sieht, braucht sie einen API-Schlüssel. In n8n: Einstellungen → n8n API → „Create an API key“. Der Schlüssel wird verschlüsselt im macOS-Schlüsselbund gespeichert – bitte nie in den Chat kopieren.' }),
+  h('div', { class: 'full auto-connect' },
+    h('p', { class: 'sub', text: 'Am einfachsten: Melde dich einmal im n8n-Tab an und klick dann auf „Automatisch verbinden“. Die Zentrale legt den Schlüssel selbst an und speichert ihn verschlüsselt im Schlüsselbund – niemand bekommt ihn zu sehen.' }),
+    h('div', { class: 'actions' },
+      h('button', { type: 'button', class: 'btn', 'data-focus': 'n8n-auto', onClick: async () => {
+        auto.connectError = null;
+        const res = await api.n8nAutoConnect(url.value);
+        if (res && res.needLogin) { auto.connectError = res.error; renderAutomationsBody(); openN8nEditor(); return; }
+        if (!res.ok) { auto.connectError = res.error; renderAutomationsBody(); return; }
+        await loadAutomations();
+      } }, 'Automatisch verbinden'),
+      h('button', { type: 'button', class: 'btn ghost', 'data-focus': 'n8n-clip', onClick: async () => {
+        auto.connectError = null;
+        const res = await api.n8nConnectClipboard(url.value);
+        if (!res.ok) { auto.connectError = res.error; renderAutomationsBody(); return; }
+        await loadAutomations();
+      } }, 'Aus Zwischenablage verbinden'))),
+  h('p', { class: 'full sub', text: 'Oder von Hand: In n8n unter Einstellungen → n8n API einen Schlüssel erstellen und hier einfügen. Bitte nie in den Chat kopieren.' }),
   h('div', { class: 'field' }, h('label', { for: 'n8n-url', text: 'Adresse' }), url),
   h('div', { class: 'field' }, h('label', { for: 'n8n-key', text: 'API-Schlüssel' }), key),
   auto.connectError ? h('div', { class: 'full sub warn', role: 'alert', text: auto.connectError }) : null,
@@ -80,12 +150,14 @@ function builderCard() {
   const text = h('textarea', { id: 'n8n-wish', rows: '3', 'data-focus': 'n8n-wish', placeholder: 'z. B. „Jeden Morgen um 7 die Wettervorhersage für Ulm per Telegram an mich“ oder „Neue Shopify-Bestellung → Zeile in Google Sheets + Nachricht an mich“' });
   text.value = auto.wish;
   text.addEventListener('input', () => { auto.wish = text.value; });
-  return h('form', { class: 'card form', onSubmit: (e) => { e.preventDefault(); const t = text.value; auto.wish = ''; buildWithClaude(t); } },
-    h('h2', { class: 'full', text: 'Neue Automatisierung mit Claude bauen' }),
+  return h('form', { class: 'card form', onSubmit: (e) => { e.preventDefault(); const t = text.value.trim(); if (!t) return; auto.wish = ''; startAssistant(ASSISTANT_PROMPT(t)); } },
+    h('h2', { class: 'full', text: 'Neue Automatisierung gemeinsam bauen' }),
     h('div', { class: 'field full' }, h('label', { for: 'n8n-wish', text: 'Was soll automatisch passieren?' }), text,
-      h('span', { class: 'hint', text: 'Claude baut den Workflow in deinem n8n und legt ihn ausgeschaltet an. Bevor er etwas anlegt, fragt die Zentrale dich. Zugangsdaten verbindest du danach selbst in n8n.' })),
-    h('div', { class: 'actions full' }, h('span', { class: 'spacer' }),
-      h('button', { type: 'submit', class: 'btn', disabled: !ui.state.claude.found }, 'Mit Claude bauen')));
+      h('span', { class: 'hint', text: 'Du erklärst, Claude fragt kurz nach, zeigt dir den Plan und baut erst nach deinem Ja – ausgeschaltet. Du kannst jederzeit selbst etwas eintippen oder im n8n-Editor weiterbauen.' })),
+    h('div', { class: 'actions full' },
+      h('button', { type: 'button', class: 'btn ghost', onClick: () => openN8nEditor() }, 'Selbst im Editor bauen'),
+      h('span', { class: 'spacer' }),
+      h('button', { type: 'submit', class: 'btn', disabled: !ui.state.claude.found }, 'Gemeinsam bauen')));
 }
 
 function workflowRow(w, last) {
@@ -96,6 +168,7 @@ function workflowRow(w, last) {
       h('div', { class: 'sub', text: [w.nodes != null ? plural(w.nodes, 'Knoten', 'Knoten') : null, w.tags.length ? w.tags.join(', ') : null,
         w.updatedAt ? `geändert ${formatWhen(Date.parse(w.updatedAt))}` : null].filter(Boolean).join(' · ') })),
     run ? h('span', { class: `pill ${run[1]}`, title: last.startedAt ? `Letzter Lauf: ${new Date(last.startedAt).toLocaleString('de-DE')}` : '', text: run[0] }) : null,
+    h('button', { class: 'link', 'aria-label': `${w.name} mit Claude bearbeiten`, disabled: !ui.state.claude.found, onClick: () => startAssistant(EDIT_PROMPT(w)) }, 'Mit Claude'),
     h('button', { class: 'link', 'data-focus': `n8n-edit:${w.id}`, 'aria-label': `${w.name} in n8n öffnen`, onClick: () => openN8nEditor(w.id) }, 'In n8n öffnen'),
     h('button', { class: 'switch', role: 'switch', 'aria-checked': String(w.active), 'aria-label': w.name, 'data-focus': `n8n-active:${w.id}`,
       title: w.active ? 'Eingeschaltet – läuft automatisch' : 'Ausgeschaltet',
@@ -128,7 +201,7 @@ function renderAutomationsBody() {
   }
   if (!s.hasKey) parts.push(connectForm());
   else {
-    parts.push(builderCard());
+    parts.push(auto.assistant ? h('div', { id: 'auto-assistant' }) : builderCard());
     if (auto.error) parts.push(h('div', { class: 'card empty warn' }, auto.error, ' ', h('button', { class: 'link', onClick: loadAutomations }, 'Erneut versuchen')));
     if (auto.workflows) {
       const last = lastRuns();
@@ -143,6 +216,8 @@ function renderAutomationsBody() {
     }
   }
   keepFocus(() => fill(box, parts));
+  ui.sig.assistant = null;
+  renderAssistant();
 }
 
 function renderAutomations() {

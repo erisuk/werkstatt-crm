@@ -28,3 +28,29 @@ test('Warnung bei Knöpfen, die Geld kosten, veröffentlichen, senden oder lösc
   assert.strictEqual(describeElement({ label: 'Weiter', kind: 'button' }), '„Weiter“ [button]');
   assert.match(describeElement(null), /Seite neu lesen/);
 });
+
+test('Upload: nur Dateien aus dem Benutzerordner, keine versteckten Ordner, Freigabe zeigt jede Datei', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { checkUploadFiles } = require('../src/browser-control');
+  const dir = fs.mkdtempSync(path.join(os.homedir(), '.zentrale-upload-test-'));
+  try {
+    const visible = path.join(os.homedir(), `zentrale-upload-${process.pid}.mp4`);
+    fs.writeFileSync(visible, 'video');
+    try {
+      assert.deepStrictEqual(checkUploadFiles([visible]).files, [fs.realpathSync(visible)]);
+      assert.strictEqual(checkUploadFiles([`~/zentrale-upload-${process.pid}.mp4`]).ok, true);
+    } finally { fs.unlinkSync(visible); }
+    fs.writeFileSync(path.join(dir, 'x.mp4'), 'x');
+    assert.match(checkUploadFiles([path.join(dir, 'x.mp4')]).error, /Aus diesem Ordner/);
+    assert.match(checkUploadFiles(['/etc/hosts']).error, /Benutzerordner/);
+    assert.match(checkUploadFiles(['~/gibt-es-nicht.mp4']).error, /nicht gefunden/);
+    assert.strictEqual(checkUploadFiles([]).ok, false);
+    assert.strictEqual(checkUploadFiles(Array(11).fill('/etc/hosts')).ok, false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  const a = describeApproval('mcp__web__zentrale_web_upload', { ref: 7, files: ['/Users/x/Videos/bit-folge-12.mp4'] });
+  assert.strictEqual(a.title, 'Dateien im Web-Tab hochladen');
+  assert.match(a.detail, /• \/Users\/x\/Videos\/bit-folge-12\.mp4/);
+  assert.strictEqual(a.canAlways, false);
+});

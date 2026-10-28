@@ -164,11 +164,12 @@ function describeApproval(toolName, input, description) {
     shown = ['id', 'active']; canAlways = false;
   } else if (name.startsWith('mcp__web__')) {
     const what = { zentrale_web_click: 'Im Web-Tab klicken', zentrale_web_type: 'Im Web-Tab etwas eintippen', zentrale_web_key: 'Im Web-Tab eine Taste drücken',
-      zentrale_web_open: 'Im Web-Tab eine Seite öffnen' };
+      zentrale_web_open: 'Im Web-Tab eine Seite öffnen', zentrale_web_upload: 'Dateien im Web-Tab hochladen' };
     title = what[name.slice('mcp__web__'.length)] || 'Den Web-Tab bedienen';
     summary = [i.url ? `Adresse: ${field('url')}` : null, i.text != null ? `Text: ${field('text')}${i.submit ? '  (danach Enter)' : ''}` : null,
+      Array.isArray(i.files) ? `Dateien:\n${i.files.map((f) => `  • ${f}`).join('\n')}` : null,
       i.key ? `Taste: ${field('key')}` : null].filter(Boolean).join('\n');
-    shown = ['url', 'text', 'submit', 'key', 'tab', 'ref'];
+    shown = ['url', 'text', 'submit', 'key', 'tab', 'ref', 'files'];
     canAlways = false;
   } else if (name === 'mcp__mac__notes_create') {
     title = 'Eine Notiz anlegen'; summary = `${field('title')}\n\n${field('body')}`.trim(); shown = ['title', 'body'];
