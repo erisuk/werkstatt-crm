@@ -23,6 +23,12 @@ test('Ungelesene werden aus dem Seitentitel gelesen', () => {
   assert.strictEqual(unreadFromTitle('(12) WhatsApp'), 12);
   assert.strictEqual(unreadFromTitle('Outlook'), 0);
   assert.strictEqual(unreadFromTitle(undefined), 0);
+  // Jahreszahlen und andere Klammern im Titel sind keine Ungelesenen
+  assert.strictEqual(unreadFromTitle('Titanic (1997) – Wikipedia'), 0);
+  assert.strictEqual(unreadFromTitle('Konzert (2023) - YouTube'), 0);
+  assert.strictEqual(unreadFromTitle('(1) Konzert (2023) - YouTube'), 1);
+  assert.strictEqual(unreadFromTitle('Posteingang (1.234) - eris@web.de'), 1234);
+  assert.strictEqual(unreadFromTitle('(20+) Facebook'), 20);
 });
 
 test('Browser-Kennung ohne Electron und App-Namen, damit Google und Microsoft die Anmeldung erlauben', () => {
@@ -114,4 +120,22 @@ test('Google-Apps öffnen im Browser, YouTube zum Anschauen und andere Seiten bl
   const { isGoogleApp } = require('../src/portals');
   for (const u of ['https://mail.google.com/mail/u/0/', 'https://workspace.google.com/intl/de/gmail/', 'https://studio.youtube.com/', 'https://drive.google.com/']) assert.strictEqual(isGoogleApp(u), true, u);
   for (const u of ['https://www.youtube.com/watch?v=x', 'https://www.instagram.com/', 'https://business.facebook.com/', 'kaputt']) assert.strictEqual(isGoogleApp(u), false, u);
+});
+
+test('Ladefehler: verständliche Texte für offline, Server aus, unbekannte Adresse', () => {
+  const { loadErrorText } = require('../src/portals');
+  assert.strictEqual(loadErrorText(-106, 'ERR_INTERNET_DISCONNECTED', 'https://web.de/'), 'Keine Internetverbindung.');
+  assert.match(loadErrorText(-105, 'ERR_NAME_NOT_RESOLVED', 'https://web.de/'), /Internetverbindung/);
+  assert.strictEqual(loadErrorText(-102, 'ERR_CONNECTION_REFUSED', 'http://localhost:3000/'), 'Der lokale Server läuft gerade nicht.');
+  assert.strictEqual(loadErrorText(-102, 'ERR_CONNECTION_REFUSED', 'https://web.de/'), 'Die Seite lehnt die Verbindung ab.');
+  assert.strictEqual(loadErrorText(-310, 'ERR_TOO_MANY_REDIRECTS', 'kaputt'), 'Die Seite ließ sich nicht laden (ERR_TOO_MANY_REDIRECTS).');
+});
+
+test('Anmelde-Fenster: gewünschte Größe aus window.open zählt, in sinnvollen Grenzen', () => {
+  const { popupSize } = require('../src/portals');
+  assert.deepStrictEqual(popupSize('width=900,height=640'), { width: 900, height: 640 });
+  assert.deepStrictEqual(popupSize('popup'), { width: 520, height: 720 });
+  assert.deepStrictEqual(popupSize(''), { width: 520, height: 720 });
+  assert.deepStrictEqual(popupSize('width=50, height=99999'), { width: 360, height: 1000 });
+  assert.deepStrictEqual(popupSize('width=abc,height=600'), { width: 520, height: 600 });
 });

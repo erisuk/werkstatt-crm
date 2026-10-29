@@ -3,7 +3,7 @@
 // Die Seiten laufen abgeschottet (Sandbox, kein Zugriff auf Node, den Mac oder Claude).
 const { EventEmitter } = require('events');
 const { WebContentsView, session, shell } = require('electron');
-const { chromeUserAgent, isGoogleSignIn, isGoogleApp, unreadFromTitle, partitionFor } = require('./portals');
+const { chromeUserAgent, isGoogleSignIn, isGoogleApp, popupSize, loadErrorText, unreadFromTitle, partitionFor } = require('./portals');
 
 const PARTITION = 'persist:portale';
 // Was Webseiten ohne Rückfrage dürfen. Kamera, Mikrofon, Standort usw. bleiben gesperrt.
@@ -79,7 +79,14 @@ class WebTabs extends EventEmitter {
     wc.on('did-stop-loading', () => { entry.loading = false; changed(); });
     wc.on('did-fail-load', (_e, code, desc, url, isMain) => {
       if (!isMain || code === -3) return; // -3 = abgebrochen (z. B. Weiterleitung)
-      entry.error = code === -106 ? 'Keine Internetverbindung.' : `Die Seite ließ sich nicht laden (${desc}).`;
+      entry.error = loadErrorText(code, desc, url);
+      changed();
+    });
+    // Abgestürzte oder vom System beendete Seite: sonst bliebe der Tab ohne Hinweis leer.
+    wc.on('render-process-gone', (_e, details) => {
+      if (!this.views.has(id) || (details && details.reason === 'clean-exit')) return;
+      entry.loading = false;
+      entry.error = 'Die Seite ist abgestürzt – „Neu laden“ (↻) holt sie zurück.';
       changed();
     });
     const remember = (_e, url) => {
@@ -90,18 +97,20 @@ class WebTabs extends EventEmitter {
       changed();
     };
     wc.on('did-navigate', remember);
-    wc.on('did-navigate-in-page', remember);
+    // Feuert auch für eingebettete Rahmen (iframes) – die sind nicht die Adresse des Tabs.
+    // Der Verlauf (Zurück/Vor) kann sich dabei trotzdem ändern, deshalb die Leiste aktualisieren.
+    wc.on('did-navigate-in-page', (e, url, isMainFrame) => { if (isMainFrame) remember(e, url); else changed(); });
     // Nur Webseiten innerhalb des Tabs; alles andere (file:, Programme-Links) wird blockiert.
     wc.on('will-navigate', (e, url) => { if (!isWeb(url)) e.preventDefault(); });
     wc.setWindowOpenHandler(({ url, disposition, features }) => {
-      if (/^mailto:/i.test(url)) { shell.openExternal(url); return { action: 'deny' }; }
+      if (/^mailto:/i.test(url)) { shell.openExternal(url).catch(() => {}); return { action: 'deny' }; }
       if (!isWeb(url)) return { action: 'deny' };
       // Anmelde-Fenster (window.open mit Größe) bleiben in der Zentrale, damit das Login hier gespeichert wird.
       if (disposition === 'new-window' || features) {
-        return { action: 'allow', overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: prefs } };
+        return { action: 'allow', overrideBrowserWindowOptions: { ...popupSize(features), autoHideMenuBar: true, webPreferences: prefs } };
       }
       // Normale Links „in neuem Tab“ öffnen im Standardbrowser.
-      shell.openExternal(url);
+      shell.openExternal(url).catch(() => {});
       return { action: 'deny' };
     });
     // Anmelde-Fenster dürfen selbst nichts weiter öffnen und nur Webseiten laden.
