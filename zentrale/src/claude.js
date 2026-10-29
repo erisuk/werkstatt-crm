@@ -279,8 +279,9 @@ const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 class ClaudeChat extends EventEmitter {
   constructor({ bin, env, cwd, resume = null, permissionMode = null, title = null,
-    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null }) {
+    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null, allowAll = () => false }) {
     super();
+    this.allowAll = allowAll; // true = jede Anfrage sofort erlauben (Einstellung „Ohne Rückfrage arbeiten“)
     this.bin = bin;
     this.approvalInfo = approvalInfo;
     this.env = env;
@@ -349,7 +350,9 @@ class ClaudeChat extends EventEmitter {
     const key = approvalKey(req.tool_name, req.input);
     const readOnly = req.tool_name === 'Bash' && this.permissionMode === 'acceptEdits'
       && isReadOnlyCommand(req.input && req.input.command, this.cwd);
-    if (readOnly || this.alwaysAllow.has(key)) {
+    let all = false;
+    try { all = this.allowAll() === true; } catch {}
+    if (all || readOnly || this.alwaysAllow.has(key)) {
       this.write({ type: 'control_response', response: { subtype: 'success', request_id: ev.request_id,
         response: { behavior: 'allow', updatedInput: req.input || {} } } });
       return;
@@ -362,6 +365,11 @@ class ClaudeChat extends EventEmitter {
     this.approvals.set(ev.request_id, { id: ev.request_id, tool: req.tool_name, title, detail, canAlways, truncated, key,
       input: req.input || {}, createdAt: Date.now() });
     this.emit('approvals');
+  }
+
+  // Alle offenen Rückfragen auf einmal erlauben (wenn „Ohne Rückfrage arbeiten“ eingeschaltet wird).
+  allowPending() {
+    for (const id of [...this.approvals.keys()]) this.respond(id, 'allow');
   }
 
   // decision: 'allow' | 'always' | 'deny'. Was nicht vollständig angezeigt werden konnte, lässt sich nur ablehnen.
@@ -489,9 +497,9 @@ const TASK_TIMEOUT_MS = 30 * 60 * 1000;
 
 // Führt einen einzelnen Auftrag aus (für tägliche Aufgaben). Läuft wie ein Chat, damit
 // Freigaben genauso in der Zentrale landen. onApproval(chat) meldet neue Rückfragen.
-function runTask({ bin, env, cwd, prompt, extraArgs, approvalInfo, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot, permissionMode }) {
+function runTask({ bin, env, cwd, prompt, extraArgs, approvalInfo, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot, permissionMode, allowAll }) {
   return new Promise((resolve) => {
-    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, approvalInfo, projectsRoot, permissionMode: permissionMode || permissionModeFor(cwd) });
+    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, approvalInfo, projectsRoot, allowAll, permissionMode: permissionMode || permissionModeFor(cwd) });
     const texts = [];
     let error = null;
     let sent = false;

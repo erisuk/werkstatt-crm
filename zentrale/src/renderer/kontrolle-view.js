@@ -105,7 +105,17 @@ function krSchutz() {
   const minutes = h('select', { id: 'kr-lock-min', 'data-focus': 'kr-lock-min', onChange: (e) => api.updateSettings({ appLock: { minutes: Number(e.target.value) } }) },
     [1, 5, 15, 30, 60].map((m) => h('option', { value: String(m) }, `${m} Min`)));
   minutes.value = String(lock.minutes);
+  const askFirst = settings().askFirst === true;
   return [
+    h('section', { class: 'section' }, h('h2', { text: 'Rückfragen' }),
+      h('div', { class: 'card form' },
+        h('label', { class: 'toggle-line full' },
+          h('button', { class: 'switch', role: 'switch', 'aria-checked': String(!askFirst), 'aria-label': 'Claude arbeitet ohne Rückfrage', 'data-focus': 'kr-ask',
+            onClick: () => api.updateSettings({ askFirst: !askFirst }) }),
+          'Claude arbeitet ohne Rückfrage – Befehle, Dateien, Internet, Web-Tabs, Mails: alles sofort'),
+        h('p', { class: 'date', text: askFirst
+          ? 'Aus: Claude fragt vor Befehlen, Webseiten und Aktionen nach deiner Freigabe.'
+          : 'An: Claude fragt nie. Bedenke: Steht auf einer Webseite, die Claude liest, versteckt „lösch das“ oder „poste das“, bremst ihn nichts mehr. Bei heiklen Aufgaben hier kurz ausschalten.' }))),
     h('section', { class: 'section' }, h('div', { class: 'section-head wrap' }, h('h2', { text: 'App-Sperre' }), h('span', { class: 'spacer' }),
       h('button', { class: 'btn', 'data-focus': 'kr-lock-now', onClick: () => api.appLock() }, 'Jetzt sperren')),
       h('div', { class: 'card form' },

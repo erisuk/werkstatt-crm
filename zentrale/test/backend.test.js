@@ -406,6 +406,34 @@ test('Chat: Freigabe erlauben, ablehnen und "immer erlauben"', async () => {
   }
 });
 
+test('Chat: „Ohne Rückfrage arbeiten“ erlaubt alles sofort, offene Rückfragen laufen beim Einschalten weiter', async () => {
+  let all = false;
+  const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir(), allowAll: () => all });
+  const events = collect(chat);
+  const texts = () => events.filter((e) => e.kind === 'text').map((e) => e.text);
+  try {
+    await chat.send('FREIGABE:rm -rf build');
+    assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
+    all = true;
+    chat.allowPending();
+    assert.ok(await waitFor(() => texts().includes('erlaubt:rm -rf build')));
+    await chat.send('FREIGABE:git push');
+    assert.ok(await waitFor(() => texts().includes('erlaubt:git push')));
+    assert.strictEqual(chat.pendingApprovals().length, 0);
+  } finally {
+    await chat.stop();
+  }
+});
+
+test('Einstellungen: Rückfragen sind standardmäßig aus, lassen sich einschalten', () => {
+  const file = path.join(tmp('set-ask-'), 'settings.json');
+  const s = new Settings(file);
+  assert.strictEqual(s.get().askFirst, false);
+  assert.strictEqual(s.update({ askFirst: 'ja' }).askFirst, false);
+  assert.strictEqual(s.update({ askFirst: true }).askFirst, true);
+  assert.strictEqual(new Settings(file).get().askFirst, true);
+});
+
 test('Chat: offene Freigaben verschwinden beim Stoppen', async () => {
   const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir() });
   let changes = 0;
@@ -539,10 +567,10 @@ test('parseMcpList erkennt Namen und Status', () => {
 test('Settings speichert nur gültige Werte', () => {
   const file = path.join(tmp('settings-'), 'settings.json');
   const s = new Settings(file);
-  assert.deepStrictEqual(s.get(), { theme: 'system', connections: { mac: false, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false } });
+  assert.deepStrictEqual(s.get(), { theme: 'system', connections: { mac: false, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false }, askFirst: false });
   s.update({ theme: 'dark', connections: { mac: true, boese: true } });
   s.update({ theme: 'lila', connections: { chrome: 'ja' } });
-  assert.deepStrictEqual(new Settings(file).get(), { theme: 'dark', connections: { mac: true, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false } });
+  assert.deepStrictEqual(new Settings(file).get(), { theme: 'dark', connections: { mac: true, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false }, askFirst: false });
   fs.writeFileSync(file, 'kaputt');
   assert.strictEqual(new Settings(file).get().theme, 'system');
 });

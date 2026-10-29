@@ -185,7 +185,12 @@ function setup() {
   function chatInfo() {
     if (!chat) return null;
     return { gen: chatGen, cwd: chat.cwd, name: path.basename(chat.cwd) || chat.cwd, sessionId: chat.sessionId, status: chat.status,
-      title: chat.title, careful: chat.permissionMode !== 'acceptEdits' };
+      title: chat.title, careful: chat.permissionMode !== 'acceptEdits' && !allowAll(), allowAll: allowAll() };
+  }
+
+  // Einstellung „Ohne Rückfrage arbeiten“: Claude darf alles, ohne zu fragen (Standard, Eris' Wunsch).
+  function allowAll() {
+    return !!settings && settings.get().askFirst !== true;
   }
 
   function approvals() {
@@ -377,7 +382,7 @@ function setup() {
     // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
     const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
     const args = agent ? () => [...extraArgs(), '--agent', agent] : extraArgs;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo });
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll });
     chat = c;
     c.on('event', (ev) => {
       send('chat-event', { ...ev, gen });
@@ -557,6 +562,8 @@ function setup() {
     if (patch && typeof patch === 'object' && patch.backup && typeof patch.backup === 'object') patch = { ...patch, backup: { auto: patch.backup.auto } };
     const next = settings.update(patch);
     nativeTheme.themeSource = next.theme;
+    // Rückfragen gerade ausgeschaltet: was noch auf eine Freigabe wartet, läuft sofort weiter.
+    if (!next.askFirst) for (const c of [chat, ...taskChats.keys()]) if (c) c.allowPending();
     let applied = true;
     const changed = Object.keys(next.connections).some((k) => next.connections[k] !== before[k]);
     const turnedOff = Object.keys(next.connections).some((k) => before[k] && !next.connections[k]);
@@ -1651,7 +1658,7 @@ function setup() {
       if (!claude.bin) return Promise.resolve({ ok: false, text: 'Claude Code wurde nicht gefunden.' });
       const cwd = isDir(task.cwd) ? task.cwd : os.homedir();
       return runTask({
-        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs, approvalInfo,
+        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs, approvalInfo, allowAll,
         onApproval: (c) => {
           // Läuft die Aufgabe, merken wir uns ihren Chat, damit Freigaben zugeordnet werden können.
           if (!taskChats.has(c)) taskChats.set(c, task.name);
