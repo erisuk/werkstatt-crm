@@ -9,7 +9,8 @@ const { YouTube, parseClientFile, videoResource, tagsFrom } = require('../src/yo
 const CLIENT = JSON.stringify({ installed: { client_id: '123-abc.apps.googleusercontent.com', client_secret: 'geheim', redirect_uris: ['http://localhost'] } });
 
 // Nachgebauter Google-Server: Token, Kanal, fortsetzbarer Upload (wahlweise mit einem Abbruch).
-function fakeGoogle({ channel = 'Bit AI News', failOnce = false } = {}) {
+// loseLast: das letzte Stück kommt an, die Antwort geht aber verloren (Verbindung reißt) – wie bei echtem Google.
+function fakeGoogle({ channel = 'Bit AI News', failOnce = false, loseLast = false } = {}) {
   const seen = { tokenCalls: [], uploadMeta: null, bytes: 0, revoked: [] };
   let failed = false;
   const server = http.createServer((req, res) => {
@@ -42,11 +43,19 @@ function fakeGoogle({ channel = 'Bit AI News', failOnce = false } = {}) {
       }
       if (u.pathname === '/session/1' && req.method === 'PUT') {
         const range = req.headers['content-range'] || '';
-        if (range.startsWith('bytes */')) { res.writeHead(308, seen.bytes ? { Range: `bytes=0-${seen.bytes - 1}` } : {}); return res.end(); }
+        const video = () => json(201, { id: 'VID123', status: { privacyStatus: seen.uploadMeta.status.privacyStatus } });
+        if (range.startsWith('bytes */')) {
+          if (seen.bytes >= seen.size) return video();
+          res.writeHead(308, seen.bytes ? { Range: `bytes=0-${seen.bytes - 1}` } : {}); return res.end();
+        }
+        // Wie Google: das Stück muss genau dort anfangen, wo der Upload steht, und so lang sein wie angegeben.
+        const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(range);
+        if (!m || !body.length || Number(m[1]) !== seen.bytes || Number(m[2]) - Number(m[1]) + 1 !== body.length) { seen.badRanges = (seen.badRanges || 0) + 1; return json(400, { error: { message: `Ungültiger Bereich ${range}` } }); }
         if (failOnce && !failed) { failed = true; return json(503, { error: { message: 'kurz weg' } }); }
         seen.bytes += body.length;
         if (seen.bytes < seen.size) { res.writeHead(308, { Range: `bytes=0-${seen.bytes - 1}` }); return res.end(); }
-        return json(201, { id: 'VID123', status: { privacyStatus: seen.uploadMeta.status.privacyStatus } });
+        if (loseLast && !seen.lost) { seen.lost = true; return req.socket.destroy(); }
+        return video();
       }
       json(404, {});
     });
@@ -181,4 +190,19 @@ test('YouTube: „privat“ und „nicht gelistet“ bleiben so, ohne Veröffent
   const base = { video: path.join(os.homedir(), 'Movies', 'x.mp4'), title: 'T', dueAt: now, targets: [{ platform: 'youtube', tabId: 'youtube-api', tabName: 'YouTube direkt' }] };
   assert.strictEqual(cleanPost({ ...base, privacy: 'private' }).post.privacy, 'private');
   assert.strictEqual(cleanPost({ ...base, privacy: 'öffentlich!' }).post.privacy, 'auto');
+});
+
+test('YouTube: letzte Antwort geht verloren – Nachfrage meldet „fertig“, kein kaputtes Leer-Stück hinterher', async () => {
+  const g = await fakeGoogle({ loseLast: true });
+  const yt = makeYt(g);
+  const video = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'zentrale-vid-')), 'clip.mp4');
+  fs.writeFileSync(video, Buffer.alloc(100 * 1024, 3));
+  try {
+    yt.setClient(CLIENT);
+    assert.strictEqual((await yt.connect()).ok, true);
+    const r = await yt.upload({ video, title: 'T', dueAt: 0 });
+    assert.strictEqual(r.ok, true, r.error);
+    assert.strictEqual(r.url, 'https://youtu.be/VID123');
+    assert.strictEqual(g.seen.badRanges || 0, 0, 'kein Stück mit ungültigem Bereich');
+  } finally { g.server.close(); }
 });

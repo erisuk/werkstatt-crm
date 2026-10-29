@@ -244,6 +244,16 @@ class YouTube {
       const session = start.headers.get('location');
       if (!session) return { ok: false, error: 'YouTube hat keine Upload-Adresse geschickt.' };
       fd = fs.openSync(post.video, 'r');
+      // Fertig – egal ob die Antwort auf das letzte Stück kam oder erst auf die Nachfrage danach.
+      const finished = async (res) => {
+        const video = await res.json();
+        this.uploading = { title: post.title, progress: 1 };
+        onProgress(1);
+        const result = { id: video.id, url: `https://youtu.be/${video.id}`, privacy: video.status && video.status.privacyStatus,
+          publishAt: resource.status.publishAt || null, at: Date.now() };
+        this.write({ ...this.read(), lastUpload: { ...result, title: post.title } });
+        return { ok: true, ...result };
+      };
       let offset = 0;
       let retries = 0;
       while (true) {
@@ -257,15 +267,7 @@ class YouTube {
         } catch (e) {
           res = null;
         }
-        if (res && (res.status === 200 || res.status === 201)) {
-          const video = await res.json();
-          this.uploading = { title: post.title, progress: 1 };
-          onProgress(1);
-          const result = { id: video.id, url: `https://youtu.be/${video.id}`, privacy: video.status && video.status.privacyStatus,
-            publishAt: resource.status.publishAt || null, at: Date.now() };
-          this.write({ ...this.read(), lastUpload: { ...result, title: post.title } });
-          return { ok: true, ...result };
-        }
+        if (res && (res.status === 200 || res.status === 201)) return await finished(res);
         if (res && res.status === 308) {
           const range = res.headers.get('range');
           offset = range ? Number(range.split('-')[1]) + 1 : 0;
@@ -276,7 +278,8 @@ class YouTube {
           // Nachfragen, wie viel schon angekommen ist.
           const probe = await this.fetch(session, { method: 'PUT', headers: { Authorization: `Bearer ${await this.accessToken()}`, 'Content-Range': `bytes */${size}`, 'Content-Length': '0' } }).catch(() => null);
           if (probe && probe.status === 308) { const r = probe.headers.get('range'); offset = r ? Number(r.split('-')[1]) + 1 : 0; }
-          else if (probe && (probe.status === 200 || probe.status === 201)) { offset = size; continue; }
+          // Schon komplett angekommen (nur die Antwort ging verloren): kein leeres Stück mehr hinterherschicken.
+          else if (probe && (probe.status === 200 || probe.status === 201)) return await finished(probe);
         } else {
           return { ok: false, error: apiError(await res.json().catch(() => ({})), res.status) };
         }
