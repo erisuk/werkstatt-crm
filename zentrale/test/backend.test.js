@@ -425,6 +425,24 @@ test('Chat: „Ohne Rückfrage arbeiten“ erlaubt alles sofort, offene Rückfra
   }
 });
 
+test('Chat: auch zu lange (abgeschnittene) Rückfragen laufen beim Ausschalten der Rückfragen weiter', async () => {
+  let all = false;
+  const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir(), allowAll: () => all });
+  const events = collect(chat);
+  try {
+    await chat.send(`FREIGABE:echo ${'x'.repeat(60000)}`);
+    assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
+    assert.strictEqual(chat.pendingApprovals()[0].truncated, true);
+    all = true;
+    chat.allowPending();
+    assert.ok(await waitFor(() => events.some((e) => e.kind === 'text' && /^(erlaubt|abgelehnt)/.test(e.text))));
+    assert.ok(events.some((e) => e.kind === 'text' && e.text.startsWith('erlaubt:echo x')));
+    assert.strictEqual(chat.pendingApprovals().length, 0);
+  } finally {
+    await chat.stop();
+  }
+});
+
 test('Einstellungen: Rückfragen sind standardmäßig aus, lassen sich einschalten', () => {
   const file = path.join(tmp('set-ask-'), 'settings.json');
   const s = new Settings(file);
