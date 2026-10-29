@@ -170,7 +170,7 @@ function builderCard() {
 
 function workflowRow(w, last) {
   const run = last ? (RUN_LABEL[last.status] || [last.status, '']) : null;
-  return h('div', { class: 'row' },
+  return h('div', { class: 'row wf-row' },
     h('div', { class: 'grow' },
       h('div', { class: 'title', text: w.name, title: w.name }),
       h('div', { class: 'sub', text: [w.nodes != null ? plural(w.nodes, 'Knoten', 'Knoten') : null, w.tags.length ? w.tags.join(', ') : null,

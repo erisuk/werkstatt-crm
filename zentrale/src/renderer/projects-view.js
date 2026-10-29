@@ -85,7 +85,7 @@ function serverRow(s) {
 }
 
 function projectRow(p) {
-  return h('div', { class: 'row' },
+  return h('div', { class: 'row project-row' },
     h('div', { class: 'grow' },
       h('div', { class: 'title' }, p.name, p.added ? h('span', { class: 'pill blue', text: 'hinzugefügt' }) : null,
         ...p.servers.map((s) => h('span', { class: 'pill green', title: s.title || s.url, text: `:${s.port}` }))),
