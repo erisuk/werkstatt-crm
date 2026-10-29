@@ -3,11 +3,12 @@
 // parseMarkdown/parseInline sind reine Funktionen (in Node testbar), mdRender baut daraus die Knoten.
 
 const MD_FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)/;
-const MD_HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+// Schließende # nur nach einem Leerzeichen („# C#“ bleibt „C#“).
+const MD_HEADING = /^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/;
 const MD_HR = /^ {0,3}([-*_])(\s*\1){2,}\s*$/;
 const MD_QUOTE = /^ {0,3}>\s?/;
 const MD_LIST = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
-const MD_TABLE_SEP = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+const MD_TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/; // auch |-|:-:|
 
 const mdIndent = (l) => l.match(/^\s*/)[0].replace(/\t/g, '    ').length;
 const mdBlank = (l) => !l || !l.trim();
@@ -123,14 +124,24 @@ function parseMarkdown(text) {
 const MD_INLINE = [
   ['escape', /^\\([!-/:-@[-`{-~])/],
   ['code', /^(`+)([\s\S]*?[^`])\1(?!`)/],
-  ['link', /^\[((?:[^\]\\]|\\.)+)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/],
-  ['url', /^https?:\/\/[^\s<>]*[^\s<>.,;:!?'")\]]/],
+  // Adresse darf Klammerpaare enthalten (…/wiki/Ulm_(Stadt)); ![Bild](…) wird ein Link.
+  ['link', /^!?\[((?:[^\]\\]|\\.)+)\]\(\s*<?((?:[^()\s<>]|\([^()\s<>]*\))+)>?(?:\s+"[^"]*")?\s*\)/],
+  ['autolink', /^<(https?:\/\/[^\s<>]+)>/],
+  ['url', /^https?:\/\/[^\s<>]*[^\s<>.,;:!?'"\]]/],
   ['strong', /^\*\*(?!\s)([\s\S]+?)\*\*(?!\*)/],
   ['strong', /^__(?!\s)([\s\S]+?)__(?![A-Za-z0-9])/],
   ['del', /^~~(?!\s)([\s\S]+?)~~/],
   ['em', /^\*(?![\s*])([\s\S]*?[^\s*])\*(?!\*)/],
   ['em', /^_(?![\s_])([\s\S]*?[^\s_])_(?![A-Za-z0-9])/],
 ];
+
+// Nackte Adresse: schließende Klammer gehört nur dazu, wenn sie eine geöffnete schließt
+// („(siehe https://a.de/x)“ ohne, „https://de.wikipedia.org/wiki/Ulm_(Stadt)“ mit).
+function mdTrimUrl(url) {
+  let u = url;
+  while (u.endsWith(')') && (u.match(/\(/g) || []).length < (u.match(/\)/g) || []).length) u = u.slice(0, -1).replace(/[.,;:!?'"]+$/, '');
+  return u;
+}
 
 // Text einer Zeile → Liste von Stücken: text, code, strong, em, del, link, br.
 function parseInline(text) {
@@ -143,20 +154,23 @@ function parseInline(text) {
     const rest = s.slice(i);
     if (rest[0] === '\n') { flush(); out.push({ t: 'br' }); i++; continue; }
     // Unterstrich mitten im Wort (datei_name_neu) ist kein Kursiv.
-    const midWord = rest[0] === '_' && /[A-Za-z0-9]/.test(s[i - 1] || '');
+    const midWord = rest[0] === '_' && /[\p{L}\p{N}]/u.test(s[i - 1] || '');
     let hit = null;
-    if (!midWord && /[\\`[h*_~]/.test(rest[0])) {
+    if (!midWord && /[\\`[!<h*_~]/.test(rest[0])) {
       for (const [kind, re] of MD_INLINE) {
         const m = re.exec(rest);
         if (m) { hit = { kind, m }; break; }
       }
     }
     if (!hit) { buf += rest[0]; i++; continue; }
-    const { kind, m } = hit;
+    const { kind } = hit;
+    let { m } = hit;
     if (kind === 'escape') { buf += m[1]; i += m[0].length; continue; }
+    if (kind === 'url') m = [mdTrimUrl(m[0])];
     flush();
     if (kind === 'code') out.push({ t: 'code', v: m[2].replace(/^ (.*) $/, '$1') });
     else if (kind === 'link') out.push({ t: 'link', href: m[2], c: parseInline(m[1]) });
+    else if (kind === 'autolink') out.push({ t: 'link', href: m[1], c: [{ t: 'text', v: m[1] }] });
     else if (kind === 'url') out.push({ t: 'link', href: m[0], c: [{ t: 'text', v: m[0] }] });
     else out.push({ t: kind, c: parseInline(m[1]) });
     i += m[0].length;
