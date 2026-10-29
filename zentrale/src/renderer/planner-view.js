@@ -59,6 +59,10 @@ function planForm() {
   when.addEventListener('input', () => { const ms = new Date(when.value).getTime(); if (Number.isFinite(ms)) f.dueAt = ms; });
   const social = plan.tabs.map((t) => ({ ...t, platform: platformOf(t.url) })).filter((t) => t.platform);
   if (plan.yt && plan.yt.connected) social.unshift({ id: YT_API, name: `YouTube direkt (${plan.yt.channel.title})`, platform: { id: 'youtube', name: 'offizielle Schnittstelle' } });
+  // Gewählte Ziele, die es gerade nicht gibt (YouTube getrennt, Web-Tab gelöscht), bleiben sichtbar – sonst ließen sie sich nicht abwählen.
+  for (const t of f.targets) {
+    if (!social.some((x) => x.id === t.tabId)) social.push({ id: t.tabId, name: t.tabName, platform: { id: t.platform, name: 'gerade nicht verfügbar' } });
+  }
   const targetBoxes = social.length ? social.map((t) => {
     const on = f.targets.some((x) => x.tabId === t.id);
     return h('label', { class: 'check-line' },
@@ -91,7 +95,8 @@ function planForm() {
       onClick: () => sendMessage(`Schau dir bitte mein Video ${JSON.stringify(f.video)} mit dem Skill „watch“ an und schlag mir dafür vor: einen Titel (max. 100 Zeichen), eine Beschreibung und bis zu 15 passende Hashtags – für ${f.targets.map((t) => t.tabName).join(', ') || 'YouTube, Instagram und TikTok'}. Ich trage sie dann im Planer ein.`) }, 'Texte von Claude'),
     h('span', { class: 'spacer' }),
     h('button', { type: 'button', class: 'btn ghost', 'data-focus': 'pl-new', onClick: () => { plan.form = null; renderPlannerBody(); } }, 'Abbrechen'),
-    h('button', { type: 'submit', class: 'btn', 'data-focus': 'pl-new' }, 'Speichern')));
+    // Eigener Fokus-Schlüssel: nach einem Fehler bleibt der Fokus auf „Speichern“, nicht auf „Abbrechen“ (Enter würde sonst alles verwerfen).
+    h('button', { type: 'submit', class: 'btn', 'data-focus': 'pl-save' }, 'Speichern')));
 }
 
 // YouTube direkt: die Zentrale lädt selbst hoch. Liegt die Wunschzeit noch vor uns, veröffentlicht YouTube dann selbst.
