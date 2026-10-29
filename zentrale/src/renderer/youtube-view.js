@@ -64,6 +64,11 @@ function ytCard() {
             // Tab geschlossen oder verloren: Anmeldung neu starten statt bis zum Zeitlimit zu warten.
             yt.busy === 'connect' ? h('button', { class: 'link', 'data-focus': 'yt-reconnect', onClick: () => ytAction('connect', connect) }, 'Browser nochmal öffnen') : null)],
       yt.file ? h('div', { class: 'sub' }, 'Die heruntergeladene Datei enthält dein Client-Geheimnis und wird nicht mehr gebraucht. ',
-        h('button', { class: 'link', onClick: async () => { const f = yt.file; yt.file = null; const r = await api.ytTrashFile(f); yt.message = r.ok ? 'Datei liegt im Papierkorb.' : 'Die Datei ließ sich nicht verschieben.'; renderConnections(); } }, 'In den Papierkorb')) : null,
+        h('button', { class: 'link', 'data-focus': 'yt-trash', onClick: async () => {
+          const r = (await api.ytTrashFile(yt.file)) || {};
+          if (r.ok) yt.file = null; // bei einem Fehler bleibt der Knopf für einen zweiten Versuch
+          yt.message = r.ok ? 'Datei liegt im Papierkorb.' : `Die Datei ließ sich nicht verschieben${r.error ? `: ${r.error}` : '.'}`;
+          renderConnections();
+        } }, 'In den Papierkorb')) : null,
       h('div', { class: 'sub', text: 'Die Zentrale speichert den Zugang nur verschlüsselt im Schlüsselbund dieses Macs. MURIS-Kanäle verbindet sie nie.' })) });
 }

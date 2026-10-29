@@ -953,9 +953,10 @@ function setup() {
   });
   ipcMain.handle('yt-trash-file', async (_e, file) => {
     // Nur die eben gewählte Google-Datei – sonst nichts.
-    if (typeof file !== 'string' || file !== lastClientFile) return { ok: false };
+    if (typeof file !== 'string' || file !== lastClientFile) return { ok: false, error: 'Diese Datei darf die Zentrale nicht verschieben.' };
+    try { await shell.trashItem(file); } catch (e) { return { ok: false, error: e.message }; } // Freigabe bleibt: nochmal versuchen geht
     lastClientFile = null;
-    try { await shell.trashItem(file); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
+    return { ok: true };
   });
   ipcMain.handle('yt-connect', () => yt().connect());
   ipcMain.handle('yt-disconnect', () => yt().disconnect());
