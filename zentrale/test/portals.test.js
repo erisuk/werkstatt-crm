@@ -23,6 +23,12 @@ test('Ungelesene werden aus dem Seitentitel gelesen', () => {
   assert.strictEqual(unreadFromTitle('(12) WhatsApp'), 12);
   assert.strictEqual(unreadFromTitle('Outlook'), 0);
   assert.strictEqual(unreadFromTitle(undefined), 0);
+  // Jahreszahlen und andere Klammern im Titel sind keine Ungelesenen
+  assert.strictEqual(unreadFromTitle('Titanic (1997) – Wikipedia'), 0);
+  assert.strictEqual(unreadFromTitle('Konzert (2023) - YouTube'), 0);
+  assert.strictEqual(unreadFromTitle('(1) Konzert (2023) - YouTube'), 1);
+  assert.strictEqual(unreadFromTitle('Posteingang (1.234) - eris@web.de'), 1234);
+  assert.strictEqual(unreadFromTitle('(20+) Facebook'), 20);
 });
 
 test('Browser-Kennung ohne Electron und App-Namen, damit Google und Microsoft die Anmeldung erlauben', () => {

@@ -56,9 +56,12 @@ function normalizeUrl(input) {
 }
 
 // Ungelesene aus dem Seitentitel, z. B. „Posteingang (3) – Gmail“ oder „(12) WhatsApp“.
+// Nur am Anfang („(3) Facebook“) oder Zahlen ohne Jahreszahl-Form („Posteingang (1.234)“) –
+// sonst zählte „Titanic (1997) – Wikipedia“ als 1997 Ungelesene.
 function unreadFromTitle(title) {
-  const m = /\((\d{1,4})\)/.exec(String(title || ''));
-  return m ? Number(m[1]) : 0;
+  const t = String(title || '');
+  const m = /^\s*\((\d{1,3}(?:[.,]\d{3})*|\d{1,6})\+?\)/.exec(t) || /\((\d{1,3}(?:[.,]\d{3})*)\+?\)/.exec(t);
+  return m ? Number(m[1].replace(/[.,]/g, '')) : 0;
 }
 
 // Google und Microsoft lehnen Anmeldungen ab, wenn sich der Browser als „Electron“ ausgibt.
