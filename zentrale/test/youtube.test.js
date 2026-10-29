@@ -28,7 +28,7 @@ function fakeGoogle({ channel = 'Bit AI News', failOnce = false, loseLast = fals
           if (p.get('code') !== 'CODE' || !p.get('code_verifier')) return json(400, { error: 'invalid_grant' });
           return json(200, { access_token: 'AT1', refresh_token: 'RT', expires_in: 3600 });
         }
-        if (p.get('refresh_token') !== 'RT') return json(400, { error: 'invalid_grant' });
+        if (seen.rtRevoked || p.get('refresh_token') !== 'RT') return json(400, { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' });
         return json(200, { access_token: 'AT2', expires_in: 3600 });
       }
       if (u.pathname === '/revoke') { seen.revoked.push(u.searchParams.get('token')); return json(200, {}); }
@@ -223,6 +223,45 @@ test('YouTube: hängende Anmeldung (Tab zu, App-Sperre) – neuer Klick startet 
     assert.strictEqual(old.superseded, true);
     assert.strictEqual(yt.status().connected, true);
     assert.strictEqual(yt.login, null);
+  } finally { g.server.close(); }
+});
+
+test('YouTube: abgelaufener Zugang (Testmodus 7 Tage) fällt schon beim Status auf, abgelehnter Schlüssel bleibt nicht hängen', async () => {
+  const g = await fakeGoogle();
+  const yt = makeYt(g);
+  try {
+    yt.setClient(CLIENT);
+    assert.strictEqual((await yt.connect()).ok, true);
+    // Google lehnt den Zugangsschlüssel ab (401): beim nächsten Mal neu holen statt eine Stunde lang dasselbe.
+    yt.access = { token: 'ABGELEHNT', until: Date.now() + 3600e3 };
+    await assert.rejects(yt.myChannel(), /abgelaufen/);
+    assert.strictEqual(yt.access, null);
+    assert.strictEqual((await yt.myChannel()).title, 'Bit AI News');
+    // Refresh-Token zurückgezogen: der Status merkt es, ohne dass erst ein Upload scheitern muss.
+    g.seen.rtRevoked = true;
+    yt.access = null;
+    const st = await yt.checkedStatus();
+    assert.strictEqual(st.connected, false);
+    assert.ok(st.lost && st.lost.at);
+    assert.strictEqual(st.hasClient, true);
+    // Neu verbinden räumt den Hinweis weg.
+    g.seen.rtRevoked = false;
+    assert.strictEqual((await yt.connect()).ok, true);
+    assert.strictEqual((await yt.checkedStatus()).lost, null);
+  } finally { g.server.close(); }
+});
+
+test('YouTube: ohne Netz eine verständliche Meldung statt „fetch failed“', async () => {
+  const g = await fakeGoogle();
+  const yt = makeYt(g);
+  try {
+    yt.setClient(CLIENT);
+    assert.strictEqual((await yt.connect()).ok, true);
+    yt.access = null;
+    yt.ep = { ...yt.ep, token: 'http://127.0.0.1:1/token' };
+    const st = await yt.checkedStatus();
+    assert.strictEqual(st.connected, true, 'ohne Netz bleibt die Verbindung bestehen');
+    await assert.rejects(yt.accessToken(), /Keine Verbindung/);
   } finally { g.server.close(); }
 });
 

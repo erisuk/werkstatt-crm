@@ -130,7 +130,8 @@ function planRow(p) {
       }
       const running = direct && plan.upload && plan.upload.id === p.id;
       return h('button', { class: 'btn', 'aria-label': `Hochladen: ${t.tabName} – ${p.title}`, 'data-focus': `pl-up:${p.id}:${t.tabId}`,
-        disabled: direct ? !!plan.upload || !(plan.yt && plan.yt.connected) : !ui.state.claude.found, onClick: () => planUpload(p, t) },
+        disabled: direct ? !!plan.upload || !(plan.yt && plan.yt.connected) : !ui.state.claude.found,
+        title: direct && !(plan.yt && plan.yt.connected) ? 'YouTube ist nicht (mehr) verbunden – unter „Verbindungen“ neu anmelden.' : null, onClick: () => planUpload(p, t) },
         running ? `Lädt hoch … ${Math.round(plan.upload.progress * 100)} %` : direct ? 'Hochladen: YouTube direkt' : `Hochladen: ${t.tabName}`);
     }) : null,
     open ? h('button', { class: 'link', 'aria-label': `Bearbeiten: ${p.title}`, 'data-focus': `pl-edit:${p.id}`, onClick: () => openPlanForm(p) }, 'Bearbeiten') : null,

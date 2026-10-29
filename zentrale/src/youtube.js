@@ -23,6 +23,15 @@ const LIMITS = { title: 100, description: 5000, tags: 500 };
 
 const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const CHECK_MS = 2500; // so lange darf die Statusprüfung bei Google höchstens bremsen
+// fetch wirft ohne Netz nur „fetch failed“ – daraus ein verständlicher Satz.
+const offline = (e) => e && e.name === 'TypeError' && /fetch failed|network/i.test(e.message || '');
+async function fetchOrSay(fetchImpl, url, init, who) {
+  try { return await fetchImpl(url, init); } catch (e) {
+    if (offline(e)) throw new Error(`Keine Verbindung zu ${who} – bist du online?`);
+    throw e;
+  }
+}
 
 // Die von Google heruntergeladene Datei („client_secret_….json“, Typ Desktop-App).
 function parseClientFile(text) {
@@ -94,7 +103,16 @@ class YouTube {
   status() {
     const d = this.read();
     return { hasClient: !!d.client, connected: !!(d.token && d.channel), channel: d.channel || null, connectedAt: d.connectedAt || null,
-      lastUpload: d.lastUpload || null, uploading: this.uploading };
+      lastUpload: d.lastUpload || null, uploading: this.uploading, lost: d.lost || null };
+  }
+
+  // Status mit kurzer Nachfrage bei Google: Hat Google den Zugang zurückgezogen (im Testmodus nach 7 Tagen), steht hier
+  // gleich „Anmeldung fehlt“ – nicht erst, wenn ein Upload scheitert. Ohne Netz bleibt alles, wie es ist.
+  async checkedStatus() {
+    if (this.status().connected && !this.uploading) {
+      await Promise.race([this.accessToken().catch(() => null), sleep(CHECK_MS)]);
+    }
+    return this.status();
   }
 
   setClient(text) {
@@ -107,7 +125,7 @@ class YouTube {
   }
 
   async tokenRequest(params) {
-    const res = await this.fetch(this.ep.token, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() });
+    const res = await fetchOrSay(this.fetch, this.ep.token, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() }, 'Google');
     const j = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = new Error(j.error === 'invalid_grant' ? 'Google hat die Anmeldung zurückgezogen – bitte YouTube neu verbinden.' : `Google lehnte ab: ${j.error_description || j.error || res.status}`);
@@ -183,7 +201,7 @@ class YouTube {
         this.access = null;
         return { ok: false, error: `„${channel.title}“ ist ein MURIS-Kanal – den verbindet die Zentrale nicht.` };
       }
-      this.write({ ...this.read(), token: this.encrypt(JSON.stringify({ refresh: t.refresh_token })), channel, connectedAt: Date.now() });
+      this.write({ ...this.read(), token: this.encrypt(JSON.stringify({ refresh: t.refresh_token })), channel, connectedAt: Date.now(), lost: null });
       return { ok: true, channel };
     } catch (e) {
       return { ok: false, error: e.message };
@@ -200,14 +218,15 @@ class YouTube {
       this.access = { token: t.access_token, until: Date.now() + (Number(t.expires_in) || 3600) * 1000 - 60000 };
       return this.access.token;
     } catch (e) {
-      if (e.code === 'invalid_grant') this.write({ ...this.read(), token: null, channel: null, connectedAt: null });
+      if (e.code === 'invalid_grant') this.write({ ...this.read(), token: null, channel: null, connectedAt: null, lost: { at: Date.now() } });
       throw e;
     }
   }
 
   async api(pathAndQuery, init = {}) {
-    const res = await this.fetch(`${this.ep.api}${pathAndQuery}`, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${await this.accessToken()}` } });
+    const res = await fetchOrSay(this.fetch, `${this.ep.api}${pathAndQuery}`, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${await this.accessToken()}` } }, 'YouTube');
     const j = await res.json().catch(() => ({}));
+    if (res.status === 401) this.access = null; // nächstes Mal frisch holen statt bis zu einer Stunde denselben abgelehnten Schlüssel
     if (!res.ok) throw new Error(apiError(j, res.status));
     return j;
   }
@@ -226,7 +245,7 @@ class YouTube {
     const tok = this.secret('token');
     if (tok) await this.revoke(tok.refresh);
     this.access = null;
-    this.write({ ...this.read(), token: null, channel: null, connectedAt: null });
+    this.write({ ...this.read(), token: null, channel: null, connectedAt: null, lost: null });
     return { ok: true };
   }
 
@@ -246,7 +265,10 @@ class YouTube {
       const start = await this.fetch(`${this.ep.upload}?uploadType=resumable&part=snippet,status`, { method: 'POST', headers: {
         Authorization: `Bearer ${await this.accessToken()}`, 'Content-Type': 'application/json; charset=UTF-8',
         'X-Upload-Content-Length': String(size), 'X-Upload-Content-Type': 'video/*' }, body: JSON.stringify(resource) });
-      if (!start.ok) return { ok: false, error: apiError(await start.json().catch(() => ({})), start.status) };
+      if (!start.ok) {
+        if (start.status === 401) this.access = null;
+        return { ok: false, error: apiError(await start.json().catch(() => ({})), start.status) };
+      }
       const session = start.headers.get('location');
       if (!session) return { ok: false, error: 'YouTube hat keine Upload-Adresse geschickt.' };
       fd = fs.openSync(post.video, 'r');
@@ -287,13 +309,14 @@ class YouTube {
           // Schon komplett angekommen (nur die Antwort ging verloren): kein leeres Stück mehr hinterherschicken.
           else if (probe && (probe.status === 200 || probe.status === 201)) return await finished(probe);
         } else {
+          if (res.status === 401) this.access = null;
           return { ok: false, error: apiError(await res.json().catch(() => ({})), res.status) };
         }
         this.uploading = { title: post.title, progress: offset / size };
         onProgress(offset / size);
       }
     } catch (e) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: offline(e) ? 'Keine Verbindung zu YouTube – bist du online?' : e.message };
     } finally {
       if (fd !== null) try { fs.closeSync(fd); } catch {}
       this.uploading = null;

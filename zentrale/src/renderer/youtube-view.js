@@ -1,12 +1,14 @@
 // Verbindungen → YouTube: Anleitung für das Google-Cloud-Projekt, Datei wählen, im Browser anmelden.
 // Danach lädt der Planer Videos über die offizielle Schnittstelle hoch. Nutzt die Helfer aus app.js und connections-view.js.
 
-const yt = { status: null, busy: null, message: null, file: null, loading: false };
+const yt = { status: null, busy: null, message: null, file: null, loading: false, at: 0 };
+const YT_STALE_MS = 30000; // so alt darf der angezeigte Status sein – z. B. hat ein Upload im Planer den Zugang verloren
 
 async function loadYouTube() {
   yt.loading = true;
-  try { yt.status = await api.ytStatus(); } catch (e) { yt.message = e.message; }
+  try { yt.status = (await api.ytStatus()) || yt.status; } catch (e) { yt.message = e.message || 'Der YouTube-Status ließ sich nicht laden.'; }
   yt.loading = false;
+  yt.at = Date.now(); // auch nach einem Fehler – sonst lädt jedes Zeichnen sofort wieder (Endlosschleife)
   if (ui.view === 'connections') renderConnections();
 }
 
@@ -38,7 +40,7 @@ function ytGuide() {
 
 function ytCard() {
   const st = yt.status;
-  if (!st && !yt.loading && !yt.message) loadYouTube();
+  if (!yt.loading && !yt.busy && (!yt.at || Date.now() - yt.at > YT_STALE_MS)) loadYouTube();
   const connected = st && st.connected;
   const btn = (id, label, fn, cls = 'btn') => h('button', { class: cls, 'data-focus': `yt-${id}`, disabled: yt.busy !== null, 'aria-busy': String(yt.busy === id), onClick: () => ytAction(id, fn) },
     yt.busy === id ? (id === 'connect' ? 'Warte auf den Browser …' : 'Läuft …') : label);
@@ -49,6 +51,7 @@ function ytCard() {
     right: h('span', { class: `pill ${connected ? 'green' : ''}`, text: connected ? 'verbunden' : st && st.hasClient ? 'Anmeldung fehlt' : 'nicht eingerichtet' }),
     extra: h('div', { class: 'conn-extra' },
       yt.message ? h('div', { class: 'sub', role: 'status', text: yt.message }) : null,
+      !connected && st && st.lost ? h('div', { class: 'sub warn', role: 'status', text: 'Google hat die Anmeldung beendet – bitte unten neu anmelden. Passiert das alle 7 Tage, steht die App bei Google noch im Testmodus (Schritt 3: „App veröffentlichen“).' }) : null,
       connected
         ? [h('div', { class: 'sub', text: `Kanal: ${st.channel.title}${st.lastUpload ? ` · zuletzt hochgeladen: „${st.lastUpload.title}“` : ''}` }),
           h('div', { class: 'actions' },

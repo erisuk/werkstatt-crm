@@ -939,7 +939,7 @@ function setup() {
     encrypt: (t) => safeStorage.encryptString(t).toString('base64'), decrypt: (b) => safeStorage.decryptString(Buffer.from(b, 'base64')),
     openExternal: (url) => shell.openExternal(url) }));
   let lastClientFile = null; // nur diese Datei darf „In den Papierkorb“ (sie enthält das Client-Geheimnis)
-  ipcMain.handle('yt-status', () => yt().status());
+  ipcMain.handle('yt-status', () => yt().checkedStatus()); // fragt höchstens kurz bei Google nach, ob der Zugang noch gilt
   ipcMain.handle('yt-client-file', async () => {
     const res = await dialog.showOpenDialog(win, { properties: ['openFile'], title: 'Google-Anmeldedaten wählen (client_secret_….json)',
       defaultPath: path.join(os.homedir(), 'Downloads'), filters: [{ name: 'JSON', extensions: ['json'] }] });
