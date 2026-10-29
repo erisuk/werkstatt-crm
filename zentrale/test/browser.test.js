@@ -3,7 +3,21 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { READ_ONLY_TOOLS } = require('../src/mcp/browser-server');
 const { describeApproval } = require('../src/claude');
-const { RISKY_LABEL, describeElement } = require('../src/browser-control');
+const { RISKY_LABEL, describeElement, BrowserControl } = require('../src/browser-control');
+
+test('Google-Tabs: klare Meldung statt „Tab gibt es nicht“, Öffnen legt keinen toten Tab an', async () => {
+  let added = 0;
+  const portals = [{ id: 'g', name: 'YouTube Studio', url: 'https://studio.youtube.com/' }];
+  const tabs = { store: { get: () => ({ portals, active: 'g' }), add: () => { added += 1; return { ok: true, portal: {} }; } }, ensure: () => null };
+  const control = new BrowserControl(tabs);
+  const r = await control.read('g');
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /normalen Browser/);
+  assert.match((await control.read('gibtsnicht')).error, /gibt es nicht/);
+  const o = await control.open('https://mail.google.com/mail/u/0/');
+  assert.strictEqual(o.ok, false);
+  assert.strictEqual(added, 0);
+});
 
 test('Browser-Werkzeuge: Lesen, Ansehen, Scrollen ohne Rückfrage – alles andere mit Freigabe', () => {
   assert.deepStrictEqual([...READ_ONLY_TOOLS].sort(), ['zentrale_web_read', 'zentrale_web_screenshot', 'zentrale_web_scroll', 'zentrale_web_tabs']);

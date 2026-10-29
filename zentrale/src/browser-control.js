@@ -5,6 +5,7 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { isGoogleApp } = require('./portals');
 
 const WORLD = 1729; // eigene, isolierte Skriptwelt: Seiten-JavaScript sieht unsere Hilfen nicht
 const MAX_TEXT = 15000;
@@ -105,6 +106,14 @@ class BrowserControl extends EventEmitter {
     return entry ? { id: tabId, wc: entry.view.webContents } : null;
   }
 
+  // Warum ein Tab nicht bedienbar ist: gibt es nicht – oder er ist eine Google-Seite, die im normalen Browser öffnet.
+  missing(id) {
+    const { portals, active } = this.tabs.store.get();
+    const p = portals.find((x) => x.id === (typeof id === 'string' && id ? id : active));
+    if (p && isGoogleApp(p.url)) return { ok: false, error: `„${p.name}“ öffnet im normalen Browser (Google erlaubt keine Anmeldung in eingebauten Browsern) und lässt sich hier nicht bedienen.` };
+    return { ok: false, error: 'Diesen Tab gibt es nicht. Liste die Tabs mit zentrale_web_tabs.' };
+  }
+
   // Der gesteuerte Tab wird angezeigt, damit du mitsiehst.
   focus(id, action) {
     this.tabs.show(id);
@@ -124,7 +133,7 @@ class BrowserControl extends EventEmitter {
 
   async read(id) {
     const t = this.resolve(id);
-    if (!t) return { ok: false, error: 'Diesen Tab gibt es nicht. Liste die Tabs mit zentrale_web_tabs.' };
+    if (!t) return this.missing(id);
     await waitForLoad(t.wc);
     const data = await t.wc.executeJavaScriptInIsolatedWorld(WORLD, [{ code: READ_SCRIPT }]).catch((e) => ({ error: e.message }));
     if (!data || data.error) return { ok: false, error: `Die Seite ließ sich nicht lesen${data && data.error ? `: ${data.error}` : ''}.` };
@@ -135,7 +144,7 @@ class BrowserControl extends EventEmitter {
 
   async screenshot(id) {
     const t = this.resolve(id);
-    if (!t) return { ok: false, error: 'Diesen Tab gibt es nicht.' };
+    if (!t) return this.missing(id);
     this.focus(t.id, 'schaut');
     await waitForLoad(t.wc);
     const img = await t.wc.capturePage();
@@ -145,7 +154,7 @@ class BrowserControl extends EventEmitter {
 
   async scroll(id, direction) {
     const t = this.resolve(id);
-    if (!t) return { ok: false, error: 'Diesen Tab gibt es nicht.' };
+    if (!t) return this.missing(id);
     const dy = direction === 'up' ? -0.8 : 0.8;
     await t.wc.executeJavaScriptInIsolatedWorld(WORLD, [{ code: `scrollBy(0, innerHeight * ${dy})` }]).catch(() => {});
     this.focus(t.id, 'scrollt');
@@ -158,7 +167,7 @@ class BrowserControl extends EventEmitter {
 
   async click(id, ref) {
     const t = this.resolve(id);
-    if (!t) return { ok: false, error: 'Diesen Tab gibt es nicht.' };
+    if (!t) return this.missing(id);
     const pos = await t.wc.executeJavaScriptInIsolatedWorld(WORLD, [{ code: elementScript(Number(ref)) }]).catch(() => null);
     if (!pos) return { ok: false, error: 'Dieses Element gibt es nicht (mehr). Lies die Seite neu.' };
     this.focus(t.id, 'klickt');
@@ -173,7 +182,7 @@ class BrowserControl extends EventEmitter {
 
   async type(id, ref, text, submit) {
     const t = this.resolve(id);
-    if (!t) return { ok: false, error: 'Diesen Tab gibt es nicht.' };
+    if (!t) return this.missing(id);
     const el = this.element(t.id, ref);
     // Fest eingebaut: in solche Felder tippt Claude nie – auch nicht nach einer Freigabe.
     if (!el) return { ok: false, error: 'Dieses Feld kenne ich nicht. Lies die Seite zuerst mit zentrale_web_read.' };
@@ -198,7 +207,7 @@ class BrowserControl extends EventEmitter {
 
   async key(id, key) {
     const t = this.resolve(id);
-    if (!t) return { ok: false, error: 'Diesen Tab gibt es nicht.' };
+    if (!t) return this.missing(id);
     const code = KEYS[String(key || '').toLowerCase()];
     if (!code) return { ok: false, error: `Erlaubt sind: ${Object.keys(KEYS).join(', ')}.` };
     this.focus(t.id, 'drückt eine Taste');
@@ -212,7 +221,7 @@ class BrowserControl extends EventEmitter {
   // des Tabs, so wie der Dateiauswahl-Dialog es tun würde.
   async upload(id, ref, list) {
     const t = this.resolve(id);
-    if (!t) return { ok: false, error: 'Diesen Tab gibt es nicht.' };
+    if (!t) return this.missing(id);
     const el = this.element(t.id, ref);
     if (!el || el.kind !== 'input:file') return { ok: false, error: 'Das ist kein Upload-Feld. Lies die Seite mit zentrale_web_read und nimm ein Element vom Typ input:file.' };
     const check = checkUploadFiles(list);
@@ -240,6 +249,7 @@ class BrowserControl extends EventEmitter {
     let u;
     try { u = new URL(String(url || '')); } catch { return { ok: false, error: 'Das ist keine gültige Webadresse.' }; }
     if (u.protocol !== 'https:' && u.protocol !== 'http:') return { ok: false, error: 'Nur Webadressen (https) sind erlaubt.' };
+    if (isGoogleApp(u.href)) return { ok: false, error: 'Google-Seiten wie Gmail oder YouTube Studio öffnen im normalen Browser (Google erlaubt keine Anmeldung in eingebauten Browsern) und lassen sich hier nicht bedienen.' };
     const { portals } = this.tabs.store.get();
     let portal = portals.find((p) => new URL(p.url).origin === u.origin);
     if (!portal) {
