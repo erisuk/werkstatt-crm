@@ -32,9 +32,11 @@ function renderWebBadge() {
 }
 
 // Wo die eingebettete Seite liegen soll; ohne aktive Seite oder mit offenem Formular ist sie unsichtbar.
+// Auch nicht, solange der Schnellsprung (Cmd+K) offen ist – die Seite läge sonst über ihm.
+const switcherOpen = () => typeof sw !== 'undefined' && sw.open;
 function sendWebBounds() {
   const host = $('#web-host');
-  const show = inWebView() && !!host && !!activePortal() && !webv.adding;
+  const show = inWebView() && !!host && !!activePortal() && !webv.adding && !switcherOpen() && !host.hidden;
   if (show) {
     const r = host.getBoundingClientRect();
     api.webBounds({ x: r.left, y: r.top, width: r.width, height: r.height });
