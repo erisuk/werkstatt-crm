@@ -16,6 +16,8 @@ const BLOCKED_ACCOUNTS = /muris/i;
 
 // Ziel „YouTube (direkt)“: lädt über die offizielle Schnittstelle hoch statt im Web-Tab.
 const YT_API_TARGET = 'youtube-api';
+// Sichtbarkeit bei „YouTube direkt“: auto = zur Wunschzeit öffentlich, private = nur du, unlisted = nur mit Link.
+const PRIVACY = ['auto', 'private', 'unlisted'];
 
 const clip = (v, n) => String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, n);
 
@@ -48,7 +50,7 @@ function cleanPost(raw, old = {}) {
   return { ok: true, post: {
     id: typeof old.id === 'string' ? old.id : crypto.randomUUID(),
     video, title, description: clip(r.description, LIMITS.description), hashtags: cleanHashtags(r.hashtags),
-    dueAt, targets, status, createdAt: old.createdAt || Date.now(), doneAt: status === 'hochgeladen' ? (old.doneAt || Date.now()) : null,
+    dueAt, targets, status, privacy: PRIVACY.includes(r.privacy) ? r.privacy : 'auto', createdAt: old.createdAt || Date.now(), doneAt: status === 'hochgeladen' ? (old.doneAt || Date.now()) : null,
     notified: old.notified && old.dueAt === dueAt ? true : false,
   } };
 }
@@ -125,4 +127,4 @@ function uploadPrompt(post, target, tabs) {
   ].join('\n') };
 }
 
-module.exports = { PlanStore, cleanPost, cleanHashtags, uploadPrompt, PLATFORMS, STATUS, YT_API_TARGET };
+module.exports = { PlanStore, cleanPost, cleanHashtags, uploadPrompt, PLATFORMS, STATUS, YT_API_TARGET, PRIVACY };

@@ -48,13 +48,15 @@ function tagsFrom(hashtags) {
   return out;
 }
 
-// Was YouTube über das Video erfahren soll. Liegt die Wunschzeit in der Zukunft, veröffentlicht YouTube selbst.
+// Was YouTube über das Video erfahren soll. Liegt die Wunschzeit in der Zukunft, veröffentlicht YouTube selbst –
+// außer der Beitrag ist ausdrücklich „privat“ oder „nicht gelistet“: dann bleibt er so, ohne Termin.
 function videoResource(post, now = Date.now()) {
-  const later = Number(post.dueAt) > now + 60 * 1000;
+  const fixed = post.privacy === 'private' || post.privacy === 'unlisted' ? post.privacy : null;
+  const later = !fixed && Number(post.dueAt) > now + 60 * 1000;
   const description = [String(post.description || ''), String(post.hashtags || '')].filter(Boolean).join('\n\n').slice(0, LIMITS.description);
   return {
     snippet: { title: String(post.title || '').slice(0, LIMITS.title), description, tags: tagsFrom(post.hashtags), categoryId: '22' },
-    status: { privacyStatus: later ? 'private' : 'public', ...(later ? { publishAt: new Date(post.dueAt).toISOString() } : {}),
+    status: { privacyStatus: fixed || (later ? 'private' : 'public'), ...(later ? { publishAt: new Date(post.dueAt).toISOString() } : {}),
       selfDeclaredMadeForKids: false },
   };
 }

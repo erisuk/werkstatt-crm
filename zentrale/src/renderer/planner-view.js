@@ -31,9 +31,17 @@ function toLocalInput(ms) {
 function openPlanForm(post) {
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(10, 0, 0, 0);
   plan.form = post ? { ...post, targets: post.targets.map((t) => ({ ...t })), error: null }
-    : { id: null, video: '', title: '', description: '', hashtags: '', dueAt: tomorrow.getTime(), targets: [], error: null };
+    : { id: null, video: '', title: '', description: '', hashtags: '', dueAt: tomorrow.getTime(), targets: [], privacy: 'auto', error: null };
   renderPlannerBody();
   setTimeout(() => { const el = document.querySelector('#main form input, #main form select, #main form textarea'); if (el) el.focus(); }, 0);
+}
+
+const PLAN_PRIVACY = [['auto', 'Zur Wunschzeit öffentlich'], ['private', 'Privat – nur du'], ['unlisted', 'Nicht gelistet – nur mit Link']];
+function planPrivacy(f) {
+  const sel = h('select', { id: 'pl-privacy', 'data-focus': 'pl-privacy', onChange: (e) => { f.privacy = e.target.value; } },
+    PLAN_PRIVACY.map(([v, label]) => h('option', { value: v }, label)));
+  sel.value = f.privacy || 'auto';
+  return sel;
 }
 
 function planField(id, label, el, hint, full = true) {
@@ -56,6 +64,7 @@ function planForm() {
     return h('label', { class: 'check-line' },
       h('input', { type: 'checkbox', checked: on, 'data-focus': `pl-t:${t.id}`, onChange: (e) => {
         f.targets = e.target.checked ? [...f.targets, { platform: t.platform.id, tabId: t.id, tabName: t.name }] : f.targets.filter((x) => x.tabId !== t.id);
+        if (t.id === YT_API) renderPlannerBody(); // Sichtbarkeit ein-/ausblenden
       } }), `${t.name} (${t.platform.name})`);
   }) : h('span', { class: 'hint', text: 'Noch kein Ziel. YouTube verbindest du unter „Verbindungen“, Instagram und TikTok als Web-Tab unter „Web“.' });
   return h('form', { class: 'card form', onSubmit: async (e) => {
@@ -75,6 +84,7 @@ function planForm() {
   planField('pl-tags', 'Hashtags', tags, 'Mit Leerzeichen getrennt, höchstens 30.'),
   planField('pl-when', 'Wann', when, 'Zu dieser Zeit kommt eine Mitteilung – hochgeladen wird erst, wenn du auf „Hochladen“ tippst.', false),
   h('div', { class: 'field' }, h('span', { class: 'label', text: 'Wo' }), h('div', { class: 'check-list' }, targetBoxes)),
+  f.targets.some((t) => t.tabId === YT_API) ? planField('pl-privacy', 'Sichtbarkeit bei YouTube', planPrivacy(f), null, false) : null,
   f.error ? h('div', { class: 'full sub warn', role: 'alert', text: f.error }) : null,
   h('div', { class: 'actions full' },
     h('button', { type: 'button', class: 'btn ghost', disabled: !f.video || !ui.state.claude.found, title: 'Claude schaut sich das Video an und schlägt Titel, Beschreibung und Hashtags vor',
@@ -86,9 +96,10 @@ function planForm() {
 
 // YouTube direkt: die Zentrale lädt selbst hoch. Liegt die Wunschzeit noch vor uns, veröffentlicht YouTube dann selbst.
 async function planUploadYouTube(p) {
-  const later = p.dueAt > Date.now() + 60000;
+  const fixed = p.privacy === 'private' || p.privacy === 'unlisted';
+  const later = !fixed && p.dueAt > Date.now() + 60000;
   const when = new Date(p.dueAt).toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-  if (!confirm(`„${p.title}“ jetzt auf deinen Kanal „${plan.yt.channel.title}“ hochladen?\n\n${later ? `YouTube veröffentlicht es selbst am ${when}. Bis dahin ist es privat.` : 'Es ist danach sofort öffentlich.'}`)) return;
+  if (!confirm(`„${p.title}“ jetzt auf deinen Kanal „${plan.yt.channel.title}“ hochladen?\n\n${p.privacy === 'private' ? 'Es bleibt privat – nur du siehst es.' : p.privacy === 'unlisted' ? 'Es ist nicht gelistet – nur wer den Link hat, sieht es.' : later ? `YouTube veröffentlicht es selbst am ${when}. Bis dahin ist es privat.` : 'Es ist danach sofort öffentlich.'}`)) return;
   plan.upload = { id: p.id, progress: 0 };
   renderPlannerBody();
   const r = await api.ytUpload(p.id);

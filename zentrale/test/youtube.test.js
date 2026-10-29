@@ -172,3 +172,13 @@ test('YouTube: fremde Anfragen an die Rückleitung stören nicht, doppelte Rück
     assert.match(again.body, /Fertig/);
   } finally { g.server.close(); }
 });
+
+test('YouTube: „privat“ und „nicht gelistet“ bleiben so, ohne Veröffentlichungstermin', () => {
+  const now = Date.UTC(2026, 9, 29, 10);
+  assert.deepStrictEqual(videoResource({ title: 'T', dueAt: now + 3600e3, privacy: 'private' }, now).status, { privacyStatus: 'private', selfDeclaredMadeForKids: false });
+  assert.strictEqual(videoResource({ title: 'T', dueAt: now - 1, privacy: 'unlisted' }, now).status.privacyStatus, 'unlisted');
+  const { cleanPost } = require('../src/planner');
+  const base = { video: path.join(os.homedir(), 'Movies', 'x.mp4'), title: 'T', dueAt: now, targets: [{ platform: 'youtube', tabId: 'youtube-api', tabName: 'YouTube direkt' }] };
+  assert.strictEqual(cleanPost({ ...base, privacy: 'private' }).post.privacy, 'private');
+  assert.strictEqual(cleanPost({ ...base, privacy: 'öffentlich!' }).post.privacy, 'auto');
+});
