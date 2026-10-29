@@ -731,3 +731,9 @@ h2 { font-size: 16px; font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
   .spark, .typing-text { animation: none; }
 }
+
+/* Verbindungen → YouTube: Anleitung */
+.yt-guide { margin: 4px 0 12px; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; }
+.yt-guide li::marker { color: var(--accent-text); font-weight: 700; }
+.yt-guide .title { font-weight: 600; }
+.yt-guide .sub { margin: 2px 0; line-height: 1.5; }

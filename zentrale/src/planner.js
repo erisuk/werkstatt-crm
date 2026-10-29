@@ -14,6 +14,9 @@ const LIMITS = { title: 100, description: 5000, hashtags: 500 };
 // Konten, die die Zentrale nie für Uploads benutzt (siehe Regeln: MURIS nicht anfassen).
 const BLOCKED_ACCOUNTS = /muris/i;
 
+// Ziel „YouTube (direkt)“: lädt über die offizielle Schnittstelle hoch statt im Web-Tab.
+const YT_API_TARGET = 'youtube-api';
+
 const clip = (v, n) => String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, n);
 
 function cleanHashtags(v) {
@@ -36,7 +39,7 @@ function cleanPost(raw, old = {}) {
   if (!Number.isFinite(dueAt) || dueAt < Date.UTC(2020, 0, 1)) return { ok: false, error: 'Bitte Datum und Uhrzeit wählen.' };
   const targets = (Array.isArray(r.targets) ? r.targets : []).filter((t) => t && PLATFORMS[t.platform] && typeof t.tabId === 'string')
     .map((t) => ({ platform: t.platform, tabId: clip(t.tabId, 64), tabName: clip(t.tabName, 40) }));
-  if (!targets.length) return { ok: false, error: 'Bitte mindestens einen Web-Tab (YouTube, Instagram oder TikTok) wählen.' };
+  if (!targets.length) return { ok: false, error: 'Bitte mindestens ein Ziel wählen (YouTube direkt oder einen Web-Tab).' };
   const title = clip(r.title, LIMITS.title).trim();
   if (!title) return { ok: false, error: 'Bitte einen Titel angeben.' };
   let status = STATUS.includes(r.status) ? r.status : (old.status || 'geplant');
@@ -122,4 +125,4 @@ function uploadPrompt(post, target, tabs) {
   ].join('\n') };
 }
 
-module.exports = { PlanStore, cleanPost, cleanHashtags, uploadPrompt, PLATFORMS, STATUS };
+module.exports = { PlanStore, cleanPost, cleanHashtags, uploadPrompt, PLATFORMS, STATUS, YT_API_TARGET };

@@ -2,7 +2,8 @@
 // hochgeladen wird auf Knopfdruck – Claude macht es im Web-Tab und veröffentlicht nur nach deiner Freigabe.
 // Nutzt die Helfer aus app.js (h, fill, ui, api …).
 
-const plan = { posts: null, tabs: [], form: null, message: null };
+const plan = { posts: null, tabs: [], form: null, message: null, yt: null, upload: null };
+const YT_API = 'youtube-api'; // Ziel „YouTube direkt“ (offizielle Schnittstelle, siehe Verbindungen → YouTube)
 const PLAN_PLATFORM = [[/(^|\.)youtube\.com$|(^|\.)youtu\.be$/, 'youtube', 'YouTube'], [/(^|\.)instagram\.com$/, 'instagram', 'Instagram'], [/(^|\.)tiktok\.com$/, 'tiktok', 'TikTok']];
 
 function platformOf(url) {
@@ -13,7 +14,10 @@ function platformOf(url) {
 }
 
 async function loadPlanner() {
-  try { const r = await api.plannerList(); plan.posts = r.posts; plan.tabs = r.tabs; } catch (e) { plan.message = e.message; }
+  try {
+    const [r, y] = await Promise.all([api.plannerList(), api.ytStatus().catch(() => null)]);
+    plan.posts = r.posts; plan.tabs = r.tabs; plan.yt = y;
+  } catch (e) { plan.message = e.message; }
   if (ui.view === 'planner') renderPlannerBody();
 }
 
@@ -46,13 +50,14 @@ function planForm() {
   when.value = toLocalInput(f.dueAt);
   when.addEventListener('input', () => { const ms = new Date(when.value).getTime(); if (Number.isFinite(ms)) f.dueAt = ms; });
   const social = plan.tabs.map((t) => ({ ...t, platform: platformOf(t.url) })).filter((t) => t.platform);
+  if (plan.yt && plan.yt.connected) social.unshift({ id: YT_API, name: `YouTube direkt (${plan.yt.channel.title})`, platform: { id: 'youtube', name: 'offizielle Schnittstelle' } });
   const targetBoxes = social.length ? social.map((t) => {
     const on = f.targets.some((x) => x.tabId === t.id);
     return h('label', { class: 'check-line' },
       h('input', { type: 'checkbox', checked: on, 'data-focus': `pl-t:${t.id}`, onChange: (e) => {
         f.targets = e.target.checked ? [...f.targets, { platform: t.platform.id, tabId: t.id, tabName: t.name }] : f.targets.filter((x) => x.tabId !== t.id);
       } }), `${t.name} (${t.platform.name})`);
-  }) : h('span', { class: 'hint', text: 'Noch kein YouTube-, Instagram- oder TikTok-Tab. Leg ihn unter „Web“ an und melde dich dort an.' });
+  }) : h('span', { class: 'hint', text: 'Noch kein Ziel. YouTube verbindest du unter „Verbindungen“, Instagram und TikTok als Web-Tab unter „Web“.' });
   return h('form', { class: 'card form', onSubmit: async (e) => {
     e.preventDefault();
     const r = await api.plannerSave(f);
@@ -79,7 +84,21 @@ function planForm() {
     h('button', { type: 'submit', class: 'btn', 'data-focus': 'pl-new' }, 'Speichern')));
 }
 
+// YouTube direkt: die Zentrale lädt selbst hoch. Liegt die Wunschzeit noch vor uns, veröffentlicht YouTube dann selbst.
+async function planUploadYouTube(p) {
+  const later = p.dueAt > Date.now() + 60000;
+  const when = new Date(p.dueAt).toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  if (!confirm(`„${p.title}“ jetzt auf deinen Kanal „${plan.yt.channel.title}“ hochladen?\n\n${later ? `YouTube veröffentlicht es selbst am ${when}. Bis dahin ist es privat.` : 'Es ist danach sofort öffentlich.'}`)) return;
+  plan.upload = { id: p.id, progress: 0 };
+  renderPlannerBody();
+  const r = await api.ytUpload(p.id);
+  plan.upload = null;
+  plan.message = r.ok ? `Hochgeladen: ${r.url} – ${r.publishAt ? `YouTube veröffentlicht es am ${when}.` : r.privacy === 'public' ? 'öffentlich.' : `Status bei YouTube: ${r.privacy}.`}` : r.error;
+  await loadPlanner();
+}
+
 async function planUpload(p, t) {
+  if (t.tabId === YT_API) { planUploadYouTube(p); return; }
   const r = await api.plannerUpload(p.id, t.tabId);
   if (!r.ok) { plan.message = r.error; renderPlannerBody(); return; }
   sendMessage(r.data);
@@ -92,7 +111,13 @@ function planRow(p) {
     h('div', { class: 'grow' },
       h('div', { class: 'title' }, p.title, h('span', { class: `pill ${pill[1]}`, text: pill[0] })),
       h('div', { class: 'sub', text: `${new Date(p.dueAt).toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${p.video.split('/').pop()}` })),
-    open ? p.targets.map((t) => h('button', { class: 'btn', 'aria-label': `Hochladen: ${t.tabName} – ${p.title}`, 'data-focus': `pl-up:${p.id}:${t.tabId}`, disabled: !ui.state.claude.found, onClick: () => planUpload(p, t) }, `Hochladen: ${t.tabName}`)) : null,
+    open ? p.targets.map((t) => {
+      const direct = t.tabId === YT_API;
+      const running = direct && plan.upload && plan.upload.id === p.id;
+      return h('button', { class: 'btn', 'aria-label': `Hochladen: ${t.tabName} – ${p.title}`, 'data-focus': `pl-up:${p.id}:${t.tabId}`,
+        disabled: direct ? !!plan.upload || !(plan.yt && plan.yt.connected) : !ui.state.claude.found, onClick: () => planUpload(p, t) },
+        running ? `Lädt hoch … ${Math.round(plan.upload.progress * 100)} %` : direct ? 'Hochladen: YouTube direkt' : `Hochladen: ${t.tabName}`);
+    }) : null,
     open ? h('button', { class: 'link', 'aria-label': `Bearbeiten: ${p.title}`, 'data-focus': `pl-edit:${p.id}`, onClick: () => openPlanForm(p) }, 'Bearbeiten') : null,
     open ? h('button', { class: 'link', 'aria-label': `Erledigt: ${p.title}`, 'data-focus': `pl-done:${p.id}`, onClick: async () => { await api.plannerStatus(p.id, 'hochgeladen'); loadPlanner(); } }, 'Erledigt') : null,
     h('button', { class: 'icon-btn', 'aria-label': `„${p.title}“ löschen`, 'data-focus': 'pl-new', onClick: async () => { if (confirm(`„${p.title}“ aus dem Planer löschen? (Das Video bleibt.)`)) { await api.plannerRemove(p.id); loadPlanner(); } } }, trashIcon()));
@@ -118,11 +143,16 @@ function renderPlanner() {
   plan.message = null;
   fill($('#main'),
     h('div', { class: 'section-head wrap' }, h('h1', { text: 'Planer' })),
-    h('p', { class: 'date', text: 'Videos für YouTube, Instagram und TikTok vorplanen. Claude lädt im angemeldeten Web-Tab hoch, prüft vorher das Konto und veröffentlicht erst nach deinem Ja.' }),
+    h('p', { class: 'date', text: 'Videos für YouTube, Instagram und TikTok vorplanen. YouTube direkt lädt die Zentrale selbst hoch; in Web-Tabs macht es Claude. Hochgeladen wird immer erst nach deinem Klick.' }),
     h('div', { id: 'plan-body', class: 'section' }));
   renderPlannerBody();
   loadPlanner();
 }
 
 // Wird ein Beitrag fällig, sofort anzeigen (nicht erst beim nächsten Öffnen).
+window.zentrale.onYtProgress((p) => {
+  if (!plan.upload || !p || p.id !== plan.upload.id) return;
+  plan.upload = { ...plan.upload, progress: Number(p.progress) || 0 };
+  if (ui.view === 'planner') renderPlannerBody();
+});
 window.zentrale.onPlannerChanged(() => { if (typeof ui !== 'undefined' && ui.view === 'planner' && !plan.form) loadPlanner(); });

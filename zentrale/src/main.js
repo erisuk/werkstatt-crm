@@ -20,7 +20,8 @@ const health = require('./health');
 const { FolderWatcher } = require('./watcher');
 const { AlertWatch } = require('./alerts');
 const morning = require('./morning');
-const { PlanStore, uploadPrompt } = require('./planner');
+const { PlanStore, uploadPrompt, YT_API_TARGET } = require('./planner');
+const { YouTube } = require('./youtube');
 const { PortalStore, PRESETS, partitionFor, BIT_PROFILE, BIT_TABS } = require('./portals');
 const { WebTabs, portalSession } = require('./web-tabs');
 const { videoSite, cookieFileText, analyzePrompt } = require('./video-analyze');
@@ -925,6 +926,43 @@ function setup() {
   ipcMain.handle('planner-save', (_e, post) => plannerStore().upsert(post));
   ipcMain.handle('planner-remove', (_e, id) => { if (typeof id === 'string') plannerStore().remove(id); return { ok: true }; });
   ipcMain.handle('planner-status', (_e, a) => plannerStore().setStatus(a && a.id, a && a.status));
+  // YouTube über die offizielle Schnittstelle (Verbindungen → YouTube). Der Zugang liegt verschlüsselt im Schlüsselbund.
+  let youtube = null;
+  const yt = () => youtube || (youtube = new YouTube({ file: path.join(app.getPath('userData'), 'youtube.json'),
+    encrypt: (t) => safeStorage.encryptString(t).toString('base64'), decrypt: (b) => safeStorage.decryptString(Buffer.from(b, 'base64')),
+    openExternal: (url) => shell.openExternal(url) }));
+  let lastClientFile = null; // nur diese Datei darf „In den Papierkorb“ (sie enthält das Client-Geheimnis)
+  ipcMain.handle('yt-status', () => yt().status());
+  ipcMain.handle('yt-client-file', async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile'], title: 'Google-Anmeldedaten wählen (client_secret_….json)',
+      defaultPath: path.join(os.homedir(), 'Downloads'), filters: [{ name: 'JSON', extensions: ['json'] }] });
+    if (res.canceled || !res.filePaths[0]) return { ok: false, cancelled: true };
+    let text;
+    try { if (fs.statSync(res.filePaths[0]).size > 64 * 1024) return { ok: false, error: 'Die Datei ist zu groß für Google-Anmeldedaten.' }; text = fs.readFileSync(res.filePaths[0], 'utf8'); }
+    catch (e) { return { ok: false, error: e.message }; }
+    const r = yt().setClient(text);
+    if (r.ok) lastClientFile = res.filePaths[0];
+    return r.ok ? { ok: true, file: res.filePaths[0] } : r;
+  });
+  ipcMain.handle('yt-trash-file', async (_e, file) => {
+    // Nur die eben gewählte Google-Datei – sonst nichts.
+    if (typeof file !== 'string' || file !== lastClientFile) return { ok: false };
+    lastClientFile = null;
+    try { await shell.trashItem(file); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
+  });
+  ipcMain.handle('yt-connect', () => yt().connect());
+  ipcMain.handle('yt-disconnect', () => yt().disconnect());
+  ipcMain.handle('yt-upload', async (_e, a) => {
+    const post = plannerStore().list().find((p) => p.id === (a && a.id));
+    if (!post || !post.targets.some((t) => t.tabId === YT_API_TARGET)) return { ok: false, error: 'Beitrag nicht gefunden.' };
+    const r = await yt().upload(post, { onProgress: (progress) => send('yt-progress', { id: post.id, progress }) });
+    if (r.ok) {
+      const others = post.targets.filter((t) => t.tabId !== YT_API_TARGET);
+      if (!others.length) plannerStore().setStatus(post.id, 'hochgeladen');
+      send('planner-changed');
+    }
+    return r;
+  });
   ipcMain.handle('planner-upload', (_e, a) => {
     const post = plannerStore().list().find((p) => p.id === (a && a.id));
     const target = post && post.targets.find((t) => t.tabId === (a && a.tabId));
