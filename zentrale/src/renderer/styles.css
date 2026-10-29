@@ -740,3 +740,5 @@ h2 { font-size: 16px; font-weight: 600; }
 
 /* Web: Hinweis, wenn ein Tab auf Googles Anmeldung landet */
 .web-google { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 12px; background: var(--notice-bg); color: var(--notice); font-size: 13px; line-height: 1.45; }
+.web-google-app { display: flex; align-items: center; gap: 16px; padding: 18px 20px; }
+.web-google-app .sub { margin-top: 4px; line-height: 1.5; }

@@ -71,6 +71,15 @@ function chromeUserAgent(ua) {
 // auf der Anmeldung, öffnet die Zentrale die Seite im normalen Browser – dort klappt die Anmeldung ganz normal.
 const isGoogleSignIn = (url) => /^https:\/\/accounts\.google\.com(\/|$)/i.test(String(url || ''));
 
+// Google-Seiten, die eine Anmeldung brauchen: Sie öffnen gleich im normalen Browser (dort ist man angemeldet),
+// statt im Tab an der gesperrten Anmeldung zu landen. youtube.com zum Anschauen bleibt im Tab.
+const GOOGLE_APPS = new Set(['mail.google.com', 'workspace.google.com', 'accounts.google.com', 'studio.youtube.com', 'drive.google.com',
+  'docs.google.com', 'calendar.google.com', 'myaccount.google.com', 'gmail.com', 'www.gmail.com', 'analytics.google.com',
+  'business.google.com', 'ads.google.com', 'photos.google.com', 'contacts.google.com', 'keep.google.com']);
+function isGoogleApp(url) {
+  try { return GOOGLE_APPS.has(new URL(String(url)).hostname.toLowerCase()); } catch { return false; }
+}
+
 // Wohin Google nach der Anmeldung wollte (continue=…); sonst die Adresse selbst.
 function browserTarget(url) {
   if (!isGoogleSignIn(url)) return url;
@@ -182,4 +191,4 @@ class PortalStore {
   }
 }
 
-module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, isGoogleSignIn, browserTarget, sanitize, MAX_PORTALS, partitionFor, profileOf };
+module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, isGoogleSignIn, isGoogleApp, browserTarget, sanitize, MAX_PORTALS, partitionFor, profileOf };

@@ -109,3 +109,9 @@ test('Google-Anmeldung: erkennt die Seite und öffnet im Browser das eigentliche
   assert.strictEqual(browserTarget('https://accounts.google.com/x?continue=javascript%3Aalert(1)'), 'https://accounts.google.com/');
   assert.strictEqual(browserTarget('https://www.instagram.com/'), 'https://www.instagram.com/');
 });
+
+test('Google-Apps öffnen im Browser, YouTube zum Anschauen und andere Seiten bleiben im Tab', () => {
+  const { isGoogleApp } = require('../src/portals');
+  for (const u of ['https://mail.google.com/mail/u/0/', 'https://workspace.google.com/intl/de/gmail/', 'https://studio.youtube.com/', 'https://drive.google.com/']) assert.strictEqual(isGoogleApp(u), true, u);
+  for (const u of ['https://www.youtube.com/watch?v=x', 'https://www.instagram.com/', 'https://business.facebook.com/', 'kaputt']) assert.strictEqual(isGoogleApp(u), false, u);
+});

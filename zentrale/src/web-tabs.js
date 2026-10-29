@@ -3,7 +3,7 @@
 // Die Seiten laufen abgeschottet (Sandbox, kein Zugriff auf Node, den Mac oder Claude).
 const { EventEmitter } = require('events');
 const { WebContentsView, session, shell } = require('electron');
-const { chromeUserAgent, isGoogleSignIn, unreadFromTitle, partitionFor } = require('./portals');
+const { chromeUserAgent, isGoogleSignIn, isGoogleApp, unreadFromTitle, partitionFor } = require('./portals');
 
 const PARTITION = 'persist:portale';
 // Was Webseiten ohne Rückfrage dürfen. Kamera, Mikrofon, Standort usw. bleiben gesperrt.
@@ -57,6 +57,7 @@ class WebTabs extends EventEmitter {
     if (this.views.has(id)) return this.views.get(id);
     const portal = this.store.get().portals.find((p) => p.id === id);
     if (!portal || !this.win) return null;
+    if (isGoogleApp(portal.url)) return null; // öffnet im normalen Browser, siehe isGoogleApp
     const partition = partitionFor(portal.profile);
     portalSession(partition);
     const prefs = webPrefs(partition);
@@ -171,7 +172,9 @@ class WebTabs extends EventEmitter {
 
   currentUrl(id) {
     const entry = this.views.get(id);
-    return entry ? entry.view.webContents.getURL() : null;
+    if (entry) return entry.view.webContents.getURL();
+    const portal = this.store.get().portals.find((p) => p.id === id);
+    return portal ? portal.lastUrl || portal.url : null;
   }
 
   close(id) {
@@ -227,7 +230,7 @@ class WebTabs extends EventEmitter {
       portals: portals.map((p) => {
         const e = this.views.get(p.id);
         const wc = e && e.view.webContents;
-        return { id: p.id, name: p.name, url: p.url, profile: p.profile, open: !!e, title: e ? e.title : '', unread: e ? e.unread : 0,
+        return { id: p.id, name: p.name, url: p.url, profile: p.profile, open: !!e, googleApp: isGoogleApp(p.url), title: e ? e.title : '', unread: e ? e.unread : 0,
           loading: e ? e.loading : false, error: e ? e.error : null, googleSignIn: !!(e && e.googleSignIn), current: wc ? wc.getURL() : (p.lastUrl || p.url),
           canGoBack: wc ? wc.navigationHistory.canGoBack() : false, canGoForward: wc ? wc.navigationHistory.canGoForward() : false };
       }),

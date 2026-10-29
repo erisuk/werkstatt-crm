@@ -134,7 +134,7 @@ function renderAddForm() {
 function webTab(p, active) {
   return h('div', { class: `web-tab${active ? ' active' : ''}` },
     h('button', { class: 'web-tab-main', 'aria-pressed': String(active), 'data-focus': `web-tab:${p.id}`, title: p.title || p.url,
-      onClick: () => { webv.adding = false; api.webShow(p.id); } },
+      onClick: () => { webv.adding = false; api.webShow(p.id); if (p.googleApp) api.webOpenBrowser(p.id); } },
     p.loading ? h('span', { class: 'dot amber pulse', 'aria-hidden': 'true' }) : null,
     h('span', { class: 'web-tab-name', text: p.name }),
     p.profile && p.profile !== 'standard' ? h('span', { class: 'profile-dot', title: profileLabel(p.profile), 'aria-label': profileLabel(p.profile), text: p.profile === 'bit' ? 'B' : (/(\d+)$/.exec(p.profile) || [])[1] || '•' }) : null,
@@ -162,6 +162,13 @@ function renderToolbar(p) {
   } else {
     middle = h('div', { class: 'web-url', title: p.current },
       p.error ? h('span', { class: 'warn', text: p.error }) : h('span', { text: p.current.replace(/^https:\/\//, '') }));
+  }
+  if (p.googleApp) {
+    return h('div', { class: 'card web-google-app' },
+      h('div', { class: 'grow' },
+        h('div', { class: 'title', text: `${p.name} öffnet in deinem Browser` }),
+        h('div', { class: 'sub', text: 'Google erlaubt keine Anmeldung in eingebauten Browsern. In deinem Chrome bist du angemeldet – ein Klick auf den Tab öffnet die Seite dort.' })),
+      h('button', { class: 'btn', 'data-focus': 'web-google-open', onClick: () => api.webOpenBrowser(p.id) }, `${p.name} öffnen`));
   }
   const bar = h('div', { class: 'web-bar' },
     nav('back', 'Zurück', '←', !p.canGoBack), nav('forward', 'Vor', '→', !p.canGoForward),
@@ -223,7 +230,7 @@ function renderWebChrome() {
       h('button', { class: 'web-tab-add', 'aria-label': 'Seite hinzufügen', title: 'Seite hinzufügen', 'data-focus': 'web-add',
         onClick: () => { webv.adding = true; renderWebChrome(); } }, '+')) : null,
     showForm ? renderAddForm() : renderToolbar(p)));
-  $('#web-host').hidden = showForm || !p;
+  $('#web-host').hidden = showForm || !p || !!p.googleApp;
   sendWebBounds();
 }
 
