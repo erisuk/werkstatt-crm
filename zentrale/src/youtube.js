@@ -6,7 +6,13 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 
-const SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly'];
+// youtube.force-ssl erlaubt zusätzlich das Löschen – die Zentrale löscht damit nur ihre eigenen Uploads und nur auf deinen Klick.
+const SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly',
+  'https://www.googleapis.com/auth/youtube.force-ssl'];
+const DELETE_SCOPE = /auth\/youtube\.force-ssl\b|auth\/youtube(\s|$)/;
+const MAX_UPLOADS = 50; // so viele eigene Uploads merkt sich die Zentrale (für „Löschen“)
+const MAX_STALLS = 5; // so oft darf YouTube „weiter“ sagen, ohne dass etwas ankommt
+const SOON_MS = 10 * 60 * 1000; // Wunschzeit näher als das: gleich veröffentlichen (der Upload selbst dauert)
 const ENDPOINTS = {
   auth: 'https://accounts.google.com/o/oauth2/v2/auth',
   token: 'https://oauth2.googleapis.com/token',
@@ -63,7 +69,8 @@ function tagsFrom(hashtags) {
 // außer der Beitrag ist ausdrücklich „privat“ oder „nicht gelistet“: dann bleibt er so, ohne Termin.
 function videoResource(post, now = Date.now()) {
   const fixed = post.privacy === 'private' || post.privacy === 'unlisted' ? post.privacy : null;
-  const later = !fixed && Number(post.dueAt) > now + 60 * 1000;
+  // Liegt die Wunschzeit nur knapp voraus, wäre sie nach dem Upload schon vorbei – dann gleich öffentlich.
+  const later = !fixed && Number(post.dueAt) > now + SOON_MS;
   const description = [String(post.description || ''), String(post.hashtags || '')].filter(Boolean).join('\n\n').slice(0, LIMITS.description);
   return {
     snippet: { title: String(post.title || '').slice(0, LIMITS.title), description, tags: tagsFrom(post.hashtags), categoryId: '22' },
@@ -105,7 +112,8 @@ class YouTube {
   status() {
     const d = this.read();
     return { hasClient: !!d.client, connected: !!(d.token && d.channel), channel: d.channel || null, connectedAt: d.connectedAt || null,
-      lastUpload: d.lastUpload || null, uploading: this.uploading, lost: d.lost || null };
+      lastUpload: d.lastUpload || null, uploads: uploadsOf(d), canDelete: DELETE_SCOPE.test(String(d.scopes || '')),
+      uploading: this.uploading, lost: d.lost || null };
   }
 
   // Status mit kurzer Nachfrage bei Google: Hat Google den Zugang zurückgezogen (im Testmodus nach 7 Tagen), steht hier
@@ -196,14 +204,17 @@ class YouTube {
         grant_type: 'authorization_code', code_verifier: verifier });
       if (!t.refresh_token) return { ok: false, error: 'Google hat keinen dauerhaften Zugang geschickt. Bitte noch einmal verbinden.' };
       this.access = { token: t.access_token, until: Date.now() + (Number(t.expires_in) || 3600) * 1000 - 60000 };
-      const channel = await this.myChannel();
-      if (!channel) return { ok: false, error: 'Zu diesem Google-Konto gibt es keinen YouTube-Kanal.' };
+      // Scheitert die Kanal-Abfrage, den eben bekommenen Zugang bei Google zurückgeben (nicht herumliegen lassen).
+      let channel;
+      try { channel = await this.myChannel(); } catch (e) { await this.revoke(t.refresh_token); this.access = null; throw e; }
+      if (!channel) { await this.revoke(t.refresh_token); this.access = null; return { ok: false, error: 'Zu diesem Google-Konto gibt es keinen YouTube-Kanal.' }; }
       if (isBlocked(channel)) {
         await this.revoke(t.refresh_token);
         this.access = null;
         return { ok: false, error: `„${channel.title}“ ist ein MURIS-Kanal – den verbindet die Zentrale nicht.` };
       }
-      this.write({ ...this.read(), token: this.encrypt(JSON.stringify({ refresh: t.refresh_token })), channel, connectedAt: Date.now(), lost: null });
+      this.write({ ...this.read(), token: this.encrypt(JSON.stringify({ refresh: t.refresh_token })), channel, connectedAt: Date.now(), lost: null,
+        scopes: String(t.scope || SCOPES.join(' ')) });
       return { ok: true, channel };
     } catch (e) {
       return { ok: false, error: e.message };
@@ -241,6 +252,29 @@ class YouTube {
 
   async revoke(token) {
     try { await this.fetch(`${this.ep.revoke}?${new URLSearchParams({ token })}`, { method: 'POST' }); } catch {}
+  }
+
+  // Löscht ein Video – nur eines, das die Zentrale selbst hochgeladen hat. Die Rückfrage stellt main.js vorher.
+  async deleteVideo(id) {
+    const st = this.status();
+    if (!st.connected) return { ok: false, error: 'YouTube ist nicht verbunden.' };
+    if (isBlocked(st.channel)) return { ok: false, error: 'Auf diesem Kanal löscht die Zentrale nichts.' };
+    const video = st.uploads.find((u) => u.id === id);
+    if (!video) return { ok: false, error: 'Die Zentrale löscht nur Videos, die sie selbst hochgeladen hat.' };
+    if (!st.canDelete) return { ok: false, error: 'Zum Löschen braucht die Zentrale ein erweitertes Recht – bitte einmal neu „Mit YouTube anmelden“.' };
+    let res;
+    try {
+      res = await fetchOrSay(this.fetch, `${this.ep.api}/videos?${new URLSearchParams({ id })}`, { method: 'DELETE', headers: { Authorization: `Bearer ${await this.accessToken()}` } }, 'YouTube');
+    } catch (e) { return { ok: false, error: e.message }; }
+    if (res.status === 401) this.access = null;
+    if (!res.ok && res.status !== 404) {
+      const j = await res.json().catch(() => ({}));
+      return { ok: false, error: res.status === 403 ? 'YouTube erlaubt das Löschen nicht – bitte einmal neu „Mit YouTube anmelden“.' : apiError(j, res.status) };
+    }
+    const d = this.read();
+    const uploads = uploadsOf(d).filter((u) => u.id !== id);
+    this.write({ ...d, uploads, lastUpload: d.lastUpload && d.lastUpload.id === id ? (uploads[0] || null) : d.lastUpload });
+    return { ok: true, title: video.title, alreadyGone: res.status === 404 };
   }
 
   async disconnect() {
@@ -281,11 +315,14 @@ class YouTube {
         onProgress(1);
         const result = { id: video.id, url: `https://youtu.be/${video.id}`, privacy: video.status && video.status.privacyStatus,
           publishAt: resource.status.publishAt || null, at: Date.now() };
-        this.write({ ...this.read(), lastUpload: { ...result, title: post.title } });
+        const d = this.read();
+        const entry = { ...result, title: post.title };
+        this.write({ ...d, lastUpload: entry, uploads: [entry, ...uploadsOf(d).filter((u) => u.id !== entry.id)].slice(0, MAX_UPLOADS) });
         return { ok: true, ...result };
       };
       let offset = 0;
       let retries = 0;
+      let stalls = 0;
       while (true) {
         const len = Math.min(CHUNK, size - offset);
         const buf = Buffer.alloc(len);
@@ -300,7 +337,11 @@ class YouTube {
         if (res && (res.status === 200 || res.status === 201)) return await finished(res);
         if (res && res.status === 308) {
           const range = res.headers.get('range');
-          offset = range ? Number(range.split('-')[1]) + 1 : 0;
+          const next = range ? Number(range.split('-')[1]) + 1 : 0;
+          // Bremse: sagt YouTube immer wieder „weiter“, ohne dass etwas ankommt, nicht endlos neu schicken.
+          stalls = next > offset ? 0 : stalls + 1;
+          if (stalls > MAX_STALLS) return { ok: false, error: 'YouTube nimmt das Video gerade nicht an. Später noch einmal versuchen.' };
+          offset = next;
           retries = 0;
         } else if (!res || res.status >= 500) {
           if (++retries > MAX_RETRIES) return { ok: false, error: 'Die Verbindung zu YouTube bricht immer wieder ab. Später noch einmal versuchen.' };
@@ -324,6 +365,12 @@ class YouTube {
       this.uploading = null;
     }
   }
+}
+
+// Eigene Uploads (neueste zuerst). Ältere Daten kennen nur lastUpload.
+function uploadsOf(d) {
+  const list = Array.isArray(d.uploads) ? d.uploads : d.lastUpload ? [d.lastUpload] : [];
+  return list.filter((u) => u && typeof u.id === 'string' && /^[\w-]{6,20}$/.test(u.id)).slice(0, MAX_UPLOADS);
 }
 
 // Googles Fehler in verständliche Sätze.

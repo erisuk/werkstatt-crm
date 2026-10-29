@@ -38,6 +38,24 @@ function ytGuide() {
     url ? h('button', { class: 'link', onClick: () => api.openExternal(url) }, 'Öffnen ↗') : null)));
 }
 
+// Von der Zentrale hochgeladene Videos – ansehen oder löschen (macOS fragt vor dem Löschen noch einmal).
+const YT_PRIVACY = { private: 'privat', unlisted: 'nicht gelistet', public: 'öffentlich' };
+function ytUploads(st, btn, connect) {
+  const list = st.uploads || [];
+  if (!list.length) return null;
+  return h('div', { class: 'yt-uploads' },
+    h('div', { class: 'title', text: 'Von der Zentrale hochgeladen' }),
+    !st.canDelete ? h('div', { class: 'sub' }, 'Zum Löschen braucht die Zentrale ein erweitertes Recht. ',
+      btn('connect', 'Neu anmelden', connect, 'link')) : null,
+    h('div', { class: 'card list' }, list.map((u) => h('div', { class: 'row' },
+      h('div', { class: 'grow' }, h('div', { class: 'title', text: u.title || u.id }),
+        h('div', { class: 'sub', text: `${new Date(u.at).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' })} · ${YT_PRIVACY[u.privacy] || u.privacy || '–'}` })),
+      h('button', { class: 'btn ghost', 'data-focus': `yt-open:${u.id}`, onClick: () => api.openExternal(u.url) }, 'Ansehen'),
+      st.canDelete ? btn(`del:${u.id}`, 'Löschen', () => api.ytDelete(u.id).then((r) => (r && r.ok
+        ? { message: r.alreadyGone ? `„${r.title}“ war bei YouTube schon weg – aus der Liste entfernt.` : `„${r.title}“ ist bei YouTube gelöscht.` }
+        : r && r.cancelled ? null : r)), 'btn ghost danger') : null))));
+}
+
 function ytCard() {
   const st = yt.status;
   if (!yt.loading && !yt.busy && (!yt.at || Date.now() - yt.at > YT_STALE_MS)) loadYouTube();
@@ -56,7 +74,8 @@ function ytCard() {
         ? [h('div', { class: 'sub', text: `Kanal: ${st.channel.title}${st.lastUpload ? ` · zuletzt hochgeladen: „${st.lastUpload.title}“` : ''}` }),
           h('div', { class: 'actions' },
             st.lastUpload ? h('button', { class: 'btn ghost', onClick: () => api.openExternal(st.lastUpload.url) }, 'Letztes Video ansehen') : null,
-            btn('disconnect', 'Trennen', () => (confirm('YouTube trennen? Die Zentrale gibt den Zugang dann auch bei Google zurück.') ? api.ytDisconnect() : null), 'btn ghost'))]
+            btn('disconnect', 'Trennen', () => (confirm('YouTube trennen? Die Zentrale gibt den Zugang dann auch bei Google zurück.') ? api.ytDisconnect() : null), 'btn ghost')),
+          ytUploads(st, btn, connect)]
         : [ytGuide(),
           h('div', { class: 'actions' },
             btn('file', st && st.hasClient ? 'Andere Datei wählen' : 'Datei wählen', pickFile, st && st.hasClient ? 'btn ghost' : 'btn'),

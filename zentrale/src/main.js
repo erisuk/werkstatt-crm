@@ -960,6 +960,19 @@ function setup() {
   });
   ipcMain.handle('yt-connect', () => yt().connect());
   ipcMain.handle('yt-disconnect', () => yt().disconnect());
+  // Löschen ist endgültig: Die Rückfrage kommt von macOS (die Oberfläche kann sie nicht überspringen),
+  // und gelöscht werden nur Videos, die die Zentrale selbst hochgeladen hat. Claude hat dafür kein Werkzeug.
+  ipcMain.handle('yt-delete', async (_e, id) => {
+    if (typeof id !== 'string') return { ok: false, error: 'Unbekanntes Video.' };
+    const video = yt().status().uploads.find((u) => u.id === id);
+    if (!video) return { ok: false, error: 'Die Zentrale löscht nur Videos, die sie selbst hochgeladen hat.' };
+    const { response } = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Abbrechen', 'Endgültig löschen'], defaultId: 0, cancelId: 0,
+      message: `„${video.title}“ von YouTube löschen?`, detail: `${video.url}\n\nDas Video ist danach bei YouTube weg – samt Aufrufen und Kommentaren. Das lässt sich nicht rückgängig machen.` });
+    if (response !== 1) return { ok: false, cancelled: true };
+    const r = await yt().deleteVideo(id);
+    if (r.ok) send('planner-changed');
+    return r;
+  });
   ipcMain.handle('yt-upload', async (_e, a) => {
     const post = plannerStore().list().find((p) => p.id === (a && a.id));
     const target = post && post.targets.find((t) => t.tabId === YT_API_TARGET);

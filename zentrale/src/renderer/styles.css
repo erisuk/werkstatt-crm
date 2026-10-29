@@ -759,3 +759,9 @@ h2 { font-size: 16px; font-weight: 600; }
 .web-google { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 12px; background: var(--notice-bg); color: var(--notice); font-size: 13px; line-height: 1.45; }
 .web-google-app { display: flex; align-items: center; gap: 16px; padding: 18px 20px; }
 .web-google-app .sub { margin-top: 4px; line-height: 1.5; }
+
+/* Verbindungen → YouTube: eigene Uploads */
+.yt-uploads { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.yt-uploads > .title { font-weight: 600; }
+.btn.ghost.danger { color: var(--pill-red); }
+.btn.ghost.danger:hover, .btn.ghost.danger:focus-visible { background: var(--pill-red-bg); }
