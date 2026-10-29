@@ -67,6 +67,21 @@ function chromeUserAgent(ua) {
   return String(ua || '').replace(/\s(Electron|zentrale|Zentrale)\/\S+/g, '').replace(/\s{2,}/g, ' ').trim();
 }
 
+// Google sperrt Anmeldungen („Dieser Browser ist möglicherweise nicht sicher“), wenn sich der Browser als Chrome
+// ausgibt, in navigator.userAgentData und den Sec-CH-UA-Kopfzeilen aber nur „Chromium“ steht. Über die
+// Entwicklerschnittstelle des Tabs bekommen Kennung und Marken dieselben Angaben wie ein echtes Chrome.
+function chromeOverride(ua) {
+  const m = /Chrome\/(\d+)(\.[\d.]+)?/.exec(ua) || [];
+  const major = m[1] || '152';
+  const full = `${major}${m[2] || '.0.0.0'}`;
+  const brands = (v) => [{ brand: 'Google Chrome', version: v }, { brand: 'Chromium', version: v }, { brand: 'Not?A_Brand', version: v === major ? '24' : '24.0.0.0' }];
+  let platformVersion = '15.0.0';
+  try { platformVersion = process.getSystemVersion(); } catch {} // gibt es nur in Electron
+  return { userAgent: ua, platform: 'MacIntel', userAgentMetadata: {
+    brands: brands(major), fullVersionList: brands(full), fullVersion: full, platform: 'macOS', platformVersion,
+    architecture: process.arch === 'arm64' ? 'arm' : 'x86', model: '', mobile: false, bitness: '64', wow64: false } };
+}
+
 function sanitize(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
@@ -168,4 +183,4 @@ class PortalStore {
   }
 }
 
-module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, sanitize, MAX_PORTALS, partitionFor, profileOf };
+module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, chromeOverride, sanitize, MAX_PORTALS, partitionFor, profileOf };
