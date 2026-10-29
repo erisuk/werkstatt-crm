@@ -440,8 +440,18 @@ function setup() {
     pageTimer = setTimeout(() => loadPage(true), PAGE_TIMEOUT_MS);
     win.loadFile(pageFile()).catch(() => {}); // Fehler meldet did-fail-load
   }
+  // Bremse: Stürzt die Seite gleich nach jedem Laden wieder ab, nicht endlos neu laden (höchstens 6 Mal pro Minute).
+  const CRASH_WINDOW_MS = 60 * 1000;
+  const CRASH_LIMIT = 6;
+  let crashes = [];
   function watchPage(w) {
-    const again = () => { clearTimeout(pageTimer); pageTimer = setTimeout(() => loadPage(true), 1000); };
+    const again = () => {
+      const now = Date.now();
+      crashes = [...crashes.filter((t) => now - t < CRASH_WINDOW_MS), now];
+      clearTimeout(pageTimer);
+      if (crashes.length > CRASH_LIMIT) { console.error('Zentrale: Seite stürzt immer wieder ab – Neuladen pausiert für eine Minute.'); pageTimer = setTimeout(() => { crashes = []; loadPage(true); }, CRASH_WINDOW_MS); return; }
+      pageTimer = setTimeout(() => loadPage(true), 1000);
+    };
     w.webContents.on('did-finish-load', () => { clearTimeout(pageTimer); pageTries = 0; });
     w.webContents.on('did-fail-load', (_e, code, _d, _u, isMainFrame) => { if (isMainFrame && code !== -3) again(); }); // -3 = abgebrochen durch neues Laden
     w.webContents.on('render-process-gone', again);

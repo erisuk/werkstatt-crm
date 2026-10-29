@@ -26,6 +26,12 @@ exports.default = async function sign(context) {
     console.log(`  • Zertifikat „${CERT_NAME}“ fehlt – signiere ad hoc (macOS fragt nach jedem Neubau neu). Anlegen: build/zertifikat-anlegen.sh`);
     try { execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { stdio: 'ignore' }); return; } catch {}
   }
-  execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', identity || '-', '--options', 'runtime',
+  const sign = (id) => execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', id, '--options', 'runtime',
     '--entitlements', path.join(__dirname, 'entitlements.mac.plist'), app], { stdio: 'inherit' });
+  if (!identity) { sign('-'); return; }
+  try { sign(identity); } catch (e) {
+    // z. B. Schlüsselbund gesperrt: lieber ad hoc bauen als gar nicht (macOS fragt dann einmal neu nach Erlaubnissen).
+    console.log(`  • Signieren mit „${CERT_NAME}“ ging nicht (${e.message.split('\n')[0]}) – signiere ad hoc.`);
+    sign('-');
+  }
 };

@@ -100,7 +100,8 @@ function swOpen() {
 function swClose() {
   sw.open = false;
   swRender();
-  if (ui.view === 'web' || ui.view === 'local') renderMain(); // Web-Tab wieder zeigen
+  // Web-Tab wieder zeigen – nur die Seite einblenden, nicht neu aufbauen (sonst wäre ein offenes Formular weg).
+  if ((ui.view === 'web' || ui.view === 'local') && typeof sendWebBounds === 'function') sendWebBounds();
 }
 
 document.addEventListener('keydown', (e) => {
