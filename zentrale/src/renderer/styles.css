@@ -426,7 +426,8 @@ h2 { font-size: 16px; font-weight: 600; }
 .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding-top: 4px; }
 .check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
 .check input, .lib-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
-.field select { border: 1px solid var(--border-strong); border-radius: 10px; background: var(--card-strong); padding: 9px 10px; color: var(--text); font-size: 14px; }
+/* width: 100 % – lange Optionen (z. B. Projektpfade) dürfen das Formular nicht über den Rand schieben. */
+.field select { width: 100%; min-width: 0; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--card-strong); padding: 9px 10px; color: var(--text); font-size: 14px; }
 .agent-item { border-bottom: 1px solid var(--border); }
 .agent-item:last-child { border-bottom: 0; }
 .agent-item .row { border-bottom: 0; }
