@@ -11,7 +11,7 @@ const CLIENT = JSON.stringify({ installed: { client_id: '123-abc.apps.googleuser
 
 // Nachgebauter Google-Server: Token, Kanal, fortsetzbarer Upload (wahlweise mit einem Abbruch).
 // loseLast: das letzte Stück kommt an, die Antwort geht aber verloren (Verbindung reißt) – wie bei echtem Google.
-function fakeGoogle({ channel = 'Bit AI News', failOnce = false, loseLast = false } = {}) {
+function fakeGoogle({ channel = 'Bit AI News', customUrl = '@bitainews', failOnce = false, loseLast = false } = {}) {
   const seen = { tokenCalls: [], uploadMeta: null, bytes: 0, revoked: [] };
   let failed = false;
   const server = http.createServer((req, res) => {
@@ -34,7 +34,7 @@ function fakeGoogle({ channel = 'Bit AI News', failOnce = false, loseLast = fals
       if (u.pathname === '/revoke') { seen.revoked.push(u.searchParams.get('token')); return json(200, {}); }
       if (u.pathname === '/api/channels') {
         if (!/^Bearer AT/.test(req.headers.authorization || '')) return json(401, { error: { message: 'no' } });
-        return json(200, { items: [{ id: 'UC1', snippet: { title: channel } }] });
+        return json(200, { items: [{ id: 'UC1', snippet: { title: channel, customUrl } }] });
       }
       if (u.pathname === '/upload' && req.method === 'POST') {
         seen.uploadMeta = JSON.parse(body.toString());
@@ -262,6 +262,22 @@ test('YouTube: ohne Netz eine verständliche Meldung statt „fetch failed“', 
     const st = await yt.checkedStatus();
     assert.strictEqual(st.connected, true, 'ohne Netz bleibt die Verbindung bestehen');
     await assert.rejects(yt.accessToken(), /Keine Verbindung/);
+  } finally { g.server.close(); }
+});
+
+test('YouTube: MURIS-Sperre greift auch beim Kanal-Handle, nicht nur beim Namen', async () => {
+  const g = await fakeGoogle({ channel: 'Shop', customUrl: '@shop.muris' });
+  const yt = makeYt(g);
+  try {
+    yt.setClient(CLIENT);
+    const r = await yt.connect();
+    assert.strictEqual(r.ok, false);
+    assert.match(r.error, /MURIS/);
+    assert.strictEqual(yt.status().connected, false);
+    assert.deepStrictEqual(g.seen.revoked, ['RT']);
+    // Schon gespeicherter Kanal mit MURIS-Handle: kein Upload.
+    yt.write({ ...yt.read(), token: 'x', channel: { id: 'UC1', title: 'Shop', handle: '@shop.muris' } });
+    assert.match((await yt.upload({ video: __filename, title: 'T', dueAt: 0 })).error, /lädt die Zentrale nichts hoch/);
   } finally { g.server.close(); }
 });
 

@@ -20,6 +20,8 @@ const CHUNK = 8 * 1024 * 1024; // Vielfaches von 256 KB, wie Google es für fort
 const MAX_RETRIES = 4;
 const BLOCKED_CHANNELS = /muris/i; // Regel: MURIS-Konten nie anfassen
 const LIMITS = { title: 100, description: 5000, tags: 500 };
+// Name UND Handle prüfen: ein Kanal „Shop“ mit Handle „@shop.muris“ ist genauso ein MURIS-Kanal.
+const isBlocked = (channel) => !!channel && BLOCKED_CHANNELS.test(`${channel.title || ''} ${channel.handle || ''}`);
 
 const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -196,7 +198,7 @@ class YouTube {
       this.access = { token: t.access_token, until: Date.now() + (Number(t.expires_in) || 3600) * 1000 - 60000 };
       const channel = await this.myChannel();
       if (!channel) return { ok: false, error: 'Zu diesem Google-Konto gibt es keinen YouTube-Kanal.' };
-      if (BLOCKED_CHANNELS.test(channel.title)) {
+      if (isBlocked(channel)) {
         await this.revoke(t.refresh_token);
         this.access = null;
         return { ok: false, error: `„${channel.title}“ ist ein MURIS-Kanal – den verbindet die Zentrale nicht.` };
@@ -234,7 +236,7 @@ class YouTube {
   async myChannel() {
     const j = await this.api('/channels?part=snippet&mine=true');
     const c = j.items && j.items[0];
-    return c ? { id: c.id, title: (c.snippet && c.snippet.title) || c.id } : null;
+    return c ? { id: c.id, title: (c.snippet && c.snippet.title) || c.id, handle: (c.snippet && c.snippet.customUrl) || null } : null;
   }
 
   async revoke(token) {
@@ -254,7 +256,7 @@ class YouTube {
     if (this.uploading) return { ok: false, error: 'Es läuft schon ein Upload.' };
     const st = this.status();
     if (!st.connected) return { ok: false, error: 'YouTube ist nicht verbunden (Verbindungen → YouTube).' };
-    if (BLOCKED_CHANNELS.test(st.channel.title)) return { ok: false, error: 'Auf diesen Kanal lädt die Zentrale nichts hoch.' };
+    if (isBlocked(st.channel)) return { ok: false, error: 'Auf diesen Kanal lädt die Zentrale nichts hoch.' };
     let size;
     try { size = fs.statSync(post.video).size; } catch { return { ok: false, error: `Das Video liegt nicht mehr hier: ${post.video}` }; }
     if (!size) return { ok: false, error: 'Die Videodatei ist leer.' };
