@@ -3,7 +3,7 @@
 // Die Seiten laufen abgeschottet (Sandbox, kein Zugriff auf Node, den Mac oder Claude).
 const { EventEmitter } = require('events');
 const { WebContentsView, session, shell } = require('electron');
-const { chromeUserAgent, chromeOverride, unreadFromTitle, partitionFor } = require('./portals');
+const { chromeUserAgent, unreadFromTitle, partitionFor } = require('./portals');
 
 const PARTITION = 'persist:portale';
 // Was Webseiten ohne Rückfrage dürfen. Kamera, Mikrofon, Standort usw. bleiben gesperrt.
@@ -31,17 +31,6 @@ function portalSession(partition = PARTITION) {
 }
 
 const isWeb = (url) => /^https?:\/\//i.test(String(url || ''));
-
-// Geht erst, wenn der Tab schon eine Seite hat (sonst hängt der Befehl) – darum vorher about:blank laden.
-const OVERRIDE_TIMEOUT_MS = 3000;
-async function looksLikeChrome(wc) {
-  try {
-    if (wc.isDestroyed()) return false;
-    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-    const sent = wc.debugger.sendCommand('Emulation.setUserAgentOverride', chromeOverride(wc.session.getUserAgent())).then(() => true, () => false);
-    return await Promise.race([sent, new Promise((r) => setTimeout(() => r(false), OVERRIDE_TIMEOUT_MS))]);
-  } catch { return false; }
-}
 
 class WebTabs extends EventEmitter {
   constructor(store) {
@@ -112,19 +101,12 @@ class WebTabs extends EventEmitter {
     wc.on('did-create-window', (child) => {
       child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       child.webContents.on('will-navigate', (e, url) => { if (!isWeb(url)) e.preventDefault(); });
-      // Das Anmelde-Fenster lädt schon – nach dem Angleichen einmal neu laden, damit die Seite Chrome sieht.
-      looksLikeChrome(child.webContents).then((ok) => { if (ok && !child.webContents.isDestroyed()) child.webContents.reload(); });
     });
 
     view.setVisible(false);
     view.setBorderRadius && view.setBorderRadius(12);
     this.win.contentView.addChildView(view);
-    wc.loadURL('about:blank').catch(() => {}).then(() => looksLikeChrome(wc))
-      .finally(() => {
-        if (wc.isDestroyed()) return;
-        // Die Hilfsseite soll nicht im „Zurück“ auftauchen.
-        wc.loadURL(portal.lastUrl || portal.url).then(() => { try { wc.navigationHistory.clear(); } catch {} }, () => {});
-      });
+    wc.loadURL(portal.lastUrl || portal.url).catch(() => {});
     return entry;
   }
 

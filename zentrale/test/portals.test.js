@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, chromeOverride, sanitize, MAX_PORTALS } = require('../src/portals');
+const { PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, sanitize, MAX_PORTALS } = require('../src/portals');
 
 const tmpFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'zentrale-portale-')), 'portals.json');
 
@@ -98,15 +98,4 @@ test('BIT AI News: eigenes Konto „bit“, getrennter Anmelde-Speicher', () => 
   assert.deepStrictEqual(store.get().portals.map((p) => p.profile), ['bit', 'bit', 'bit']);
   assert.ok(store.profiles().includes('bit'));
   assert.strictEqual(store.nextProfile(), 'konto-2');
-});
-
-test('chromeOverride: Marken wie ein echtes Chrome (sonst sperrt Google die Anmeldung)', () => {
-  const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36';
-  const o = chromeOverride(ua);
-  assert.strictEqual(o.userAgent, ua);
-  assert.deepStrictEqual(o.userAgentMetadata.brands.map((b) => b.brand), ['Google Chrome', 'Chromium', 'Not?A_Brand']);
-  assert.strictEqual(o.userAgentMetadata.brands[0].version, '152');
-  assert.strictEqual(o.userAgentMetadata.fullVersion, '152.0.7977.167');
-  assert.strictEqual(o.userAgentMetadata.platform, 'macOS');
-  assert.strictEqual(o.userAgentMetadata.mobile, false);
 });
