@@ -67,6 +67,20 @@ function chromeUserAgent(ua) {
   return String(ua || '').replace(/\s(Electron|zentrale|Zentrale)\/\S+/g, '').replace(/\s{2,}/g, ' ').trim();
 }
 
+// Google erlaubt keine Anmeldung in eingebauten Browsern (absichtlich, gegen Passwort-Diebstahl). Landet ein Tab
+// auf der Anmeldung, öffnet die Zentrale die Seite im normalen Browser – dort klappt die Anmeldung ganz normal.
+const isGoogleSignIn = (url) => /^https:\/\/accounts\.google\.com(\/|$)/i.test(String(url || ''));
+
+// Wohin Google nach der Anmeldung wollte (continue=…); sonst die Adresse selbst.
+function browserTarget(url) {
+  if (!isGoogleSignIn(url)) return url;
+  try {
+    const next = new URL(url).searchParams.get('continue');
+    if (next && /^https:\/\//i.test(next) && !isGoogleSignIn(next)) return next;
+  } catch {}
+  return 'https://accounts.google.com/';
+}
+
 function sanitize(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
@@ -168,4 +182,4 @@ class PortalStore {
   }
 }
 
-module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, sanitize, MAX_PORTALS, partitionFor, profileOf };
+module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, isGoogleSignIn, browserTarget, sanitize, MAX_PORTALS, partitionFor, profileOf };

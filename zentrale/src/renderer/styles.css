@@ -737,3 +737,6 @@ h2 { font-size: 16px; font-weight: 600; }
 .yt-guide li::marker { color: var(--accent-text); font-weight: 700; }
 .yt-guide .title { font-weight: 600; }
 .yt-guide .sub { margin: 2px 0; line-height: 1.5; }
+
+/* Web: Hinweis, wenn ein Tab auf Googles Anmeldung landet */
+.web-google { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 12px; background: var(--notice-bg); color: var(--notice); font-size: 13px; line-height: 1.45; }

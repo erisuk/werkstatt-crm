@@ -3,7 +3,7 @@
 // Die Seiten laufen abgeschottet (Sandbox, kein Zugriff auf Node, den Mac oder Claude).
 const { EventEmitter } = require('events');
 const { WebContentsView, session, shell } = require('electron');
-const { chromeUserAgent, unreadFromTitle, partitionFor } = require('./portals');
+const { chromeUserAgent, isGoogleSignIn, unreadFromTitle, partitionFor } = require('./portals');
 
 const PARTITION = 'persist:portale';
 // Was Webseiten ohne Rückfrage dürfen. Kamera, Mikrofon, Standort usw. bleiben gesperrt.
@@ -81,7 +81,13 @@ class WebTabs extends EventEmitter {
       entry.error = code === -106 ? 'Keine Internetverbindung.' : `Die Seite ließ sich nicht laden (${desc}).`;
       changed();
     });
-    const remember = (_e, url) => { this.store.remember(id, url); changed(); };
+    const remember = (_e, url) => {
+      this.store.remember(id, url);
+      // Google-Anmeldung: einmal pro Tab und Start an den normalen Browser übergeben (sonst bei jedem Neuladen).
+      entry.googleSignIn = isGoogleSignIn(url);
+      if (entry.googleSignIn && !entry.handedOff) { entry.handedOff = true; this.emit('google-signin', { id, url }); }
+      changed();
+    };
     wc.on('did-navigate', remember);
     wc.on('did-navigate-in-page', remember);
     // Nur Webseiten innerhalb des Tabs; alles andere (file:, Programme-Links) wird blockiert.
@@ -222,7 +228,7 @@ class WebTabs extends EventEmitter {
         const e = this.views.get(p.id);
         const wc = e && e.view.webContents;
         return { id: p.id, name: p.name, url: p.url, profile: p.profile, open: !!e, title: e ? e.title : '', unread: e ? e.unread : 0,
-          loading: e ? e.loading : false, error: e ? e.error : null, current: wc ? wc.getURL() : (p.lastUrl || p.url),
+          loading: e ? e.loading : false, error: e ? e.error : null, googleSignIn: !!(e && e.googleSignIn), current: wc ? wc.getURL() : (p.lastUrl || p.url),
           canGoBack: wc ? wc.navigationHistory.canGoBack() : false, canGoForward: wc ? wc.navigationHistory.canGoForward() : false };
       }),
     };

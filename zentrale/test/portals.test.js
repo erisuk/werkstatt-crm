@@ -99,3 +99,13 @@ test('BIT AI News: eigenes Konto „bit“, getrennter Anmelde-Speicher', () => 
   assert.ok(store.profiles().includes('bit'));
   assert.strictEqual(store.nextProfile(), 'konto-2');
 });
+
+test('Google-Anmeldung: erkennt die Seite und öffnet im Browser das eigentliche Ziel', () => {
+  const { isGoogleSignIn, browserTarget } = require('../src/portals');
+  const url = 'https://accounts.google.com/v3/signin/rejected?continue=https%3A%2F%2Fstudio.youtube.com%2F&flowName=GlifWebSignIn';
+  assert.strictEqual(isGoogleSignIn(url), true);
+  assert.strictEqual(isGoogleSignIn('https://studio.youtube.com/'), false);
+  assert.strictEqual(browserTarget(url), 'https://studio.youtube.com/');
+  assert.strictEqual(browserTarget('https://accounts.google.com/x?continue=javascript%3Aalert(1)'), 'https://accounts.google.com/');
+  assert.strictEqual(browserTarget('https://www.instagram.com/'), 'https://www.instagram.com/');
+});

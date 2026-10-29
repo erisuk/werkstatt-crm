@@ -22,7 +22,7 @@ const { AlertWatch } = require('./alerts');
 const morning = require('./morning');
 const { PlanStore, uploadPrompt, YT_API_TARGET } = require('./planner');
 const { YouTube } = require('./youtube');
-const { PortalStore, PRESETS, partitionFor, BIT_PROFILE, BIT_TABS } = require('./portals');
+const { PortalStore, PRESETS, partitionFor, BIT_PROFILE, BIT_TABS, browserTarget } = require('./portals');
 const { WebTabs, portalSession } = require('./web-tabs');
 const { videoSite, cookieFileText, analyzePrompt } = require('./video-analyze');
 const { WebsiteStudio, AGENT: WEB_AGENT } = require('./website-studio');
@@ -1387,7 +1387,7 @@ function setup() {
 
   ipcMain.handle('web-open-browser', (_e, id) => {
     const url = typeof id === 'string' && webTabs.currentUrl(id);
-    if (url && /^https?:\/\//.test(url)) shell.openExternal(url);
+    if (url && /^https?:\/\//.test(url)) shell.openExternal(browserTarget(url));
   });
   ipcMain.handle('web-clear-logins', async () => {
     const { response } = await dialog.showMessageBox(win, {
@@ -1671,6 +1671,8 @@ function setup() {
     webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
     webTabs.on('change', () => send('web-state', webState()));
     webTabs.on('shortcut', (name) => { if (name === 'switcher') send('switcher-toggle'); });
+    // Google sperrt die Anmeldung in eingebauten Browsern – im normalen Browser geht sie ganz normal.
+    webTabs.on('google-signin', ({ url }) => shell.openExternal(browserTarget(url)).catch(() => {}));
     // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
     browser = new BrowserControl(webTabs);
     browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));

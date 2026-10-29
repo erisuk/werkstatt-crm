@@ -163,7 +163,7 @@ function renderToolbar(p) {
     middle = h('div', { class: 'web-url', title: p.current },
       p.error ? h('span', { class: 'warn', text: p.error }) : h('span', { text: p.current.replace(/^https:\/\//, '') }));
   }
-  return h('div', { class: 'web-bar' },
+  const bar = h('div', { class: 'web-bar' },
     nav('back', 'Zurück', '←', !p.canGoBack), nav('forward', 'Vor', '→', !p.canGoForward),
     nav('reload', 'Neu laden', '↻', false), nav('home', 'Startseite der Seite', '⌂', false),
     middle,
@@ -172,6 +172,10 @@ function renderToolbar(p) {
       onClick: async (e) => { const b = e.currentTarget; b.disabled = true; announce('Video wird vorbereitet …'); const r = await api.webAnalyzeVideo(p.id); b.disabled = false; if (!r.ok) { alert(r.error); return; } sendMessage(r.data); } }, h('span', { 'aria-hidden': 'true', text: '▶ ' }), 'Video analysieren') : null,
     h('button', { class: 'link', 'data-focus': 'web-rename-btn', onClick: () => { webv.renaming = true; renderWebChrome(); } }, 'Umbenennen'),
     h('button', { class: 'link', 'data-focus': 'web-browser', onClick: () => api.webOpenBrowser(p.id) }, 'Im Browser öffnen'));
+  if (!p.googleSignIn) return bar;
+  return [h('div', { class: 'web-google', role: 'status' },
+    h('span', { class: 'grow', text: 'Google erlaubt keine Anmeldung in eingebauten Browsern. Die Zentrale hat die Seite in deinem normalen Browser geöffnet – melde dich dort ganz normal an.' }),
+    h('button', { class: 'btn', 'data-focus': 'web-google', onClick: () => api.webOpenBrowser(p.id) }, 'Im Browser öffnen')), bar];
 }
 
 // „Claude bedient gerade …“ – oben im Web-Bereich und als Hinweis in der rechten Seitenleiste.
