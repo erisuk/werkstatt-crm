@@ -3,7 +3,7 @@
 // Die Seiten laufen abgeschottet (Sandbox, kein Zugriff auf Node, den Mac oder Claude).
 const { EventEmitter } = require('events');
 const { WebContentsView, session, shell } = require('electron');
-const { chromeUserAgent, isGoogleSignIn, isGoogleApp, unreadFromTitle, partitionFor } = require('./portals');
+const { chromeUserAgent, isGoogleSignIn, isGoogleApp, popupSize, unreadFromTitle, partitionFor } = require('./portals');
 
 const PARTITION = 'persist:portale';
 // Was Webseiten ohne Rückfrage dürfen. Kamera, Mikrofon, Standort usw. bleiben gesperrt.
@@ -99,7 +99,7 @@ class WebTabs extends EventEmitter {
       if (!isWeb(url)) return { action: 'deny' };
       // Anmelde-Fenster (window.open mit Größe) bleiben in der Zentrale, damit das Login hier gespeichert wird.
       if (disposition === 'new-window' || features) {
-        return { action: 'allow', overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: prefs } };
+        return { action: 'allow', overrideBrowserWindowOptions: { ...popupSize(features), autoHideMenuBar: true, webPreferences: prefs } };
       }
       // Normale Links „in neuem Tab“ öffnen im Standardbrowser.
       shell.openExternal(url);

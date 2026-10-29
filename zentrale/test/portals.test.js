@@ -115,3 +115,12 @@ test('Google-Apps öffnen im Browser, YouTube zum Anschauen und andere Seiten bl
   for (const u of ['https://mail.google.com/mail/u/0/', 'https://workspace.google.com/intl/de/gmail/', 'https://studio.youtube.com/', 'https://drive.google.com/']) assert.strictEqual(isGoogleApp(u), true, u);
   for (const u of ['https://www.youtube.com/watch?v=x', 'https://www.instagram.com/', 'https://business.facebook.com/', 'kaputt']) assert.strictEqual(isGoogleApp(u), false, u);
 });
+
+test('Anmelde-Fenster: gewünschte Größe aus window.open zählt, in sinnvollen Grenzen', () => {
+  const { popupSize } = require('../src/portals');
+  assert.deepStrictEqual(popupSize('width=900,height=640'), { width: 900, height: 640 });
+  assert.deepStrictEqual(popupSize('popup'), { width: 520, height: 720 });
+  assert.deepStrictEqual(popupSize(''), { width: 520, height: 720 });
+  assert.deepStrictEqual(popupSize('width=50, height=99999'), { width: 360, height: 1000 });
+  assert.deepStrictEqual(popupSize('width=abc,height=600'), { width: 520, height: 600 });
+});

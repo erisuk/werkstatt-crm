@@ -80,6 +80,18 @@ function isGoogleApp(url) {
   try { return GOOGLE_APPS.has(new URL(String(url)).hostname.toLowerCase()); } catch { return false; }
 }
 
+// Größe eines Anmelde-Fensters: was die Seite bei window.open wünscht (width=…,height=…),
+// begrenzt auf vernünftige Maße; ohne Angabe 520 × 720.
+const POPUP = { width: [360, 1400, 520], height: [400, 1000, 720] };
+function popupSize(features) {
+  const out = {};
+  for (const [key, [min, max, fallback]] of Object.entries(POPUP)) {
+    const m = new RegExp(`(?:^|,)\\s*${key}\\s*=\\s*(\\d+)`, 'i').exec(String(features || ''));
+    out[key] = m ? Math.min(max, Math.max(min, Number(m[1]))) : fallback;
+  }
+  return out;
+}
+
 // Wohin Google nach der Anmeldung wollte (continue=…); sonst die Adresse selbst.
 function browserTarget(url) {
   if (!isGoogleSignIn(url)) return url;
@@ -191,4 +203,4 @@ class PortalStore {
   }
 }
 
-module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, isGoogleSignIn, isGoogleApp, browserTarget, sanitize, MAX_PORTALS, partitionFor, profileOf };
+module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, isGoogleSignIn, isGoogleApp, browserTarget, popupSize, sanitize, MAX_PORTALS, partitionFor, profileOf };
