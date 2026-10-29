@@ -82,6 +82,13 @@ class WebTabs extends EventEmitter {
       entry.error = loadErrorText(code, desc, url);
       changed();
     });
+    // Abgestürzte oder vom System beendete Seite: sonst bliebe der Tab ohne Hinweis leer.
+    wc.on('render-process-gone', (_e, details) => {
+      if (!this.views.has(id) || (details && details.reason === 'clean-exit')) return;
+      entry.loading = false;
+      entry.error = 'Die Seite ist abgestürzt – „Neu laden“ (↻) holt sie zurück.';
+      changed();
+    });
     const remember = (_e, url) => {
       this.store.remember(id, url);
       // Google-Anmeldung: einmal pro Tab und Start an den normalen Browser übergeben (sonst bei jedem Neuladen).
