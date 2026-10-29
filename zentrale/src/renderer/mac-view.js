@@ -284,7 +284,7 @@ function renderMacBody() {
 
 function renderMac() {
   const filter = ['search', 'health', 'watch'].includes(macv.tab) ? null : h('input', { type: 'search', class: 'filter', 'aria-label': 'Filtern',
-    placeholder: macv.tab === 'apps' ? 'App suchen …' : 'In diesem Ordner filtern …' });
+    placeholder: { apps: 'App suchen …', shortcuts: 'Kurzbefehl suchen …' }[macv.tab] || 'In diesem Ordner filtern …' });
   if (filter) {
     filter.value = macv.filter;
     filter.addEventListener('input', () => { macv.filter = filter.value.trim().toLowerCase(); renderMacBody(); });

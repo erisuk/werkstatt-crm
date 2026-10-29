@@ -32,9 +32,11 @@ function renderWebBadge() {
 }
 
 // Wo die eingebettete Seite liegen soll; ohne aktive Seite oder mit offenem Formular ist sie unsichtbar.
+// Auch nicht, solange der Schnellsprung (Cmd+K) offen ist – die Seite läge sonst über ihm.
+const switcherOpen = () => typeof sw !== 'undefined' && sw.open;
 function sendWebBounds() {
   const host = $('#web-host');
-  const show = inWebView() && !!host && !!activePortal() && !webv.adding;
+  const show = inWebView() && !!host && !!activePortal() && !webv.adding && !switcherOpen() && !host.hidden;
   if (show) {
     const r = host.getBoundingClientRect();
     api.webBounds({ x: r.left, y: r.top, width: r.width, height: r.height });
@@ -134,7 +136,7 @@ function renderAddForm() {
 function webTab(p, active) {
   return h('div', { class: `web-tab${active ? ' active' : ''}` },
     h('button', { class: 'web-tab-main', 'aria-pressed': String(active), 'data-focus': `web-tab:${p.id}`, title: p.title || p.url,
-      onClick: () => { webv.adding = false; api.webShow(p.id); } },
+      onClick: () => { webv.adding = false; api.webShow(p.id); if (p.googleApp) api.webOpenBrowser(p.id); } },
     p.loading ? h('span', { class: 'dot amber pulse', 'aria-hidden': 'true' }) : null,
     h('span', { class: 'web-tab-name', text: p.name }),
     p.profile && p.profile !== 'standard' ? h('span', { class: 'profile-dot', title: profileLabel(p.profile), 'aria-label': profileLabel(p.profile), text: p.profile === 'bit' ? 'B' : (/(\d+)$/.exec(p.profile) || [])[1] || '•' }) : null,
@@ -163,7 +165,14 @@ function renderToolbar(p) {
     middle = h('div', { class: 'web-url', title: p.current },
       p.error ? h('span', { class: 'warn', text: p.error }) : h('span', { text: p.current.replace(/^https:\/\//, '') }));
   }
-  return h('div', { class: 'web-bar' },
+  if (p.googleApp) {
+    return h('div', { class: 'card web-google-app' },
+      h('div', { class: 'grow' },
+        h('div', { class: 'title', text: `${p.name} öffnet in deinem Browser` }),
+        h('div', { class: 'sub', text: 'Google erlaubt keine Anmeldung in eingebauten Browsern. In deinem Chrome bist du angemeldet – ein Klick auf den Tab öffnet die Seite dort.' })),
+      h('button', { class: 'btn', 'data-focus': 'web-google-open', onClick: () => api.webOpenBrowser(p.id) }, `${p.name} öffnen`));
+  }
+  const bar = h('div', { class: 'web-bar' },
     nav('back', 'Zurück', '←', !p.canGoBack), nav('forward', 'Vor', '→', !p.canGoForward),
     nav('reload', 'Neu laden', '↻', false), nav('home', 'Startseite der Seite', '⌂', false),
     middle,
@@ -172,6 +181,10 @@ function renderToolbar(p) {
       onClick: async (e) => { const b = e.currentTarget; b.disabled = true; announce('Video wird vorbereitet …'); const r = await api.webAnalyzeVideo(p.id); b.disabled = false; if (!r.ok) { alert(r.error); return; } sendMessage(r.data); } }, h('span', { 'aria-hidden': 'true', text: '▶ ' }), 'Video analysieren') : null,
     h('button', { class: 'link', 'data-focus': 'web-rename-btn', onClick: () => { webv.renaming = true; renderWebChrome(); } }, 'Umbenennen'),
     h('button', { class: 'link', 'data-focus': 'web-browser', onClick: () => api.webOpenBrowser(p.id) }, 'Im Browser öffnen'));
+  if (!p.googleSignIn) return bar;
+  return [h('div', { class: 'web-google', role: 'status' },
+    h('span', { class: 'grow', text: 'Google erlaubt keine Anmeldung in eingebauten Browsern. Die Zentrale hat die Seite in deinem normalen Browser geöffnet – melde dich dort ganz normal an.' }),
+    h('button', { class: 'btn', 'data-focus': 'web-google', onClick: () => api.webOpenBrowser(p.id) }, 'Im Browser öffnen')), bar];
 }
 
 // „Claude bedient gerade …“ – oben im Web-Bereich und als Hinweis in der rechten Seitenleiste.
@@ -219,7 +232,7 @@ function renderWebChrome() {
       h('button', { class: 'web-tab-add', 'aria-label': 'Seite hinzufügen', title: 'Seite hinzufügen', 'data-focus': 'web-add',
         onClick: () => { webv.adding = true; renderWebChrome(); } }, '+')) : null,
     showForm ? renderAddForm() : renderToolbar(p)));
-  $('#web-host').hidden = showForm || !p;
+  $('#web-host').hidden = showForm || !p || !!p.googleApp;
   sendWebBounds();
 }
 

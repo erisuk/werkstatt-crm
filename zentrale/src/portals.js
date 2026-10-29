@@ -56,15 +56,66 @@ function normalizeUrl(input) {
 }
 
 // Ungelesene aus dem Seitentitel, z. B. „Posteingang (3) – Gmail“ oder „(12) WhatsApp“.
+// Nur am Anfang („(3) Facebook“) oder Zahlen ohne Jahreszahl-Form („Posteingang (1.234)“) –
+// sonst zählte „Titanic (1997) – Wikipedia“ als 1997 Ungelesene.
 function unreadFromTitle(title) {
-  const m = /\((\d{1,4})\)/.exec(String(title || ''));
-  return m ? Number(m[1]) : 0;
+  const t = String(title || '');
+  const m = /^\s*\((\d{1,3}(?:[.,]\d{3})*|\d{1,6})\+?\)/.exec(t) || /\((\d{1,3}(?:[.,]\d{3})*)\+?\)/.exec(t);
+  return m ? Number(m[1].replace(/[.,]/g, '')) : 0;
 }
 
 // Google und Microsoft lehnen Anmeldungen ab, wenn sich der Browser als „Electron“ ausgibt.
 // Wir melden uns deshalb wie das Chrome, auf dem Electron beruht.
 function chromeUserAgent(ua) {
   return String(ua || '').replace(/\s(Electron|zentrale|Zentrale)\/\S+/g, '').replace(/\s{2,}/g, ' ').trim();
+}
+
+// Google erlaubt keine Anmeldung in eingebauten Browsern (absichtlich, gegen Passwort-Diebstahl). Landet ein Tab
+// auf der Anmeldung, öffnet die Zentrale die Seite im normalen Browser – dort klappt die Anmeldung ganz normal.
+const isGoogleSignIn = (url) => /^https:\/\/accounts\.google\.com(\/|$)/i.test(String(url || ''));
+
+// Google-Seiten, die eine Anmeldung brauchen: Sie öffnen gleich im normalen Browser (dort ist man angemeldet),
+// statt im Tab an der gesperrten Anmeldung zu landen. youtube.com zum Anschauen bleibt im Tab.
+const GOOGLE_APPS = new Set(['mail.google.com', 'workspace.google.com', 'accounts.google.com', 'studio.youtube.com', 'drive.google.com',
+  'docs.google.com', 'calendar.google.com', 'myaccount.google.com', 'gmail.com', 'www.gmail.com', 'analytics.google.com',
+  'business.google.com', 'ads.google.com', 'photos.google.com', 'contacts.google.com', 'keep.google.com']);
+function isGoogleApp(url) {
+  try { return GOOGLE_APPS.has(new URL(String(url)).hostname.toLowerCase()); } catch { return false; }
+}
+
+// Verständlicher Text, wenn eine Seite nicht lädt (Chromium-Fehlernummern). Offline meldet macOS
+// oft nicht „getrennt“, sondern „Adresse nicht gefunden“ – das soll trotzdem verständlich sein.
+function loadErrorText(code, desc, url) {
+  let local = false;
+  try { local = /^(localhost|127\.0\.0\.1|\[::1\]|.+\.localhost)$/.test(new URL(String(url)).hostname); } catch {}
+  if (code === -106) return 'Keine Internetverbindung.';
+  if (code === -105 || code === -137) return local ? 'Diese lokale Adresse gibt es nicht.' : 'Seite nicht gefunden – prüfe die Internetverbindung oder die Adresse.';
+  if (code === -102) return local ? 'Der lokale Server läuft gerade nicht.' : 'Die Seite lehnt die Verbindung ab.';
+  if (code === -7 || code === -118) return 'Die Seite antwortet nicht (Zeitüberschreitung). Prüfe die Internetverbindung.';
+  if (code === -21) return 'Das Netzwerk hat gewechselt – bitte neu laden.';
+  return `Die Seite ließ sich nicht laden (${desc}).`;
+}
+
+// Größe eines Anmelde-Fensters: was die Seite bei window.open wünscht (width=…,height=…),
+// begrenzt auf vernünftige Maße; ohne Angabe 520 × 720.
+const POPUP = { width: [360, 1400, 520], height: [400, 1000, 720] };
+function popupSize(features) {
+  const out = {};
+  for (const [key, [min, max, fallback]] of Object.entries(POPUP)) {
+    const m = new RegExp(`(?:^|,)\\s*${key}\\s*=\\s*(\\d+)`, 'i').exec(String(features || ''));
+    out[key] = m ? Math.min(max, Math.max(min, Number(m[1]))) : fallback;
+  }
+  return out;
+}
+
+// Wohin Google nach der Anmeldung wollte (continue=…); sonst die Adresse selbst.
+function browserTarget(url) {
+  if (!isGoogleSignIn(url)) return url;
+  try {
+    const next = new URL(url).searchParams.get('continue');
+    if (next && /^https:\/\//i.test(next) && !isGoogleSignIn(next)) return next;
+  } catch {}
+  return 'https://accounts.google.com/';
 }
 
 function sanitize(list) {
@@ -168,4 +219,4 @@ class PortalStore {
   }
 }
 
-module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, sanitize, MAX_PORTALS, partitionFor, profileOf };
+module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, isGoogleSignIn, isGoogleApp, browserTarget, popupSize, loadErrorText, sanitize, MAX_PORTALS, partitionFor, profileOf };

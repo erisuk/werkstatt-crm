@@ -77,6 +77,25 @@ test('readMessages liefert nur echte Nachrichten und fasst Antworten zusammen', 
   ]);
 });
 
+test('readMessages mit Schritten: Reihenfolge wie live, ohne Skill-Text, Zusammenfassung und Abbruch-Hinweis', () => {
+  const root = tmp('zentrale-');
+  const file = path.join(root, 'x.jsonl');
+  const lines = [
+    { type: 'user', message: { content: 'Mach das' } },
+    { type: 'user', isMeta: true, message: { content: [{ type: 'text', text: 'Base directory for this skill: /x' }] } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'Ich schaue nach.' }, { type: 'tool_use', name: 'Read', input: { file_path: '/a/b.js' } }, { type: 'text', text: 'Gefunden.' }] } },
+    { type: 'user', message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] } },
+    { type: 'user', isCompactSummary: true, message: { content: 'This session is being continued …' } },
+  ];
+  fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  assert.deepStrictEqual(readMessages(file, 200, { tools: true }), [
+    { role: 'user', text: 'Mach das' },
+    { role: 'assistant', text: 'Ich schaue nach.' },
+    { role: 'tool', tool: 'Read', detail: 'b.js' },
+    { role: 'assistant', text: 'Gefunden.' },
+  ]);
+});
+
 test('shortTitle kürzt am Wort mit Auslassungszeichen', () => {
   assert.strictEqual(shortTitle('Kurz\nzweite Zeile'), 'Kurz');
   const long = 'also ich will eine Zentrale bauen in der ich dich bedienen kann aber in meinem eigenen stil';
@@ -191,7 +210,7 @@ test('simplify übersetzt stream-json Ereignisse', () => {
     [{ kind: 'init', sessionId: 's1', model: 'm' }]);
   assert.deepStrictEqual(simplify({ type: 'assistant', message: { content: [
     { type: 'text', text: 'Hi' }, { type: 'tool_use', name: 'Bash', input: { command: 'ls -la\nzweite' } }] } }),
-  [{ kind: 'text', text: 'Hi' }, { kind: 'tool', text: 'Bash · ls -la' }]);
+  [{ kind: 'text', text: 'Hi' }, { kind: 'tool', text: 'Bash · ls -la', tool: 'Bash', detail: 'ls -la' }]);
   assert.deepStrictEqual(simplify({ type: 'result', is_error: true, result: 'kaputt' }),
     [{ kind: 'error', text: 'Claude hat einen Fehler gemeldet.', details: 'kaputt' }]);
   assert.deepStrictEqual(simplify({ type: 'result', is_error: false }), []);
@@ -406,6 +425,52 @@ test('Chat: Freigabe erlauben, ablehnen und "immer erlauben"', async () => {
   }
 });
 
+test('Chat: „Ohne Rückfrage arbeiten“ erlaubt alles sofort, offene Rückfragen laufen beim Einschalten weiter', async () => {
+  let all = false;
+  const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir(), allowAll: () => all });
+  const events = collect(chat);
+  const texts = () => events.filter((e) => e.kind === 'text').map((e) => e.text);
+  try {
+    await chat.send('FREIGABE:rm -rf build');
+    assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
+    all = true;
+    chat.allowPending();
+    assert.ok(await waitFor(() => texts().includes('erlaubt:rm -rf build')));
+    await chat.send('FREIGABE:git push');
+    assert.ok(await waitFor(() => texts().includes('erlaubt:git push')));
+    assert.strictEqual(chat.pendingApprovals().length, 0);
+  } finally {
+    await chat.stop();
+  }
+});
+
+test('Chat: auch zu lange (abgeschnittene) Rückfragen laufen beim Ausschalten der Rückfragen weiter', async () => {
+  let all = false;
+  const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir(), allowAll: () => all });
+  const events = collect(chat);
+  try {
+    await chat.send(`FREIGABE:echo ${'x'.repeat(60000)}`);
+    assert.ok(await waitFor(() => chat.pendingApprovals().length === 1));
+    assert.strictEqual(chat.pendingApprovals()[0].truncated, true);
+    all = true;
+    chat.allowPending();
+    assert.ok(await waitFor(() => events.some((e) => e.kind === 'text' && /^(erlaubt|abgelehnt)/.test(e.text))));
+    assert.ok(events.some((e) => e.kind === 'text' && e.text.startsWith('erlaubt:echo x')));
+    assert.strictEqual(chat.pendingApprovals().length, 0);
+  } finally {
+    await chat.stop();
+  }
+});
+
+test('Einstellungen: Rückfragen sind standardmäßig aus, lassen sich einschalten', () => {
+  const file = path.join(tmp('set-ask-'), 'settings.json');
+  const s = new Settings(file);
+  assert.strictEqual(s.get().askFirst, false);
+  assert.strictEqual(s.update({ askFirst: 'ja' }).askFirst, false);
+  assert.strictEqual(s.update({ askFirst: true }).askFirst, true);
+  assert.strictEqual(new Settings(file).get().askFirst, true);
+});
+
 test('Chat: offene Freigaben verschwinden beim Stoppen', async () => {
   const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir() });
   let changes = 0;
@@ -539,10 +604,10 @@ test('parseMcpList erkennt Namen und Status', () => {
 test('Settings speichert nur gültige Werte', () => {
   const file = path.join(tmp('settings-'), 'settings.json');
   const s = new Settings(file);
-  assert.deepStrictEqual(s.get(), { theme: 'system', connections: { mac: false, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false } });
+  assert.deepStrictEqual(s.get(), { theme: 'system', connections: { mac: false, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false }, askFirst: false });
   s.update({ theme: 'dark', connections: { mac: true, boese: true } });
   s.update({ theme: 'lila', connections: { chrome: 'ja' } });
-  assert.deepStrictEqual(new Settings(file).get(), { theme: 'dark', connections: { mac: true, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false } });
+  assert.deepStrictEqual(new Settings(file).get(), { theme: 'dark', connections: { mac: true, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false }, askFirst: false });
   fs.writeFileSync(file, 'kaputt');
   assert.strictEqual(new Settings(file).get().theme, 'system');
 });

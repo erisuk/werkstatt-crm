@@ -3,6 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
+const { toolStep } = require('./tool-steps');
 
 const DEFAULT_ROOT = path.join(os.homedir(), '.claude', 'projects');
 const HEAD_BYTES = 256 * 1024;
@@ -53,12 +54,15 @@ function textOf(content) {
 const SYSTEM_PROMPT = /^<(command-|local-command|system-reminder|user-prompt|bash-|task-notification|ide_|persisted-output)/;
 function isRealPrompt(text) {
   const t = (text || '').trim();
-  return !!t && !SYSTEM_PROMPT.test(t) && !t.startsWith('Caveat:');
+  // „[Request interrupted by user]“ schreibt Claude Code beim Stoppen – keine Frage von dir.
+  return !!t && !SYSTEM_PROMPT.test(t) && !t.startsWith('Caveat:') && !/^\[Request interrupted by user/.test(t);
 }
 
 // Erste Zeile als Titel; zu lange Titel enden am Wort mit "…".
+// Angehängte Dateien („Datei: /pfad“) sind kein guter Titel – die erste echte Textzeile zählt.
 function shortTitle(text, max = 80) {
-  const line = String(text || '').trim().split('\n')[0].trim();
+  const lines = String(text || '').trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  const line = lines.find((l) => !/^Datei: \//.test(l)) || (lines[0] || '').replace(/^Datei: .*\//, '');
   if (line.length <= max) return line;
   const cut = line.slice(0, max);
   const space = cut.lastIndexOf(' ');
@@ -86,7 +90,7 @@ function parseSession(file) {
     if (!cwd && o.cwd) cwd = o.cwd;
     if (o.type === 'custom-title' && o.customTitle) customTitle = o.customTitle;
     if (o.type === 'summary' && o.summary && !customTitle) customTitle = o.summary;
-    if (!title && o.type === 'user' && !o.isSidechain && o.message) {
+    if (!title && o.type === 'user' && !o.isSidechain && !o.isMeta && !o.isCompactSummary && o.message) {
       const t = textOf(o.message.content);
       if (isRealPrompt(t)) { title = continuationTitle(t) || shortTitle(t); snippet = t.trim().slice(0, 1500); }
     }
@@ -150,7 +154,8 @@ function listProjects(root = DEFAULT_ROOT, cache = sessionCache) {
 }
 
 // Lädt den Verlauf einer Sitzung als einfache Nachrichtenliste.
-function readMessages(file, limit = 200) {
+// tools: true = auch Claudes Arbeitsschritte (Werkzeugaufrufe) als { role: 'tool', tool, detail } liefern.
+function readMessages(file, limit = 200, { tools = false } = {}) {
   const size = fs.statSync(file).size;
   let text;
   if (size > MAX_READ_BYTES) {
@@ -169,14 +174,21 @@ function readMessages(file, limit = 200) {
   for (const o of parseLines(text)) {
     if (o.isSidechain || !o.message) continue;
     if (o.type === 'user') {
+      // Von Claude Code eingefügte Texte (Skill-Inhalt, Zusammenfassung nach /compact) zeigt der Live-Chat auch nicht.
+      if (o.isMeta || o.isCompactSummary) continue;
       const t = textOf(o.message.content);
       if (isRealPrompt(t)) out.push({ role: 'user', text: t.trim() });
     } else if (o.type === 'assistant' && Array.isArray(o.message.content)) {
-      const t = textOf(o.message.content).trim();
-      if (!t) continue;
-      const last = out[out.length - 1];
-      if (last && last.role === 'assistant') last.text += '\n\n' + t;
-      else out.push({ role: 'assistant', text: t });
+      // Blöcke in ihrer Reihenfolge – wie im laufenden Chat (Text, dann Schritte, dann wieder Text).
+      for (const b of o.message.content) {
+        if (!b) continue;
+        if (b.type === 'tool_use') { if (tools) out.push({ role: 'tool', ...toolStep(b.name, b.input) }); continue; }
+        const t = b.type === 'text' && typeof b.text === 'string' ? b.text.trim() : '';
+        if (!t) continue;
+        const last = out[out.length - 1];
+        if (last && last.role === 'assistant') last.text += '\n\n' + t;
+        else out.push({ role: 'assistant', text: t });
+      }
     }
   }
   return out.slice(-limit);

@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { toolStep } = require('./tool-steps');
 
 function execText(cmd, args, opts) {
   return new Promise((resolve) => {
@@ -90,7 +91,7 @@ function simplify(ev) {
     const out = [];
     for (const b of ev.message.content) {
       if (b.type === 'text' && b.text && b.text.trim()) out.push({ kind: 'text', text: b.text });
-      else if (b.type === 'tool_use') out.push({ kind: 'tool', text: describeTool(b.name, b.input) });
+      else if (b.type === 'tool_use') out.push({ kind: 'tool', text: describeTool(b.name, b.input), ...toolStep(b.name, b.input) });
     }
     return out;
   }
@@ -279,8 +280,9 @@ const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 class ClaudeChat extends EventEmitter {
   constructor({ bin, env, cwd, resume = null, permissionMode = null, title = null,
-    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null }) {
+    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null, allowAll = () => false }) {
     super();
+    this.allowAll = allowAll; // true = jede Anfrage sofort erlauben (Einstellung „Ohne Rückfrage arbeiten“)
     this.bin = bin;
     this.approvalInfo = approvalInfo;
     this.env = env;
@@ -349,7 +351,9 @@ class ClaudeChat extends EventEmitter {
     const key = approvalKey(req.tool_name, req.input);
     const readOnly = req.tool_name === 'Bash' && this.permissionMode === 'acceptEdits'
       && isReadOnlyCommand(req.input && req.input.command, this.cwd);
-    if (readOnly || this.alwaysAllow.has(key)) {
+    let all = false;
+    try { all = this.allowAll() === true; } catch {}
+    if (all || readOnly || this.alwaysAllow.has(key)) {
       this.write({ type: 'control_response', response: { subtype: 'success', request_id: ev.request_id,
         response: { behavior: 'allow', updatedInput: req.input || {} } } });
       return;
@@ -364,12 +368,19 @@ class ClaudeChat extends EventEmitter {
     this.emit('approvals');
   }
 
-  // decision: 'allow' | 'always' | 'deny'. Was nicht vollständig angezeigt werden konnte, lässt sich nur ablehnen.
-  respond(id, decision) {
+  // Alle offenen Rückfragen auf einmal erlauben (wenn „Ohne Rückfrage arbeiten“ eingeschaltet wird).
+  // Auch zu lange: Neue Anfragen erlaubt handleControl dann ebenfalls ungesehen – ein „abgelehnt“ wäre gelogen.
+  allowPending() {
+    for (const id of [...this.approvals.keys()]) this.respond(id, 'allow', { unseen: true });
+  }
+
+  // decision: 'allow' | 'always' | 'deny'. Was nicht vollständig angezeigt werden konnte, lässt sich nur ablehnen
+  // (außer unseen: der Nutzer hat „Ohne Rückfrage arbeiten“ gewählt).
+  respond(id, decision, { unseen = false } = {}) {
     const a = this.approvals.get(id);
     if (!a) return false;
     this.approvals.delete(id);
-    const allow = (decision === 'allow' || decision === 'always') && !a.truncated;
+    const allow = (decision === 'allow' || decision === 'always') && (!a.truncated || unseen === true);
     if (decision === 'always' && allow && a.canAlways) this.alwaysAllow.add(a.key);
     this.write({ type: 'control_response', response: { subtype: 'success', request_id: id,
       response: allow ? { behavior: 'allow', updatedInput: a.input }
@@ -489,9 +500,9 @@ const TASK_TIMEOUT_MS = 30 * 60 * 1000;
 
 // Führt einen einzelnen Auftrag aus (für tägliche Aufgaben). Läuft wie ein Chat, damit
 // Freigaben genauso in der Zentrale landen. onApproval(chat) meldet neue Rückfragen.
-function runTask({ bin, env, cwd, prompt, extraArgs, approvalInfo, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot, permissionMode }) {
+function runTask({ bin, env, cwd, prompt, extraArgs, approvalInfo, onApproval, timeoutMs = TASK_TIMEOUT_MS, projectsRoot, permissionMode, allowAll }) {
   return new Promise((resolve) => {
-    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, approvalInfo, projectsRoot, permissionMode: permissionMode || permissionModeFor(cwd) });
+    const chat = new ClaudeChat({ bin, env, cwd, extraArgs, approvalInfo, projectsRoot, allowAll, permissionMode: permissionMode || permissionModeFor(cwd) });
     const texts = [];
     let error = null;
     let sent = false;

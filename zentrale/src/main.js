@@ -20,8 +20,9 @@ const health = require('./health');
 const { FolderWatcher } = require('./watcher');
 const { AlertWatch } = require('./alerts');
 const morning = require('./morning');
-const { PlanStore, uploadPrompt } = require('./planner');
-const { PortalStore, PRESETS, partitionFor, BIT_PROFILE, BIT_TABS } = require('./portals');
+const { PlanStore, uploadPrompt, YT_API_TARGET } = require('./planner');
+const { YouTube } = require('./youtube');
+const { PortalStore, PRESETS, partitionFor, BIT_PROFILE, BIT_TABS, browserTarget } = require('./portals');
 const { WebTabs, portalSession } = require('./web-tabs');
 const { videoSite, cookieFileText, analyzePrompt } = require('./video-analyze');
 const { WebsiteStudio, AGENT: WEB_AGENT } = require('./website-studio');
@@ -56,7 +57,14 @@ const EXTERNAL_LINKS = new Set([
   'https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
+  // Anleitung unter Verbindungen → YouTube
+  'https://console.cloud.google.com/projectcreate',
+  'https://console.cloud.google.com/apis/library/youtube.googleapis.com',
+  'https://console.cloud.google.com/auth/overview',
+  'https://console.cloud.google.com/auth/clients',
 ]);
+// Eigene hochgeladene Videos („Letztes Video ansehen“, ✓ im Planer) – nur die Kurzadresse mit Video-ID.
+const YT_VIDEO_LINK = /^https:\/\/youtu\.be\/[\w-]{6,20}$/;
 
 // Läuft im angemeldeten n8n-Tab (eigene, isolierte Skriptwelt) und legt dort einen API-Schlüssel an.
 // n8n verlangt bei Anfragen mit Anmelde-Cookie die browser-id aus dem localStorage der Seite.
@@ -185,7 +193,12 @@ function setup() {
   function chatInfo() {
     if (!chat) return null;
     return { gen: chatGen, cwd: chat.cwd, name: path.basename(chat.cwd) || chat.cwd, sessionId: chat.sessionId, status: chat.status,
-      title: chat.title, careful: chat.permissionMode !== 'acceptEdits' };
+      title: chat.title, careful: chat.permissionMode !== 'acceptEdits' && !allowAll(), allowAll: allowAll() };
+  }
+
+  // Einstellung „Ohne Rückfrage arbeiten“: Claude darf alles, ohne zu fragen (Standard, Eris' Wunsch).
+  function allowAll() {
+    return !!settings && settings.get().askFirst !== true;
   }
 
   function approvals() {
@@ -377,7 +390,7 @@ function setup() {
     // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
     const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
     const args = agent ? () => [...extraArgs(), '--agent', agent] : extraArgs;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo });
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll });
     chat = c;
     c.on('event', (ev) => {
       send('chat-event', { ...ev, gen });
@@ -494,7 +507,7 @@ function setup() {
     // Fortsetzen geht nur im Ordner, in dem das Gespräch entstanden ist.
     if (!isDir(session.cwd)) return { error: 'Der Projektordner dieses Gesprächs existiert nicht mehr.' };
     let history = [];
-    try { history = readMessages(session.file); } catch {}
+    try { history = readMessages(session.file, 400, { tools: true }); } catch {}
     if (chat && chat.sessionId === sessionId) return { chat: chatInfo(), history };
     const info = await openChat({ cwd: session.cwd, sessionId, title: session.title });
     return { chat: info, history };
@@ -557,6 +570,8 @@ function setup() {
     if (patch && typeof patch === 'object' && patch.backup && typeof patch.backup === 'object') patch = { ...patch, backup: { auto: patch.backup.auto } };
     const next = settings.update(patch);
     nativeTheme.themeSource = next.theme;
+    // Rückfragen gerade ausgeschaltet: was noch auf eine Freigabe wartet, läuft sofort weiter.
+    if (!next.askFirst) for (const c of [chat, ...taskChats.keys()]) if (c) c.allowPending();
     let applied = true;
     const changed = Object.keys(next.connections).some((k) => next.connections[k] !== before[k]);
     const turnedOff = Object.keys(next.connections).some((k) => before[k] && !next.connections[k]);
@@ -918,6 +933,44 @@ function setup() {
   ipcMain.handle('planner-save', (_e, post) => plannerStore().upsert(post));
   ipcMain.handle('planner-remove', (_e, id) => { if (typeof id === 'string') plannerStore().remove(id); return { ok: true }; });
   ipcMain.handle('planner-status', (_e, a) => plannerStore().setStatus(a && a.id, a && a.status));
+  // YouTube über die offizielle Schnittstelle (Verbindungen → YouTube). Der Zugang liegt verschlüsselt im Schlüsselbund.
+  let youtube = null;
+  const yt = () => youtube || (youtube = new YouTube({ file: path.join(app.getPath('userData'), 'youtube.json'),
+    encrypt: (t) => safeStorage.encryptString(t).toString('base64'), decrypt: (b) => safeStorage.decryptString(Buffer.from(b, 'base64')),
+    openExternal: (url) => shell.openExternal(url) }));
+  let lastClientFile = null; // nur diese Datei darf „In den Papierkorb“ (sie enthält das Client-Geheimnis)
+  ipcMain.handle('yt-status', () => yt().checkedStatus()); // fragt höchstens kurz bei Google nach, ob der Zugang noch gilt
+  ipcMain.handle('yt-client-file', async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile'], title: 'Google-Anmeldedaten wählen (client_secret_….json)',
+      defaultPath: path.join(os.homedir(), 'Downloads'), filters: [{ name: 'JSON', extensions: ['json'] }] });
+    if (res.canceled || !res.filePaths[0]) return { ok: false, cancelled: true };
+    let text;
+    try { if (fs.statSync(res.filePaths[0]).size > 64 * 1024) return { ok: false, error: 'Die Datei ist zu groß für Google-Anmeldedaten.' }; text = fs.readFileSync(res.filePaths[0], 'utf8'); }
+    catch (e) { return { ok: false, error: e.message }; }
+    const r = yt().setClient(text);
+    if (r.ok) lastClientFile = res.filePaths[0];
+    return r.ok ? { ok: true, file: res.filePaths[0] } : r;
+  });
+  ipcMain.handle('yt-trash-file', async (_e, file) => {
+    // Nur die eben gewählte Google-Datei – sonst nichts.
+    if (typeof file !== 'string' || file !== lastClientFile) return { ok: false, error: 'Diese Datei darf die Zentrale nicht verschieben.' };
+    try { await shell.trashItem(file); } catch (e) { return { ok: false, error: e.message }; } // Freigabe bleibt: nochmal versuchen geht
+    lastClientFile = null;
+    return { ok: true };
+  });
+  ipcMain.handle('yt-connect', () => yt().connect());
+  ipcMain.handle('yt-disconnect', () => yt().disconnect());
+  ipcMain.handle('yt-upload', async (_e, a) => {
+    const post = plannerStore().list().find((p) => p.id === (a && a.id));
+    const target = post && post.targets.find((t) => t.tabId === YT_API_TARGET);
+    if (!target) return { ok: false, error: 'Beitrag nicht gefunden.' };
+    if (target.doneAt) return { ok: false, error: `Dieser Beitrag ist schon auf YouTube: ${target.url}` };
+    const r = await yt().upload(post, { onProgress: (progress) => send('yt-progress', { id: post.id, progress }) });
+    // Nur dieses Ziel ist erledigt; „hochgeladen“ wird der Beitrag erst, wenn alle Ziele erledigt sind.
+    if (r.ok) plannerStore().markTargetDone(post.id, YT_API_TARGET, r.url);
+    send('planner-changed'); // auch bei Fehlern – z. B. wenn die Seite nach der App-Sperre neu geladen wurde
+    return r;
+  });
   ipcMain.handle('planner-upload', (_e, a) => {
     const post = plannerStore().list().find((p) => p.id === (a && a.id));
     const target = post && post.targets.find((t) => t.tabId === (a && a.tabId));
@@ -1342,7 +1395,7 @@ function setup() {
 
   ipcMain.handle('web-open-browser', (_e, id) => {
     const url = typeof id === 'string' && webTabs.currentUrl(id);
-    if (url && /^https?:\/\//.test(url)) shell.openExternal(url);
+    if (url && /^https?:\/\//.test(url)) shell.openExternal(browserTarget(url)).catch(() => {});
   });
   ipcMain.handle('web-clear-logins', async () => {
     const { response } = await dialog.showMessageBox(win, {
@@ -1356,8 +1409,9 @@ function setup() {
   });
 
   // ---------- App-Sperre ----------
-  function lockApp() {
-    if (appLocked || !settings || !settings.get().appLock.enabled) return;
+  // manual: Knopf „Sperren“ – sperrt auch, wenn die automatische Sperre aus ist (sonst passierte beim Klick nichts).
+  function lockApp(manual = false) {
+    if (appLocked || !settings || (manual !== true && !settings.get().appLock.enabled)) return;
     appLocked = true;
     finLock();
     if (webTabs) webTabs.setVisible(false);
@@ -1374,16 +1428,22 @@ function setup() {
       { timeout: 120000 }, (err) => resolve(!err)));
     return ok ? { ok: true } : { ok: false, cancelled: true };
   }
+  // Nur eine Abfrage gleichzeitig: ein zweiter Klick (z. B. erst Touch ID, dann Mac-Passwort) wartet auf die laufende,
+  // statt einen zweiten Dialog zu öffnen, der nach dem Entsperren noch offen stünde.
+  let unlocking = null;
   ipcMain.handle('app-unlock', async (e, method) => {
     if (!win || e.sender !== win.webContents) return { ok: false, error: 'Nicht erlaubt.' };
     if (!appLocked) return { ok: true };
-    const r = await verifyUser(method === 'password' ? 'password' : 'touchid');
-    if (!r.ok) return r;
-    appLocked = false;
-    loadPage();
-    return { ok: true };
+    if (!unlocking) {
+      unlocking = verifyUser(method === 'password' ? 'password' : 'touchid').then((r) => {
+        if (r.ok && appLocked) { appLocked = false; loadPage(); }
+        return r;
+      }).finally(() => { unlocking = null; });
+    }
+    const r = await unlocking;
+    return r.ok ? { ok: true } : r;
   });
-  ipcMain.handle('app-lock', () => { lockApp(); return { ok: true }; });
+  ipcMain.handle('app-lock', () => { lockApp(true); return { ok: true }; });
   const lockTimer = setInterval(() => {
     const l = settings && settings.get().appLock;
     if (l && l.enabled && !appLocked && powerMonitor.getSystemIdleTime() >= l.minutes * 60) lockApp();
@@ -1395,7 +1455,7 @@ function setup() {
   ipcMain.handle('chat-history', () => {
     const s = chat && findSession(chat.sessionId);
     if (!s) return [];
-    try { return readMessages(s.file); } catch { return []; }
+    try { return readMessages(s.file, 400, { tools: true }); } catch { return []; }
   });
 
   // ---------- Kontrollraum: blinde Flecken, Tempo, Fehler, Schutz ----------
@@ -1471,12 +1531,21 @@ function setup() {
     if (ok.response !== 0) return { ok: false, cancelled: true, error: 'Abgebrochen – nichts geändert.' };
     return backup.enableFirewall({ stealth });
   });
+  // Läuft alle 30 s mit an. Ein echter Fehler (Cloud-Ordner, Platte voll …) meldet sich einmal und wartet bis morgen,
+  // sonst käme alle 30 s dieselbe Mitteilung. Eine fehlende Platte probiert es weiter, bis sie angesteckt ist.
+  let backupRunning = false;
   async function dailyBackup() {
     const cfg = settings.get().backup;
-    if (!backup.isDue(cfg, backupStore.get().lastDay)) return;
-    const r = await doBackup(true);
-    if (r.ok) notify('Gesichert', `Die Daten der Zentrale liegen jetzt auch in ${path.basename(path.dirname(path.dirname(r.dir)))}.`, 'kontrolle');
-    else if (!r.missing) notify('Sicherung ging nicht', r.error, 'kontrolle');
+    if (backupRunning || !backup.isDue(cfg, backupStore.get().lastDay, new Date(), backupStore.get().failDay)) return;
+    backupRunning = true;
+    try {
+      const r = await doBackup(true);
+      if (r.ok) notify('Gesichert', `Die Daten der Zentrale liegen jetzt auch in ${path.basename(path.dirname(path.dirname(r.dir)))}.`, 'kontrolle');
+      else if (!r.missing) {
+        backupStore.set({ ...backupStore.get(), failDay: backup.localDay() });
+        notify('Sicherung ging nicht', r.error, 'kontrolle');
+      }
+    } finally { backupRunning = false; }
   }
 
   // ---------- Lernen & Training ----------
@@ -1612,7 +1681,7 @@ function setup() {
   ipcMain.handle('kontrolle-reset', () => { dataLayer.reset(); return { ok: true }; });
 
   ipcMain.handle('open-external', (_e, url) => {
-    if (typeof url === 'string' && EXTERNAL_LINKS.has(url)) shell.openExternal(url);
+    if (typeof url === 'string' && (EXTERNAL_LINKS.has(url) || YT_VIDEO_LINK.test(url))) shell.openExternal(url);
   });
 
   app.on('second-instance', () => {
@@ -1626,6 +1695,8 @@ function setup() {
     webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
     webTabs.on('change', () => send('web-state', webState()));
     webTabs.on('shortcut', (name) => { if (name === 'switcher') send('switcher-toggle'); });
+    // Google sperrt die Anmeldung in eingebauten Browsern – im normalen Browser geht sie ganz normal.
+    webTabs.on('google-signin', ({ url }) => shell.openExternal(browserTarget(url)).catch(() => {}));
     // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
     browser = new BrowserControl(webTabs);
     browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));
@@ -1651,7 +1722,7 @@ function setup() {
       if (!claude.bin) return Promise.resolve({ ok: false, text: 'Claude Code wurde nicht gefunden.' });
       const cwd = isDir(task.cwd) ? task.cwd : os.homedir();
       return runTask({
-        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs, approvalInfo,
+        bin: claude.bin, env: claude.env, cwd, prompt: task.prompt, extraArgs, approvalInfo, allowAll,
         onApproval: (c) => {
           // Läuft die Aufgabe, merken wir uns ihren Chat, damit Freigaben zugeordnet werden können.
           if (!taskChats.has(c)) taskChats.set(c, task.name);

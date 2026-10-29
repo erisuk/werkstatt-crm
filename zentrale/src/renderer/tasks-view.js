@@ -116,7 +116,7 @@ function renderTaskForm() {
         if (dir) { t.cwd = dir; folderLabel.textContent = dir; dirty(); }
       } }, 'Ordner wählen'))),
   h('div', { class: 'field full' }, h('label', { for: 'task-prompt', text: 'Auftrag an Claude' }), prompt,
-    h('span', { class: 'hint', text: 'Claude darf Dateien im gewählten Projektordner ohne Rückfrage bearbeiten. Ohne Projektordner und für alles andere fragt die Zentrale dich vorher.' })),
+    h('span', { class: 'hint', text: settings().askFirst ? 'Claude darf Dateien im gewählten Projektordner ohne Rückfrage bearbeiten. Ohne Projektordner und für alles andere fragt die Zentrale dich vorher.' : 'Claude arbeitet ohne Rückfrage (umschaltbar im Kontrollraum → Schutz → Rückfragen).' })),
   h('div', { class: 'actions full' },
     t.id ? h('button', { type: 'button', class: 'btn danger', onClick: async () => {
       if (!confirm(`„${t.name || 'Aufgabe'}“ löschen?`)) return;

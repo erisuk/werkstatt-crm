@@ -66,3 +66,22 @@ test('Fälligen Beitrag verschieben: wieder geplant und wird erneut gemeldet', (
   assert.strictEqual(moved.status, 'geplant');
   assert.strictEqual(s.takeDue(Date.UTC(2026, 10, 2, 10)).length, 1);
 });
+
+test('Mehrere Ziele: YouTube direkt wird je Ziel als erledigt gemerkt, nicht doppelt – erst alle Ziele = hochgeladen', () => {
+  const file = tmp();
+  const s = new PlanStore(file);
+  const yt = { platform: 'youtube', tabId: 'youtube-api', tabName: 'YouTube direkt' };
+  const p = s.upsert({ ...base, targets: [yt, base.targets[0]] }).post;
+  const r = s.markTargetDone(p.id, 'youtube-api', 'https://youtu.be/VID123');
+  assert.ok(r.ok);
+  assert.strictEqual(r.post.status, 'geplant', 'das andere Ziel ist noch offen');
+  assert.strictEqual(r.post.targets[0].url, 'https://youtu.be/VID123');
+  assert.ok(r.post.targets[0].doneAt);
+  // Neustart und Bearbeiten im Formular (ohne doneAt) behalten den Haken; erfinden kann ihn die Oberfläche nicht.
+  const reloaded = new PlanStore(file);
+  const edited = reloaded.upsert({ ...base, id: p.id, title: 'Neu', targets: [yt, { ...base.targets[0], doneAt: 1 }] }).post;
+  assert.ok(edited.targets[0].doneAt);
+  assert.strictEqual(edited.targets[1].doneAt, undefined);
+  assert.strictEqual(reloaded.markTargetDone(p.id, 'gibts-nicht').ok, false);
+  assert.strictEqual(reloaded.markTargetDone(p.id, 'yt1').post.status, 'hochgeladen');
+});
