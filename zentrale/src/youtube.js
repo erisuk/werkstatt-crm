@@ -121,11 +121,14 @@ class YouTube {
   async connect() {
     const client = this.secret('client');
     if (!client) return { ok: false, error: 'Zuerst die Datei mit den Google-Anmeldedaten wählen.' };
-    if (this.login) return { ok: false, error: 'Die Anmeldung läuft schon – schau in deinen Browser.' };
+    // Läuft schon eine Anmeldung (Browser-Tab zu, Seite nach der App-Sperre neu geladen …), startet ein neuer Klick sie neu –
+    // sonst hinge man bis zum Zeitlimit fest. Die alte Anmeldung endet mit „superseded“.
+    if (this.login) this.login.cancel();
     const verifier = b64url(crypto.randomBytes(48));
     const state = b64url(crypto.randomBytes(24));
     let server;
-    this.login = new Promise((resolve) => {
+    let cancel;
+    const waiting = new Promise((resolve) => {
       let done = null;
       // Nach dem Ergebnis bleibt der Server noch kurz offen: Chrome fragt die Rückleitung manchmal doppelt an
       // (Vorabladen), die zweite Anfrage bekäme sonst „Verbindung abgelehnt“.
@@ -137,6 +140,7 @@ class YouTube {
         resolve(r);
       };
       const timer = setTimeout(() => finish({ ok: false, error: 'Die Anmeldung hat zu lange gedauert. Bitte noch einmal.' }), LOGIN_TIMEOUT_MS);
+      cancel = () => finish({ ok: false, superseded: true, error: 'Die Anmeldung wurde neu gestartet.' });
       const page = (res, ok) => {
         res.writeHead(ok ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`<!doctype html><meta charset="utf-8"><title>Zentrale</title><body style="font:16px -apple-system,sans-serif;padding:48px">${ok
@@ -162,8 +166,10 @@ class YouTube {
         Promise.resolve(this.openExternal(url)).catch(() => finish({ ok: false, error: 'Der Browser ließ sich nicht öffnen.' }));
       });
     });
+    const mine = { cancel };
+    this.login = mine;
     let r;
-    try { r = await this.login; } finally { this.login = null; }
+    try { r = await waiting; } finally { if (this.login === mine) this.login = null; }
     if (!r.ok) return r;
     try {
       const t = await this.tokenRequest({ code: r.code, client_id: client.id, client_secret: client.secret, redirect_uri: r.redirect,

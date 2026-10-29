@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const { YouTube, parseClientFile, videoResource, tagsFrom } = require('../src/youtube');
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const CLIENT = JSON.stringify({ installed: { client_id: '123-abc.apps.googleusercontent.com', client_secret: 'geheim', redirect_uris: ['http://localhost'] } });
 
 // Nachgebauter Google-Server: Token, Kanal, fortsetzbarer Upload (wahlweise mit einem Abbruch).
@@ -204,6 +205,24 @@ test('YouTube: letzte Antwort geht verloren – Nachfrage meldet „fertig“, k
     assert.strictEqual(r.ok, true, r.error);
     assert.strictEqual(r.url, 'https://youtu.be/VID123');
     assert.strictEqual(g.seen.badRanges || 0, 0, 'kein Stück mit ungültigem Bereich');
+  } finally { g.server.close(); }
+});
+
+test('YouTube: hängende Anmeldung (Tab zu, App-Sperre) – neuer Klick startet sie neu statt 10 Minuten „läuft schon“', async () => {
+  const g = await fakeGoogle();
+  const yt = makeYt(g, { browser: async () => {} }); // Browser-Tab wurde geschlossen: es kommt nie eine Rückleitung
+  try {
+    yt.setClient(CLIENT);
+    const first = yt.connect();
+    await sleep(30);
+    yt.openExternal = fakeBrowser();
+    const second = await yt.connect();
+    assert.strictEqual(second.ok, true, second.error);
+    const old = await first;
+    assert.strictEqual(old.ok, false);
+    assert.strictEqual(old.superseded, true);
+    assert.strictEqual(yt.status().connected, true);
+    assert.strictEqual(yt.login, null);
   } finally { g.server.close(); }
 });
 

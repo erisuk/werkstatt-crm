@@ -14,6 +14,7 @@ async function ytAction(id, fn) {
   yt.busy = id; yt.message = null; renderConnections();
   try {
     const r = await fn();
+    if (r && r.superseded) return; // eine neu gestartete Anmeldung übernimmt Knopf und Meldung
     if (r && r.error) yt.message = r.error;
     else if (r && r.message) yt.message = r.message;
   } catch (e) { yt.message = e.message; }
@@ -41,6 +42,7 @@ function ytCard() {
   const connected = st && st.connected;
   const btn = (id, label, fn, cls = 'btn') => h('button', { class: cls, 'data-focus': `yt-${id}`, disabled: yt.busy !== null, 'aria-busy': String(yt.busy === id), onClick: () => ytAction(id, fn) },
     yt.busy === id ? (id === 'connect' ? 'Warte auf den Browser …' : 'Läuft …') : label);
+  const connect = () => api.ytConnect().then((r) => (r && r.ok ? { message: `Verbunden mit „${r.channel.title}“.` } : r));
   const pickFile = () => api.ytClientFile().then((r) => { if (r && r.ok) { yt.file = r.file; return { message: 'Anmeldedaten übernommen. Jetzt „Mit YouTube anmelden“.' }; } return r && r.cancelled ? null : r; });
   return connCard({ icon: '▶', title: 'YouTube',
     text: 'Videos direkt über die offizielle YouTube-Schnittstelle hochladen – ohne Web-Tab. Zur Wunschzeit veröffentlicht YouTube selbst.',
@@ -55,7 +57,9 @@ function ytCard() {
         : [ytGuide(),
           h('div', { class: 'actions' },
             btn('file', st && st.hasClient ? 'Andere Datei wählen' : 'Datei wählen', pickFile, st && st.hasClient ? 'btn ghost' : 'btn'),
-            st && st.hasClient ? btn('connect', 'Mit YouTube anmelden', () => api.ytConnect().then((r) => (r.ok ? { message: `Verbunden mit „${r.channel.title}“.` } : r))) : null)],
+            st && st.hasClient ? btn('connect', 'Mit YouTube anmelden', connect) : null,
+            // Tab geschlossen oder verloren: Anmeldung neu starten statt bis zum Zeitlimit zu warten.
+            yt.busy === 'connect' ? h('button', { class: 'link', 'data-focus': 'yt-reconnect', onClick: () => ytAction('connect', connect) }, 'Browser nochmal öffnen') : null)],
       yt.file ? h('div', { class: 'sub' }, 'Die heruntergeladene Datei enthält dein Client-Geheimnis und wird nicht mehr gebraucht. ',
         h('button', { class: 'link', onClick: async () => { const f = yt.file; yt.file = null; const r = await api.ytTrashFile(f); yt.message = r.ok ? 'Datei liegt im Papierkorb.' : 'Die Datei ließ sich nicht verschieben.'; renderConnections(); } }, 'In den Papierkorb')) : null,
       h('div', { class: 'sub', text: 'Die Zentrale speichert den Zugang nur verschlüsselt im Schlüsselbund dieses Macs. MURIS-Kanäle verbindet sie nie.' })) });
