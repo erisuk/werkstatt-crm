@@ -144,9 +144,10 @@ h2 { font-size: 16px; font-weight: 600; }
 
 .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .card { border-radius: var(--r); background: var(--card); border: 1px solid var(--border); box-shadow: var(--shadow); }
-.stat { padding: 16px 18px; }
+/* Spalte mit Zahl unten: bricht eine Beschriftung um („Tägliche Aufgaben“), stehen die Zahlen trotzdem auf einer Höhe. */
+.stat { padding: 16px 18px; display: flex; flex-direction: column; }
 .stat .label, .today-card .label { font-size: 13px; color: var(--text-2); }
-.stat .value { margin-top: 4px; font-size: 30px; font-weight: 700; }
+.stat .value { margin-top: auto; padding-top: 4px; font-size: 30px; font-weight: 700; }
 
 .today { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .today-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
