@@ -94,6 +94,8 @@ async function runBackup({ userData, target, now = new Date(), trash, home }) {
     for (const n of items) fs.cpSync(path.join(userData, n), path.join(dest, n), { recursive: true, preserveTimestamps: true });
     fs.writeFileSync(path.join(dest, 'LIESMICH.txt'), README);
   } catch (err) {
+    // Halbe Sicherung weg (Papierkorb), sonst zählte sie zu den 7 und schöbe eine vollständige hinaus.
+    try { await trash(dest); } catch {}
     return { ok: false, error: `Sicherung ging nicht: ${err.code === 'ENOSPC' ? 'Platte voll.' : err.message}` };
   }
   const old = listBackups(t.dir).slice(KEEP);
@@ -102,8 +104,10 @@ async function runBackup({ userData, target, now = new Date(), trash, home }) {
 }
 
 // Einmal am Tag automatisch – nur wenn ein Ziel gewählt und erreichbar ist (externe Platte angesteckt).
-function isDue(cfg, lastDay, now = new Date()) {
-  return !!(cfg && cfg.auto && cfg.dir) && lastDay !== localDay(now);
+// failDay: Tag des letzten echten Fehlers (nicht „Platte fehlt“) – dann erst morgen wieder, „Jetzt sichern“ geht immer.
+function isDue(cfg, lastDay, now = new Date(), failDay = null) {
+  const today = localDay(now);
+  return !!(cfg && cfg.auto && cfg.dir) && lastDay !== today && failDay !== today;
 }
 
 // ---------- Time Machine ----------

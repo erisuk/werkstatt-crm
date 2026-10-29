@@ -1516,12 +1516,21 @@ function setup() {
     if (ok.response !== 0) return { ok: false, cancelled: true, error: 'Abgebrochen – nichts geändert.' };
     return backup.enableFirewall({ stealth });
   });
+  // Läuft alle 30 s mit an. Ein echter Fehler (Cloud-Ordner, Platte voll …) meldet sich einmal und wartet bis morgen,
+  // sonst käme alle 30 s dieselbe Mitteilung. Eine fehlende Platte probiert es weiter, bis sie angesteckt ist.
+  let backupRunning = false;
   async function dailyBackup() {
     const cfg = settings.get().backup;
-    if (!backup.isDue(cfg, backupStore.get().lastDay)) return;
-    const r = await doBackup(true);
-    if (r.ok) notify('Gesichert', `Die Daten der Zentrale liegen jetzt auch in ${path.basename(path.dirname(path.dirname(r.dir)))}.`, 'kontrolle');
-    else if (!r.missing) notify('Sicherung ging nicht', r.error, 'kontrolle');
+    if (backupRunning || !backup.isDue(cfg, backupStore.get().lastDay, new Date(), backupStore.get().failDay)) return;
+    backupRunning = true;
+    try {
+      const r = await doBackup(true);
+      if (r.ok) notify('Gesichert', `Die Daten der Zentrale liegen jetzt auch in ${path.basename(path.dirname(path.dirname(r.dir)))}.`, 'kontrolle');
+      else if (!r.missing) {
+        backupStore.set({ ...backupStore.get(), failDay: backup.localDay() });
+        notify('Sicherung ging nicht', r.error, 'kontrolle');
+      }
+    } finally { backupRunning = false; }
   }
 
   // ---------- Lernen & Training ----------

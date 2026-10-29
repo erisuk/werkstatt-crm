@@ -79,6 +79,26 @@ test('Automatik: einmal am Tag, nur mit Ordner und eingeschaltet', () => {
   assert.strictEqual(backup.isDue({ dir: null, auto: true }, null, now), false);
 });
 
+test('Automatik: nach einem echten Fehler heute kein neuer Versuch (sonst alle 30 s eine Mitteilung)', () => {
+  const now = new Date(2026, 9, 28, 10, 0);
+  assert.strictEqual(backup.isDue({ dir: '/Volumes/X', auto: true }, '2026-10-27', now, '2026-10-28'), false);
+  assert.strictEqual(backup.isDue({ dir: '/Volumes/X', auto: true }, '2026-10-27', now, '2026-10-27'), true);
+});
+
+test('halbe Sicherung nach Fehler landet im Papierkorb und zählt nicht zu den 7', async () => {
+  const { home, userData, disk } = tmpHome();
+  const bad = path.join(userData, 'kaputt.json');
+  fs.writeFileSync(bad, '{}');
+  fs.chmodSync(bad, 0o000); // nicht lesbar → Kopieren scheitert mittendrin
+  const trashed = [];
+  const r = await backup.runBackup({ userData, target: disk, home, now: new Date(2026, 9, 1, 8, 0),
+    trash: async (p) => { trashed.push(path.basename(p)); fs.rmSync(p, { recursive: true }); } });
+  fs.chmodSync(bad, 0o600);
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(trashed, ['2026-10-01_08-00']);
+  assert.deepStrictEqual(backup.listBackups(disk), []);
+});
+
 test('Firewall-Befehl fragt macOS nach dem Admin-Passwort und enthält nur feste Befehle', () => {
   const s = backup.firewallScript(true);
   assert.match(s, /with administrator privileges$/);
