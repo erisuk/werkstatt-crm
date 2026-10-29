@@ -608,6 +608,7 @@ function renderChat() {
     if (!t) return;
     input.value = '';
     input.style.height = 'auto';
+    input.focus(); // nach Klick auf Senden gleich weiterschreiben können
     sendMessage(t);
   } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input,
     h('div', { class: 'composer-tools' }, fileBtn, shotBtn, h('span', { class: 'spacer' }), sendBtn));
@@ -709,12 +710,19 @@ function updateChatHead() {
 // Wie in der Claude-App: deine Nachricht als Blase rechts (angehängte Dateien als Kärtchen),
 // Claudes Antwort ohne Blase über die volle Breite mit Markdown.
 const FILE_LINE = /^Datei: (\/.+)$/;
+// Endung nur aus dem Dateinamen („/Users/x.y/Makefile“ hat keine); ohne Endung steht „DATEI“.
+function fileChip(f) {
+  const name = f.replace(/\/+$/, '').split('/').pop() || f;
+  const dot = name.lastIndexOf('.');
+  const ext = dot >= 0 && dot < name.length - 1 ? name.slice(dot + 1).slice(0, 4).toUpperCase() : 'DATEI';
+  return h('span', { class: 'file-chip', title: f }, h('span', { class: 'file-ext', text: ext }), h('span', { class: 'file-name', text: name }));
+}
 function userMessageEl(text) {
   const lines = String(text).split('\n');
   const files = lines.map((l) => FILE_LINE.exec(l)).filter(Boolean).map((m) => m[1]);
   const rest = lines.filter((l) => !FILE_LINE.test(l)).join('\n').trim();
   return h('div', { class: 'msg user' },
-    files.length ? h('div', { class: 'msg-files' }, files.map((f) => h('span', { class: 'file-chip', title: f }, h('span', { class: 'file-ext', text: (f.split('.').pop() || '').slice(0, 4).toUpperCase() }), h('span', { class: 'file-name', text: f.split('/').pop() })))) : null,
+    files.length ? h('div', { class: 'msg-files' }, files.map(fileChip)) : null,
     rest ? h('div', { class: 'msg-text', text: rest }) : null);
 }
 
