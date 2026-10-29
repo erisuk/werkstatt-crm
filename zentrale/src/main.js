@@ -1401,8 +1401,9 @@ function setup() {
   });
 
   // ---------- App-Sperre ----------
-  function lockApp() {
-    if (appLocked || !settings || !settings.get().appLock.enabled) return;
+  // manual: Knopf „Sperren“ – sperrt auch, wenn die automatische Sperre aus ist (sonst passierte beim Klick nichts).
+  function lockApp(manual = false) {
+    if (appLocked || !settings || (manual !== true && !settings.get().appLock.enabled)) return;
     appLocked = true;
     finLock();
     if (webTabs) webTabs.setVisible(false);
@@ -1419,16 +1420,22 @@ function setup() {
       { timeout: 120000 }, (err) => resolve(!err)));
     return ok ? { ok: true } : { ok: false, cancelled: true };
   }
+  // Nur eine Abfrage gleichzeitig: ein zweiter Klick (z. B. erst Touch ID, dann Mac-Passwort) wartet auf die laufende,
+  // statt einen zweiten Dialog zu öffnen, der nach dem Entsperren noch offen stünde.
+  let unlocking = null;
   ipcMain.handle('app-unlock', async (e, method) => {
     if (!win || e.sender !== win.webContents) return { ok: false, error: 'Nicht erlaubt.' };
     if (!appLocked) return { ok: true };
-    const r = await verifyUser(method === 'password' ? 'password' : 'touchid');
-    if (!r.ok) return r;
-    appLocked = false;
-    loadPage();
-    return { ok: true };
+    if (!unlocking) {
+      unlocking = verifyUser(method === 'password' ? 'password' : 'touchid').then((r) => {
+        if (r.ok && appLocked) { appLocked = false; loadPage(); }
+        return r;
+      }).finally(() => { unlocking = null; });
+    }
+    const r = await unlocking;
+    return r.ok ? { ok: true } : r;
   });
-  ipcMain.handle('app-lock', () => { lockApp(); return { ok: true }; });
+  ipcMain.handle('app-lock', () => { lockApp(true); return { ok: true }; });
   const lockTimer = setInterval(() => {
     const l = settings && settings.get().appLock;
     if (l && l.enabled && !appLocked && powerMonitor.getSystemIdleTime() >= l.minutes * 60) lockApp();
