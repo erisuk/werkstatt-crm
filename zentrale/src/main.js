@@ -57,7 +57,14 @@ const EXTERNAL_LINKS = new Set([
   'https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
+  // Anleitung unter Verbindungen → YouTube
+  'https://console.cloud.google.com/projectcreate',
+  'https://console.cloud.google.com/apis/library/youtube.googleapis.com',
+  'https://console.cloud.google.com/auth/overview',
+  'https://console.cloud.google.com/auth/clients',
 ]);
+// Eigene hochgeladene Videos („Letztes Video ansehen“, ✓ im Planer) – nur die Kurzadresse mit Video-ID.
+const YT_VIDEO_LINK = /^https:\/\/youtu\.be\/[\w-]{6,20}$/;
 
 // Läuft im angemeldeten n8n-Tab (eigene, isolierte Skriptwelt) und legt dort einen API-Schlüssel an.
 // n8n verlangt bei Anfragen mit Anmelde-Cookie die browser-id aus dem localStorage der Seite.
@@ -1657,7 +1664,7 @@ function setup() {
   ipcMain.handle('kontrolle-reset', () => { dataLayer.reset(); return { ok: true }; });
 
   ipcMain.handle('open-external', (_e, url) => {
-    if (typeof url === 'string' && EXTERNAL_LINKS.has(url)) shell.openExternal(url);
+    if (typeof url === 'string' && (EXTERNAL_LINKS.has(url) || YT_VIDEO_LINK.test(url))) shell.openExternal(url);
   });
 
   app.on('second-instance', () => {

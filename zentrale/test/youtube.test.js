@@ -206,3 +206,13 @@ test('YouTube: letzte Antwort geht verloren – Nachfrage meldet „fertig“, k
     assert.strictEqual(g.seen.badRanges || 0, 0, 'kein Stück mit ungültigem Bereich');
   } finally { g.server.close(); }
 });
+
+test('YouTube: jeder „Öffnen ↗“-Link der Anleitung ist im Hauptprozess erlaubt (sonst passiert beim Klick nichts)', () => {
+  const view = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'youtube-view.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const allowed = main.slice(main.indexOf('const EXTERNAL_LINKS'), main.indexOf(']);', main.indexOf('const EXTERNAL_LINKS')));
+  const links = [...view.matchAll(/'(https:\/\/console\.cloud\.google\.com[^']*)'/g)].map((m) => m[1]);
+  assert.ok(links.length >= 4);
+  for (const l of links) assert.ok(allowed.includes(`'${l}'`), `nicht erlaubt: ${l}`);
+  assert.match(main, /YT_VIDEO_LINK\.test\(url\)/);
+});
