@@ -498,10 +498,10 @@ h2 { font-size: 16px; font-weight: 600; }
 .server-row .port { min-width: 56px; padding: 4px 8px; border-radius: 8px; background: var(--fill); font-family: ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; text-align: center; }
 .server-row .title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; white-space: normal; }
 .server-row .title .pill, .row .title .pill { font-size: 11px; padding: 2px 8px; font-weight: 500; }
-/* Projektzeilen: Name und Port-Pillen ganz zeigen; bei schmalem Fenster rutschen die Knöpfe in die nächste Zeile. */
-.project-row { flex-wrap: wrap; row-gap: 6px; }
-.project-row .grow { flex: 1 1 220px; }
-@container (max-width: 640px) { .project-row .grow { flex-basis: 100%; } }
+/* Projekt- und Workflow-Zeilen: Namen ganz zeigen; bei schmalem Fenster rutschen die Knöpfe in die nächste Zeile. */
+.project-row, .wf-row { flex-wrap: wrap; row-gap: 6px; }
+.project-row .grow, .wf-row .grow { flex: 1 1 220px; }
+@container (max-width: 640px) { .project-row .grow, .wf-row .grow { flex-basis: 100%; } .wf-row .switch { margin-left: auto; } }
 .project-row .title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; white-space: normal; overflow-wrap: anywhere; }
 .log-box { margin: 0; padding: 12px 14px; max-height: 280px; overflow: auto; font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre-wrap; user-select: text; }
 
