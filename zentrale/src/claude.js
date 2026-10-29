@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { toolStep } = require('./tool-steps');
 
 function execText(cmd, args, opts) {
   return new Promise((resolve) => {
@@ -90,7 +91,7 @@ function simplify(ev) {
     const out = [];
     for (const b of ev.message.content) {
       if (b.type === 'text' && b.text && b.text.trim()) out.push({ kind: 'text', text: b.text });
-      else if (b.type === 'tool_use') out.push({ kind: 'tool', text: describeTool(b.name, b.input) });
+      else if (b.type === 'tool_use') out.push({ kind: 'tool', text: describeTool(b.name, b.input), ...toolStep(b.name, b.input) });
     }
     return out;
   }

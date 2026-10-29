@@ -50,7 +50,7 @@ function renderAssistant() {
       h('button', { class: 'link', onClick: () => setView('chat') }, 'Im großen Chat öffnen'),
       h('button', { class: 'link', onClick: () => { auto.assistant = false; renderAutomationsBody(); } }, 'Schließen')),
     h('div', { class: 'assistant-log', id: 'assistant-log' },
-      msgs.map((m) => h('div', { class: `msg ${m.kind}`, text: m.text })),
+      msgs.map((m) => messageEl(m)),
       steps ? h('div', { class: 'sub', text: `Claude hat ${plural(steps, 'Schritt', 'Schritte')} in n8n erledigt` }) : null,
       busy && !approvals.length ? h('div', { class: 'typing' }, h('span'), h('span'), h('span')) : null),
     approvals.length ? h('div', { class: 'chat-approvals' }, approvals.map((a) => approvalCard(a, false))) : null,

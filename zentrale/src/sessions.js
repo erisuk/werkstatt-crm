@@ -3,6 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
+const { toolStep } = require('./tool-steps');
 
 const DEFAULT_ROOT = path.join(os.homedir(), '.claude', 'projects');
 const HEAD_BYTES = 256 * 1024;
@@ -57,8 +58,10 @@ function isRealPrompt(text) {
 }
 
 // Erste Zeile als Titel; zu lange Titel enden am Wort mit "…".
+// Angehängte Dateien („Datei: /pfad“) sind kein guter Titel – die erste echte Textzeile zählt.
 function shortTitle(text, max = 80) {
-  const line = String(text || '').trim().split('\n')[0].trim();
+  const lines = String(text || '').trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  const line = lines.find((l) => !/^Datei: \//.test(l)) || (lines[0] || '').replace(/^Datei: .*\//, '');
   if (line.length <= max) return line;
   const cut = line.slice(0, max);
   const space = cut.lastIndexOf(' ');
@@ -150,7 +153,8 @@ function listProjects(root = DEFAULT_ROOT, cache = sessionCache) {
 }
 
 // Lädt den Verlauf einer Sitzung als einfache Nachrichtenliste.
-function readMessages(file, limit = 200) {
+// tools: true = auch Claudes Arbeitsschritte (Werkzeugaufrufe) als { role: 'tool', tool, detail } liefern.
+function readMessages(file, limit = 200, { tools = false } = {}) {
   const size = fs.statSync(file).size;
   let text;
   if (size > MAX_READ_BYTES) {
@@ -172,6 +176,7 @@ function readMessages(file, limit = 200) {
       const t = textOf(o.message.content);
       if (isRealPrompt(t)) out.push({ role: 'user', text: t.trim() });
     } else if (o.type === 'assistant' && Array.isArray(o.message.content)) {
+      if (tools) for (const b of o.message.content) if (b && b.type === 'tool_use') out.push({ role: 'tool', ...toolStep(b.name, b.input) });
       const t = textOf(o.message.content).trim();
       if (!t) continue;
       const last = out[out.length - 1];

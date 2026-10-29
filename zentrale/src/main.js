@@ -499,7 +499,7 @@ function setup() {
     // Fortsetzen geht nur im Ordner, in dem das Gespräch entstanden ist.
     if (!isDir(session.cwd)) return { error: 'Der Projektordner dieses Gesprächs existiert nicht mehr.' };
     let history = [];
-    try { history = readMessages(session.file); } catch {}
+    try { history = readMessages(session.file, 400, { tools: true }); } catch {}
     if (chat && chat.sessionId === sessionId) return { chat: chatInfo(), history };
     const info = await openChat({ cwd: session.cwd, sessionId, title: session.title });
     return { chat: info, history };
@@ -1402,7 +1402,7 @@ function setup() {
   ipcMain.handle('chat-history', () => {
     const s = chat && findSession(chat.sessionId);
     if (!s) return [];
-    try { return readMessages(s.file); } catch { return []; }
+    try { return readMessages(s.file, 400, { tools: true }); } catch { return []; }
   });
 
   // ---------- Kontrollraum: blinde Flecken, Tempo, Fehler, Schutz ----------

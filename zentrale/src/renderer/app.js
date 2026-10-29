@@ -566,7 +566,7 @@ async function openSession(session) {
   if (!okToLeaveBusyChat()) return;
   const res = await api.openSession({ sessionId: session.id });
   if (!res || res.error || !res.chat) { alert((res && res.error) || 'Claude Code wurde nicht gefunden.'); return; }
-  resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, text: m.text })));
+  resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, text: m.text, tool: m.tool, detail: m.detail })));
   setView('chat');
 }
 
@@ -602,14 +602,15 @@ function renderChat() {
   fileBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg>';
   if (shotBtn) shotBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>';
   sendBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
-  const form = h('form', { class: 'composer', onSubmit: (e) => {
+  const form = h('form', { class: 'composer chat-composer', onSubmit: (e) => {
     e.preventDefault();
     const t = input.value.trim();
     if (!t) return;
     input.value = '';
     input.style.height = 'auto';
     sendMessage(t);
-  } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input, fileBtn, shotBtn, sendBtn);
+  } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input,
+    h('div', { class: 'composer-tools' }, fileBtn, shotBtn, h('span', { class: 'spacer' }), sendBtn));
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
   });
@@ -617,12 +618,13 @@ function renderChat() {
   attachDrop(form, input);
 
   const typing = h('div', { class: 'typing', id: 'typing', role: 'status', hidden: true },
-    h('span'), h('span'), h('span'), h('span', { class: 'sr-only', text: 'Claude schreibt' }));
+    h('span', { class: 'spark', 'aria-hidden': 'true', text: '✻' }), h('span', { class: 'typing-text', text: 'Claude arbeitet …' }));
   fill(main, h('div', { class: 'chat' },
     h('div', { class: 'chat-head', id: 'chat-head' }),
     h('div', { class: 'messages', id: 'messages' }, typing),
-    h('div', { id: 'chat-approvals', class: 'chat-approvals' }),
-    form));
+    h('div', { class: 'chat-bottom' },
+      h('div', { id: 'chat-approvals', class: 'chat-approvals' }),
+      form)));
   ui.sig.chatHead = null;
   ui.shown = 0;
   updateChatHead();
@@ -704,26 +706,83 @@ function updateChatHead() {
     h('button', { class: 'btn ghost', 'data-focus': 'chat-new', onClick: () => newSession(c.cwd) }, 'Neues Gespräch')));
 }
 
+// Wie in der Claude-App: deine Nachricht als Blase rechts (angehängte Dateien als Kärtchen),
+// Claudes Antwort ohne Blase über die volle Breite mit Markdown.
+const FILE_LINE = /^Datei: (\/.+)$/;
+function userMessageEl(text) {
+  const lines = String(text).split('\n');
+  const files = lines.map((l) => FILE_LINE.exec(l)).filter(Boolean).map((m) => m[1]);
+  const rest = lines.filter((l) => !FILE_LINE.test(l)).join('\n').trim();
+  return h('div', { class: 'msg user' },
+    files.length ? h('div', { class: 'msg-files' }, files.map((f) => h('span', { class: 'file-chip', title: f }, h('span', { class: 'file-ext', text: (f.split('.').pop() || '').slice(0, 4).toUpperCase() }), h('span', { class: 'file-name', text: f.split('/').pop() })))) : null,
+    rest ? h('div', { class: 'msg-text', text: rest }) : null);
+}
+
 function messageEl(m) {
   if (m.kind === 'error') {
     return h('div', { class: 'msg error' }, m.text,
       m.details ? h('details', {}, h('summary', { text: 'Details' }), h('pre', { text: m.details })) : null);
   }
+  if (m.kind === 'user') return userMessageEl(m.text);
+  if (m.kind === 'assistant') return h('div', { class: 'msg assistant' }, mdRender(m.text));
   return h('div', { class: `msg ${m.kind}`, text: m.text });
 }
 
-// Aufeinanderfolgende Arbeitsschritte landen in einer aufklappbaren Gruppe.
-function addStep(box, typing, text) {
+// Arbeitsschritte wie in der Claude-App: eine Zeile pro Werkzeug mit Symbol, Tätigkeit und Ziel.
+const STEP_ICONS = {
+  terminal: '<path d="M4 6l5 5-5 5M11 17h8"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+  search: '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/>',
+  agent: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1.2-4 4.3-6 8-6s6.8 2 8 6"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>',
+  tool: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>',
+};
+function stepInfo(tool) {
+  const t = String(tool || '');
+  if (t === 'Bash') return ['terminal', 'Befehl ausgeführt'];
+  if (t === 'Read') return ['file', 'Gelesen'];
+  if (t === 'Write') return ['edit', 'Erstellt'];
+  if (/^(Edit|MultiEdit|NotebookEdit)$/.test(t)) return ['edit', 'Bearbeitet'];
+  if (t === 'Grep' || t === 'Glob') return ['search', 'Gesucht'];
+  if (t === 'WebFetch') return ['globe', 'Webseite gelesen'];
+  if (t === 'WebSearch') return ['globe', 'Im Netz gesucht'];
+  if (t === 'Task' || t === 'Agent') return ['agent', 'Agent beauftragt'];
+  if (t === 'TodoWrite') return ['list', 'Aufgabenliste aktualisiert'];
+  if (t === 'Skill') return ['tool', 'Skill benutzt'];
+  if (t.startsWith('mcp__')) return ['tool', t.split('__').slice(1).join(' · ').replace(/_/g, ' ')];
+  return ['tool', t || 'Werkzeug benutzt'];
+}
+function stepIcon(kind) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = STEP_ICONS[kind] || STEP_ICONS.tool; // feste Symbole aus dieser Datei, nie aus einer Antwort
+  return svg;
+}
+function stepRow(m) {
+  // Ältere Einträge haben nur Text („Edit · src/app.js“).
+  const tool = m.tool || String(m.text || '').split(' · ')[0];
+  const detail = m.tool ? m.detail : String(m.text || '').split(' · ').slice(1).join(' · ');
+  const [icon, label] = stepInfo(tool);
+  return h('li', { class: 'step' }, stepIcon(icon), h('span', { class: 'step-label', text: label }), detail ? h('span', { class: 'step-detail', text: detail, title: detail }) : null);
+}
+
+// Aufeinanderfolgende Arbeitsschritte landen in einer aufklappbaren Gruppe; zu sieht man den neuesten.
+function addStep(box, typing, m) {
   let group = typing.previousElementSibling;
   if (!group || !group.classList.contains('steps')) {
-    group = h('details', { class: 'steps' }, h('summary'), h('ol', { class: 'steps-list' }));
+    group = h('details', { class: 'steps' }, h('summary', {}, h('span', { class: 'steps-count' }), h('span', { class: 'steps-last' })), h('ol', { class: 'steps-list' }));
     group.dataset.count = '0';
     box.insertBefore(group, typing);
   }
   const count = Number(group.dataset.count) + 1;
   group.dataset.count = String(count);
-  group.querySelector('.steps-list').append(h('li', { text }));
-  group.querySelector('summary').textContent = `Claude hat ${plural(count, 'Schritt', 'Schritte')} erledigt`;
+  const row = stepRow(m);
+  group.querySelector('.steps-list').append(row);
+  group.querySelector('.steps-count').textContent = count === 1 ? '1 Schritt' : `${count} Schritte`;
+  fill(group.querySelector('.steps-last'), [...row.cloneNode(true).childNodes]);
 }
 
 // Hängt nur neue Nachrichten an; bestehende bleiben unberührt (Markierung bleibt erhalten).
@@ -735,13 +794,13 @@ function renderMessages() {
   if (ui.shown > ui.messages.length) ui.shown = 0;
   if (ui.shown === 0) {
     for (const el of [...box.children]) if (el !== typing) el.remove();
-    if (!ui.messages.length) box.insertBefore(h('div', { class: 'empty', id: 'chat-hint', text: 'Schreib Claude, was du brauchst.' }), typing);
+    if (!ui.messages.length) box.insertBefore(h('div', { class: 'chat-hint', id: 'chat-hint' }, h('span', { class: 'spark big', 'aria-hidden': 'true', text: '✻' }), h('p', { text: 'Was soll Claude für dich tun?' })), typing);
   }
   if (ui.messages.length > ui.shown) {
     const hint = $('#chat-hint');
     if (hint) hint.remove();
     for (const m of ui.messages.slice(ui.shown)) {
-      if (m.kind === 'tool') addStep(box, typing, m.text);
+      if (m.kind === 'tool') addStep(box, typing, m);
       else box.insertBefore(messageEl(m), typing);
     }
     ui.shown = ui.messages.length;
@@ -773,7 +832,7 @@ function notifyChatMirror() {
 api.onChatEvent((ev) => {
   if (ev.gen !== ui.chatGen) return; // Ereignis eines früheren Chats
   if (ev.kind === 'text') ui.messages.push({ kind: 'assistant', text: ev.text });
-  else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', text: ev.text });
+  else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', text: ev.text, tool: ev.tool, detail: ev.detail });
   else if (ev.kind === 'error') ui.messages.push({ kind: 'error', text: ev.text, details: ev.details });
   else return;
   if (ui.view === 'chat') renderMessages();
@@ -915,7 +974,7 @@ api.getState().then((s) => {
   if (s && s.chat && !ui.messages.length) {
     api.chatHistory().then((hist) => {
       if (!hist || !hist.length || ui.messages.length) return;
-      ui.messages = hist.map((m) => ({ kind: m.role, text: m.text }));
+      ui.messages = hist.map((m) => ({ kind: m.role, text: m.text, tool: m.tool, detail: m.detail }));
       ui.shown = 0;
       if (ui.view === 'chat') renderMessages();
     }).catch(() => {});
