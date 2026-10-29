@@ -78,7 +78,7 @@ function renderConnections() {
       h('h1', { text: 'Verbindungen' }), h('span', { class: 'spacer' }),
       h('button', { class: 'btn ghost', 'data-focus': 'conn-refresh', disabled: ui.connectionsLoading || !s.claude.found, onClick: loadConnections },
         ui.connectionsLoading ? 'Wird geprüft …' : 'Status prüfen')),
-    h('p', { class: 'date', text: 'Hier verbindest du Claude mit deinem Mac und deinen Konten. Lesen geht ohne Rückfrage – bevor Claude etwas sendet, anlegt, öffnet oder löscht, fragt die Zentrale dich.' }),
+    h('p', { class: 'date', text: `Hier verbindest du Claude mit deinem Mac und deinen Konten. ${settings().askFirst ? 'Lesen geht ohne Rückfrage – bevor Claude etwas sendet, anlegt, öffnet oder löscht, fragt die Zentrale dich.' : 'Claude arbeitet ohne Rückfrage (umschaltbar im Kontrollraum → Schutz → Rückfragen).'}` }),
     ui.notice ? h('div', { class: 'notice', text: ui.notice }) : null,
 
     connCard({ icon: '⌘', title: 'Mein Mac',
@@ -113,7 +113,7 @@ function renderConnections() {
       text: 'Claude bedient die Seiten im Bereich „Web“ – z. B. Meta Business, Shopify oder Gmail, wo du schon angemeldet bist. Du siehst live zu.',
       right: connSwitch('web', 'Claude darf Web-Tabs bedienen', false),
       extra: h('div', { class: 'conn-extra' },
-        h('div', { class: 'sub', text: 'Lesen und Ansehen geht ohne Rückfrage. Jeder Klick, jede Eingabe und jede neue Adresse braucht deine Freigabe. Passwort-, Karten- und Bankfelder füllt Claude nie aus. Knöpfe, die Geld kosten oder etwas veröffentlichen, sind in der Freigabe markiert.' })) }),
+        h('div', { class: 'sub', text: (settings().askFirst ? 'Lesen und Ansehen geht ohne Rückfrage. Jeder Klick, jede Eingabe und jede neue Adresse braucht deine Freigabe. ' : 'Claude bedient die Tabs ohne Rückfrage – du siehst live zu. ') + 'Passwort-, Karten- und Bankfelder füllt Claude nie aus. Knöpfe, die Geld kosten oder etwas veröffentlichen, sind in der Freigabe markiert.' })) }),
 
     ytCard(),
 

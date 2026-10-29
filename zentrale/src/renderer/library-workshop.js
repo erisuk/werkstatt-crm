@@ -333,7 +333,7 @@ function renderDiscover() {
   return [
     h('div', { class: 'section-head wrap' },
       h('span', { class: 'sub multi', text: `${ws.market.length} Plugins im Marktplatz · ${list.length > 200 ? `die ersten 200 von ${list.length} Treffern – Suche eingrenzen` : `${list.length} angezeigt`}` }), h('span', { class: 'spacer' }), sel),
-    h('p', { class: 'date', text: 'Plugins bringen fertige Skills, Agenten und Verbindungen mit. „Installieren“ bittet Claude darum – bevor er etwas ausführt, fragt die Zentrale dich.' }),
+    h('p', { class: 'date', text: 'Plugins bringen fertige Skills, Agenten und Verbindungen mit. „Installieren“ bittet Claude darum' + (settings().askFirst ? ' – bevor er etwas ausführt, fragt die Zentrale dich.' : '.') }),
     h('div', { class: 'card list' }, list.length ? list.slice(0, 200).map((p) => h('div', { class: 'row lib-row' },
       h('div', { class: 'grow' },
         h('div', { class: 'title' }, p.name, h('span', { class: 'pill', text: p.category })),
