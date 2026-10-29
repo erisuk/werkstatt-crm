@@ -116,6 +116,15 @@ test('Google-Apps öffnen im Browser, YouTube zum Anschauen und andere Seiten bl
   for (const u of ['https://www.youtube.com/watch?v=x', 'https://www.instagram.com/', 'https://business.facebook.com/', 'kaputt']) assert.strictEqual(isGoogleApp(u), false, u);
 });
 
+test('Ladefehler: verständliche Texte für offline, Server aus, unbekannte Adresse', () => {
+  const { loadErrorText } = require('../src/portals');
+  assert.strictEqual(loadErrorText(-106, 'ERR_INTERNET_DISCONNECTED', 'https://web.de/'), 'Keine Internetverbindung.');
+  assert.match(loadErrorText(-105, 'ERR_NAME_NOT_RESOLVED', 'https://web.de/'), /Internetverbindung/);
+  assert.strictEqual(loadErrorText(-102, 'ERR_CONNECTION_REFUSED', 'http://localhost:3000/'), 'Der lokale Server läuft gerade nicht.');
+  assert.strictEqual(loadErrorText(-102, 'ERR_CONNECTION_REFUSED', 'https://web.de/'), 'Die Seite lehnt die Verbindung ab.');
+  assert.strictEqual(loadErrorText(-310, 'ERR_TOO_MANY_REDIRECTS', 'kaputt'), 'Die Seite ließ sich nicht laden (ERR_TOO_MANY_REDIRECTS).');
+});
+
 test('Anmelde-Fenster: gewünschte Größe aus window.open zählt, in sinnvollen Grenzen', () => {
   const { popupSize } = require('../src/portals');
   assert.deepStrictEqual(popupSize('width=900,height=640'), { width: 900, height: 640 });

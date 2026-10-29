@@ -80,6 +80,19 @@ function isGoogleApp(url) {
   try { return GOOGLE_APPS.has(new URL(String(url)).hostname.toLowerCase()); } catch { return false; }
 }
 
+// Verständlicher Text, wenn eine Seite nicht lädt (Chromium-Fehlernummern). Offline meldet macOS
+// oft nicht „getrennt“, sondern „Adresse nicht gefunden“ – das soll trotzdem verständlich sein.
+function loadErrorText(code, desc, url) {
+  let local = false;
+  try { local = /^(localhost|127\.0\.0\.1|\[::1\]|.+\.localhost)$/.test(new URL(String(url)).hostname); } catch {}
+  if (code === -106) return 'Keine Internetverbindung.';
+  if (code === -105 || code === -137) return local ? 'Diese lokale Adresse gibt es nicht.' : 'Seite nicht gefunden – prüfe die Internetverbindung oder die Adresse.';
+  if (code === -102) return local ? 'Der lokale Server läuft gerade nicht.' : 'Die Seite lehnt die Verbindung ab.';
+  if (code === -7 || code === -118) return 'Die Seite antwortet nicht (Zeitüberschreitung). Prüfe die Internetverbindung.';
+  if (code === -21) return 'Das Netzwerk hat gewechselt – bitte neu laden.';
+  return `Die Seite ließ sich nicht laden (${desc}).`;
+}
+
 // Größe eines Anmelde-Fensters: was die Seite bei window.open wünscht (width=…,height=…),
 // begrenzt auf vernünftige Maße; ohne Angabe 520 × 720.
 const POPUP = { width: [360, 1400, 520], height: [400, 1000, 720] };
@@ -203,4 +216,4 @@ class PortalStore {
   }
 }
 
-module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, isGoogleSignIn, isGoogleApp, browserTarget, popupSize, sanitize, MAX_PORTALS, partitionFor, profileOf };
+module.exports = { BIT_PROFILE, BIT_TABS, PRESETS, PortalStore, normalizeUrl, unreadFromTitle, chromeUserAgent, isGoogleSignIn, isGoogleApp, browserTarget, popupSize, loadErrorText, sanitize, MAX_PORTALS, partitionFor, profileOf };

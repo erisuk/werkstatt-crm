@@ -3,7 +3,7 @@
 // Die Seiten laufen abgeschottet (Sandbox, kein Zugriff auf Node, den Mac oder Claude).
 const { EventEmitter } = require('events');
 const { WebContentsView, session, shell } = require('electron');
-const { chromeUserAgent, isGoogleSignIn, isGoogleApp, popupSize, unreadFromTitle, partitionFor } = require('./portals');
+const { chromeUserAgent, isGoogleSignIn, isGoogleApp, popupSize, loadErrorText, unreadFromTitle, partitionFor } = require('./portals');
 
 const PARTITION = 'persist:portale';
 // Was Webseiten ohne Rückfrage dürfen. Kamera, Mikrofon, Standort usw. bleiben gesperrt.
@@ -79,7 +79,7 @@ class WebTabs extends EventEmitter {
     wc.on('did-stop-loading', () => { entry.loading = false; changed(); });
     wc.on('did-fail-load', (_e, code, desc, url, isMain) => {
       if (!isMain || code === -3) return; // -3 = abgebrochen (z. B. Weiterleitung)
-      entry.error = code === -106 ? 'Keine Internetverbindung.' : `Die Seite ließ sich nicht laden (${desc}).`;
+      entry.error = loadErrorText(code, desc, url);
       changed();
     });
     const remember = (_e, url) => {
