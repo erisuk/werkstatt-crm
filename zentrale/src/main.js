@@ -1432,10 +1432,31 @@ function setup() {
   });
 
   // ---------- App-Sperre ----------
+  // Die Sperre übersteht einen Neustart der App (z. B. nach einem Neubau): War die Zentrale bis vor Kurzem entsperrt
+  // und der Mac seitdem nicht länger als die Sperr-Zeit unbenutzt, startet sie entsperrt. Gespeichert wird nur ein
+  // verschlüsselter Zeitstempel (Schlüsselbund) – von Hand fälschen lässt er sich nicht.
+  const SESSION_FILE = () => path.join(app.getPath('userData'), 'sitzung.json');
+  function rememberSession(alive) {
+    try {
+      const at = alive ? Date.now() : 0;
+      const data = safeStorage.isEncryptionAvailable() ? { v: safeStorage.encryptString(String(at)).toString('base64') } : { v: null };
+      fs.writeFileSync(SESSION_FILE(), JSON.stringify(data), { mode: 0o600 });
+    } catch {}
+  }
+  function sessionStillOpen(minutes) {
+    try {
+      const { v } = JSON.parse(fs.readFileSync(SESSION_FILE(), 'utf8'));
+      if (!v) return false;
+      const at = Number(safeStorage.decryptString(Buffer.from(v, 'base64')));
+      const max = minutes * 60 * 1000;
+      return at > 0 && Date.now() - at < max && Date.now() >= at && powerMonitor.getSystemIdleTime() * 1000 < max;
+    } catch { return false; }
+  }
   // manual: Knopf „Sperren“ – sperrt auch, wenn die automatische Sperre aus ist (sonst passierte beim Klick nichts).
   function lockApp(manual = false) {
     if (appLocked || !settings || (manual !== true && !settings.get().appLock.enabled)) return;
     appLocked = true;
+    rememberSession(false);
     finLock();
     if (webTabs) webTabs.setVisible(false);
     loadPage();
@@ -1459,7 +1480,7 @@ function setup() {
     if (!appLocked) return { ok: true };
     if (!unlocking) {
       unlocking = verifyUser(method === 'password' ? 'password' : 'touchid').then((r) => {
-        if (r.ok && appLocked) { appLocked = false; loadPage(); }
+        if (r.ok && appLocked) { appLocked = false; rememberSession(true); loadPage(); }
         return r;
       }).finally(() => { unlocking = null; });
     }
@@ -1470,6 +1491,7 @@ function setup() {
   const lockTimer = setInterval(() => {
     const l = settings && settings.get().appLock;
     if (l && l.enabled && !appLocked && powerMonitor.getSystemIdleTime() >= l.minutes * 60) lockApp();
+    else if (!appLocked && powerMonitor.getSystemIdleTime() < 60) rememberSession(true); // „gerade benutzt“
   }, 20000);
   powerMonitor.on('lock-screen', lockApp);
   powerMonitor.on('suspend', lockApp);
@@ -1713,7 +1735,9 @@ function setup() {
 
   app.whenReady().then(async () => {
     settings = new Settings(path.join(app.getPath('userData'), 'settings.json'));
-    appLocked = settings.get().appLock.enabled; // beim Start gesperrt
+    // Beim Start gesperrt – außer die Zentrale war bis eben entsperrt und der Mac seitdem in Benutzung (siehe sessionStillOpen).
+    const lockCfg = settings.get().appLock;
+    appLocked = lockCfg.enabled && !sessionStillOpen(lockCfg.minutes);
     topicStore = new TopicStore(path.join(app.getPath('userData'), 'topics.json'));
     webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
     webTabs.on('change', () => send('web-state', webState()));
@@ -1775,6 +1799,7 @@ function setup() {
 
   // Beim Beenden warten, bis Claude und laufende Aufgaben wirklich gestoppt sind.
   app.on('before-quit', (e) => {
+    if (!appLocked && settings) rememberSession(true); // Neustart (z. B. nach Neubau) kurz danach: bleibt entsperrt
     quitting = true;
     if (cleanedUp) return;
     e.preventDefault();
