@@ -1,12 +1,14 @@
 // Verbindungen → YouTube: Anleitung für das Google-Cloud-Projekt, Datei wählen, im Browser anmelden.
 // Danach lädt der Planer Videos über die offizielle Schnittstelle hoch. Nutzt die Helfer aus app.js und connections-view.js.
 
-const yt = { status: null, busy: null, message: null, file: null, loading: false };
+const yt = { status: null, busy: null, message: null, file: null, loading: false, at: 0 };
+const YT_STALE_MS = 30000; // so alt darf der angezeigte Status sein – z. B. hat ein Upload im Planer den Zugang verloren
 
 async function loadYouTube() {
   yt.loading = true;
-  try { yt.status = await api.ytStatus(); } catch (e) { yt.message = e.message; }
+  try { yt.status = (await api.ytStatus()) || yt.status; } catch (e) { yt.message = e.message || 'Der YouTube-Status ließ sich nicht laden.'; }
   yt.loading = false;
+  yt.at = Date.now(); // auch nach einem Fehler – sonst lädt jedes Zeichnen sofort wieder (Endlosschleife)
   if (ui.view === 'connections') renderConnections();
 }
 
@@ -14,6 +16,7 @@ async function ytAction(id, fn) {
   yt.busy = id; yt.message = null; renderConnections();
   try {
     const r = await fn();
+    if (r && r.superseded) return; // eine neu gestartete Anmeldung übernimmt Knopf und Meldung
     if (r && r.error) yt.message = r.error;
     else if (r && r.message) yt.message = r.message;
   } catch (e) { yt.message = e.message; }
@@ -37,16 +40,18 @@ function ytGuide() {
 
 function ytCard() {
   const st = yt.status;
-  if (!st && !yt.loading && !yt.message) loadYouTube();
+  if (!yt.loading && !yt.busy && (!yt.at || Date.now() - yt.at > YT_STALE_MS)) loadYouTube();
   const connected = st && st.connected;
   const btn = (id, label, fn, cls = 'btn') => h('button', { class: cls, 'data-focus': `yt-${id}`, disabled: yt.busy !== null, 'aria-busy': String(yt.busy === id), onClick: () => ytAction(id, fn) },
     yt.busy === id ? (id === 'connect' ? 'Warte auf den Browser …' : 'Läuft …') : label);
+  const connect = () => api.ytConnect().then((r) => (r && r.ok ? { message: `Verbunden mit „${r.channel.title}“.` } : r));
   const pickFile = () => api.ytClientFile().then((r) => { if (r && r.ok) { yt.file = r.file; return { message: 'Anmeldedaten übernommen. Jetzt „Mit YouTube anmelden“.' }; } return r && r.cancelled ? null : r; });
   return connCard({ icon: '▶', title: 'YouTube',
     text: 'Videos direkt über die offizielle YouTube-Schnittstelle hochladen – ohne Web-Tab. Zur Wunschzeit veröffentlicht YouTube selbst.',
     right: h('span', { class: `pill ${connected ? 'green' : ''}`, text: connected ? 'verbunden' : st && st.hasClient ? 'Anmeldung fehlt' : 'nicht eingerichtet' }),
     extra: h('div', { class: 'conn-extra' },
       yt.message ? h('div', { class: 'sub', role: 'status', text: yt.message }) : null,
+      !connected && st && st.lost ? h('div', { class: 'sub warn', role: 'status', text: 'Google hat die Anmeldung beendet – bitte unten neu anmelden. Passiert das alle 7 Tage, steht die App bei Google noch im Testmodus (Schritt 3: „App veröffentlichen“).' }) : null,
       connected
         ? [h('div', { class: 'sub', text: `Kanal: ${st.channel.title}${st.lastUpload ? ` · zuletzt hochgeladen: „${st.lastUpload.title}“` : ''}` }),
           h('div', { class: 'actions' },
@@ -55,8 +60,15 @@ function ytCard() {
         : [ytGuide(),
           h('div', { class: 'actions' },
             btn('file', st && st.hasClient ? 'Andere Datei wählen' : 'Datei wählen', pickFile, st && st.hasClient ? 'btn ghost' : 'btn'),
-            st && st.hasClient ? btn('connect', 'Mit YouTube anmelden', () => api.ytConnect().then((r) => (r.ok ? { message: `Verbunden mit „${r.channel.title}“.` } : r))) : null)],
+            st && st.hasClient ? btn('connect', 'Mit YouTube anmelden', connect) : null,
+            // Tab geschlossen oder verloren: Anmeldung neu starten statt bis zum Zeitlimit zu warten.
+            yt.busy === 'connect' ? h('button', { class: 'link', 'data-focus': 'yt-reconnect', onClick: () => ytAction('connect', connect) }, 'Browser nochmal öffnen') : null)],
       yt.file ? h('div', { class: 'sub' }, 'Die heruntergeladene Datei enthält dein Client-Geheimnis und wird nicht mehr gebraucht. ',
-        h('button', { class: 'link', onClick: async () => { const f = yt.file; yt.file = null; const r = await api.ytTrashFile(f); yt.message = r.ok ? 'Datei liegt im Papierkorb.' : 'Die Datei ließ sich nicht verschieben.'; renderConnections(); } }, 'In den Papierkorb')) : null,
+        h('button', { class: 'link', 'data-focus': 'yt-trash', onClick: async () => {
+          const r = (await api.ytTrashFile(yt.file)) || {};
+          if (r.ok) yt.file = null; // bei einem Fehler bleibt der Knopf für einen zweiten Versuch
+          yt.message = r.ok ? 'Datei liegt im Papierkorb.' : `Die Datei ließ sich nicht verschieben${r.error ? `: ${r.error}` : '.'}`;
+          renderConnections();
+        } }, 'In den Papierkorb')) : null,
       h('div', { class: 'sub', text: 'Die Zentrale speichert den Zugang nur verschlüsselt im Schlüsselbund dieses Macs. MURIS-Kanäle verbindet sie nie.' })) });
 }

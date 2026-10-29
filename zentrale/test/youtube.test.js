@@ -6,10 +6,12 @@ const os = require('os');
 const path = require('path');
 const { YouTube, parseClientFile, videoResource, tagsFrom } = require('../src/youtube');
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const CLIENT = JSON.stringify({ installed: { client_id: '123-abc.apps.googleusercontent.com', client_secret: 'geheim', redirect_uris: ['http://localhost'] } });
 
 // Nachgebauter Google-Server: Token, Kanal, fortsetzbarer Upload (wahlweise mit einem Abbruch).
-function fakeGoogle({ channel = 'Bit AI News', failOnce = false } = {}) {
+// loseLast: das letzte Stück kommt an, die Antwort geht aber verloren (Verbindung reißt) – wie bei echtem Google.
+function fakeGoogle({ channel = 'Bit AI News', customUrl = '@bitainews', failOnce = false, loseLast = false } = {}) {
   const seen = { tokenCalls: [], uploadMeta: null, bytes: 0, revoked: [] };
   let failed = false;
   const server = http.createServer((req, res) => {
@@ -26,13 +28,13 @@ function fakeGoogle({ channel = 'Bit AI News', failOnce = false } = {}) {
           if (p.get('code') !== 'CODE' || !p.get('code_verifier')) return json(400, { error: 'invalid_grant' });
           return json(200, { access_token: 'AT1', refresh_token: 'RT', expires_in: 3600 });
         }
-        if (p.get('refresh_token') !== 'RT') return json(400, { error: 'invalid_grant' });
+        if (seen.rtRevoked || p.get('refresh_token') !== 'RT') return json(400, { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' });
         return json(200, { access_token: 'AT2', expires_in: 3600 });
       }
       if (u.pathname === '/revoke') { seen.revoked.push(u.searchParams.get('token')); return json(200, {}); }
       if (u.pathname === '/api/channels') {
         if (!/^Bearer AT/.test(req.headers.authorization || '')) return json(401, { error: { message: 'no' } });
-        return json(200, { items: [{ id: 'UC1', snippet: { title: channel } }] });
+        return json(200, { items: [{ id: 'UC1', snippet: { title: channel, customUrl } }] });
       }
       if (u.pathname === '/upload' && req.method === 'POST') {
         seen.uploadMeta = JSON.parse(body.toString());
@@ -42,11 +44,19 @@ function fakeGoogle({ channel = 'Bit AI News', failOnce = false } = {}) {
       }
       if (u.pathname === '/session/1' && req.method === 'PUT') {
         const range = req.headers['content-range'] || '';
-        if (range.startsWith('bytes */')) { res.writeHead(308, seen.bytes ? { Range: `bytes=0-${seen.bytes - 1}` } : {}); return res.end(); }
+        const video = () => json(201, { id: 'VID123', status: { privacyStatus: seen.uploadMeta.status.privacyStatus } });
+        if (range.startsWith('bytes */')) {
+          if (seen.bytes >= seen.size) return video();
+          res.writeHead(308, seen.bytes ? { Range: `bytes=0-${seen.bytes - 1}` } : {}); return res.end();
+        }
+        // Wie Google: das Stück muss genau dort anfangen, wo der Upload steht, und so lang sein wie angegeben.
+        const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(range);
+        if (!m || !body.length || Number(m[1]) !== seen.bytes || Number(m[2]) - Number(m[1]) + 1 !== body.length) { seen.badRanges = (seen.badRanges || 0) + 1; return json(400, { error: { message: `Ungültiger Bereich ${range}` } }); }
         if (failOnce && !failed) { failed = true; return json(503, { error: { message: 'kurz weg' } }); }
         seen.bytes += body.length;
         if (seen.bytes < seen.size) { res.writeHead(308, { Range: `bytes=0-${seen.bytes - 1}` }); return res.end(); }
-        return json(201, { id: 'VID123', status: { privacyStatus: seen.uploadMeta.status.privacyStatus } });
+        if (loseLast && !seen.lost) { seen.lost = true; return req.socket.destroy(); }
+        return video();
       }
       json(404, {});
     });
@@ -135,7 +145,11 @@ test('YouTube: Upload mit Fortschritt, übersteht einen Verbindungsabbruch', asy
     assert.strictEqual((await yt.connect()).ok, true);
     yt.access = null; // erzwingt Erneuern über den Refresh-Token
     const progress = [];
-    const r = await yt.upload({ video, title: 'Bit erklärt KI', description: 'Hallo', hashtags: '#ki', dueAt: Date.now() - 1000 }, { onProgress: (p) => progress.push(p) });
+    let during = null;
+    const r = await yt.upload({ id: 'P1', video, title: 'Bit erklärt KI', description: 'Hallo', hashtags: '#ki', dueAt: Date.now() - 1000 },
+      { onProgress: (p) => { progress.push(p); during = during || yt.status().uploading; } });
+    assert.strictEqual(during.id, 'P1', 'nach dem Neuladen der Seite findet der Planer den laufenden Upload wieder');
+    assert.strictEqual(yt.status().uploading, null);
     assert.strictEqual(r.ok, true, r.error);
     assert.strictEqual(r.url, 'https://youtu.be/VID123');
     assert.strictEqual(r.privacy, 'public');
@@ -181,4 +195,102 @@ test('YouTube: „privat“ und „nicht gelistet“ bleiben so, ohne Veröffent
   const base = { video: path.join(os.homedir(), 'Movies', 'x.mp4'), title: 'T', dueAt: now, targets: [{ platform: 'youtube', tabId: 'youtube-api', tabName: 'YouTube direkt' }] };
   assert.strictEqual(cleanPost({ ...base, privacy: 'private' }).post.privacy, 'private');
   assert.strictEqual(cleanPost({ ...base, privacy: 'öffentlich!' }).post.privacy, 'auto');
+});
+
+test('YouTube: letzte Antwort geht verloren – Nachfrage meldet „fertig“, kein kaputtes Leer-Stück hinterher', async () => {
+  const g = await fakeGoogle({ loseLast: true });
+  const yt = makeYt(g);
+  const video = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'zentrale-vid-')), 'clip.mp4');
+  fs.writeFileSync(video, Buffer.alloc(100 * 1024, 3));
+  try {
+    yt.setClient(CLIENT);
+    assert.strictEqual((await yt.connect()).ok, true);
+    const r = await yt.upload({ video, title: 'T', dueAt: 0 });
+    assert.strictEqual(r.ok, true, r.error);
+    assert.strictEqual(r.url, 'https://youtu.be/VID123');
+    assert.strictEqual(g.seen.badRanges || 0, 0, 'kein Stück mit ungültigem Bereich');
+  } finally { g.server.close(); }
+});
+
+test('YouTube: hängende Anmeldung (Tab zu, App-Sperre) – neuer Klick startet sie neu statt 10 Minuten „läuft schon“', async () => {
+  const g = await fakeGoogle();
+  const yt = makeYt(g, { browser: async () => {} }); // Browser-Tab wurde geschlossen: es kommt nie eine Rückleitung
+  try {
+    yt.setClient(CLIENT);
+    const first = yt.connect();
+    await sleep(30);
+    yt.openExternal = fakeBrowser();
+    const second = await yt.connect();
+    assert.strictEqual(second.ok, true, second.error);
+    const old = await first;
+    assert.strictEqual(old.ok, false);
+    assert.strictEqual(old.superseded, true);
+    assert.strictEqual(yt.status().connected, true);
+    assert.strictEqual(yt.login, null);
+  } finally { g.server.close(); }
+});
+
+test('YouTube: abgelaufener Zugang (Testmodus 7 Tage) fällt schon beim Status auf, abgelehnter Schlüssel bleibt nicht hängen', async () => {
+  const g = await fakeGoogle();
+  const yt = makeYt(g);
+  try {
+    yt.setClient(CLIENT);
+    assert.strictEqual((await yt.connect()).ok, true);
+    // Google lehnt den Zugangsschlüssel ab (401): beim nächsten Mal neu holen statt eine Stunde lang dasselbe.
+    yt.access = { token: 'ABGELEHNT', until: Date.now() + 3600e3 };
+    await assert.rejects(yt.myChannel(), /abgelaufen/);
+    assert.strictEqual(yt.access, null);
+    assert.strictEqual((await yt.myChannel()).title, 'Bit AI News');
+    // Refresh-Token zurückgezogen: der Status merkt es, ohne dass erst ein Upload scheitern muss.
+    g.seen.rtRevoked = true;
+    yt.access = null;
+    const st = await yt.checkedStatus();
+    assert.strictEqual(st.connected, false);
+    assert.ok(st.lost && st.lost.at);
+    assert.strictEqual(st.hasClient, true);
+    // Neu verbinden räumt den Hinweis weg.
+    g.seen.rtRevoked = false;
+    assert.strictEqual((await yt.connect()).ok, true);
+    assert.strictEqual((await yt.checkedStatus()).lost, null);
+  } finally { g.server.close(); }
+});
+
+test('YouTube: ohne Netz eine verständliche Meldung statt „fetch failed“', async () => {
+  const g = await fakeGoogle();
+  const yt = makeYt(g);
+  try {
+    yt.setClient(CLIENT);
+    assert.strictEqual((await yt.connect()).ok, true);
+    yt.access = null;
+    yt.ep = { ...yt.ep, token: 'http://127.0.0.1:1/token' };
+    const st = await yt.checkedStatus();
+    assert.strictEqual(st.connected, true, 'ohne Netz bleibt die Verbindung bestehen');
+    await assert.rejects(yt.accessToken(), /Keine Verbindung/);
+  } finally { g.server.close(); }
+});
+
+test('YouTube: MURIS-Sperre greift auch beim Kanal-Handle, nicht nur beim Namen', async () => {
+  const g = await fakeGoogle({ channel: 'Shop', customUrl: '@shop.muris' });
+  const yt = makeYt(g);
+  try {
+    yt.setClient(CLIENT);
+    const r = await yt.connect();
+    assert.strictEqual(r.ok, false);
+    assert.match(r.error, /MURIS/);
+    assert.strictEqual(yt.status().connected, false);
+    assert.deepStrictEqual(g.seen.revoked, ['RT']);
+    // Schon gespeicherter Kanal mit MURIS-Handle: kein Upload.
+    yt.write({ ...yt.read(), token: 'x', channel: { id: 'UC1', title: 'Shop', handle: '@shop.muris' } });
+    assert.match((await yt.upload({ video: __filename, title: 'T', dueAt: 0 })).error, /lädt die Zentrale nichts hoch/);
+  } finally { g.server.close(); }
+});
+
+test('YouTube: jeder „Öffnen ↗“-Link der Anleitung ist im Hauptprozess erlaubt (sonst passiert beim Klick nichts)', () => {
+  const view = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'youtube-view.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const allowed = main.slice(main.indexOf('const EXTERNAL_LINKS'), main.indexOf(']);', main.indexOf('const EXTERNAL_LINKS')));
+  const links = [...view.matchAll(/'(https:\/\/console\.cloud\.google\.com[^']*)'/g)].map((m) => m[1]);
+  assert.ok(links.length >= 4);
+  for (const l of links) assert.ok(allowed.includes(`'${l}'`), `nicht erlaubt: ${l}`);
+  assert.match(main, /YT_VIDEO_LINK\.test\(url\)/);
 });

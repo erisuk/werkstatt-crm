@@ -20,9 +20,20 @@ const CHUNK = 8 * 1024 * 1024; // Vielfaches von 256 KB, wie Google es für fort
 const MAX_RETRIES = 4;
 const BLOCKED_CHANNELS = /muris/i; // Regel: MURIS-Konten nie anfassen
 const LIMITS = { title: 100, description: 5000, tags: 500 };
+// Name UND Handle prüfen: ein Kanal „Shop“ mit Handle „@shop.muris“ ist genauso ein MURIS-Kanal.
+const isBlocked = (channel) => !!channel && BLOCKED_CHANNELS.test(`${channel.title || ''} ${channel.handle || ''}`);
 
 const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const CHECK_MS = 2500; // so lange darf die Statusprüfung bei Google höchstens bremsen
+// fetch wirft ohne Netz nur „fetch failed“ – daraus ein verständlicher Satz.
+const offline = (e) => e && e.name === 'TypeError' && /fetch failed|network/i.test(e.message || '');
+async function fetchOrSay(fetchImpl, url, init, who) {
+  try { return await fetchImpl(url, init); } catch (e) {
+    if (offline(e)) throw new Error(`Keine Verbindung zu ${who} – bist du online?`);
+    throw e;
+  }
+}
 
 // Die von Google heruntergeladene Datei („client_secret_….json“, Typ Desktop-App).
 function parseClientFile(text) {
@@ -94,7 +105,16 @@ class YouTube {
   status() {
     const d = this.read();
     return { hasClient: !!d.client, connected: !!(d.token && d.channel), channel: d.channel || null, connectedAt: d.connectedAt || null,
-      lastUpload: d.lastUpload || null, uploading: this.uploading };
+      lastUpload: d.lastUpload || null, uploading: this.uploading, lost: d.lost || null };
+  }
+
+  // Status mit kurzer Nachfrage bei Google: Hat Google den Zugang zurückgezogen (im Testmodus nach 7 Tagen), steht hier
+  // gleich „Anmeldung fehlt“ – nicht erst, wenn ein Upload scheitert. Ohne Netz bleibt alles, wie es ist.
+  async checkedStatus() {
+    if (this.status().connected && !this.uploading) {
+      await Promise.race([this.accessToken().catch(() => null), sleep(CHECK_MS)]);
+    }
+    return this.status();
   }
 
   setClient(text) {
@@ -107,7 +127,7 @@ class YouTube {
   }
 
   async tokenRequest(params) {
-    const res = await this.fetch(this.ep.token, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() });
+    const res = await fetchOrSay(this.fetch, this.ep.token, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() }, 'Google');
     const j = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = new Error(j.error === 'invalid_grant' ? 'Google hat die Anmeldung zurückgezogen – bitte YouTube neu verbinden.' : `Google lehnte ab: ${j.error_description || j.error || res.status}`);
@@ -121,11 +141,14 @@ class YouTube {
   async connect() {
     const client = this.secret('client');
     if (!client) return { ok: false, error: 'Zuerst die Datei mit den Google-Anmeldedaten wählen.' };
-    if (this.login) return { ok: false, error: 'Die Anmeldung läuft schon – schau in deinen Browser.' };
+    // Läuft schon eine Anmeldung (Browser-Tab zu, Seite nach der App-Sperre neu geladen …), startet ein neuer Klick sie neu –
+    // sonst hinge man bis zum Zeitlimit fest. Die alte Anmeldung endet mit „superseded“.
+    if (this.login) this.login.cancel();
     const verifier = b64url(crypto.randomBytes(48));
     const state = b64url(crypto.randomBytes(24));
     let server;
-    this.login = new Promise((resolve) => {
+    let cancel;
+    const waiting = new Promise((resolve) => {
       let done = null;
       // Nach dem Ergebnis bleibt der Server noch kurz offen: Chrome fragt die Rückleitung manchmal doppelt an
       // (Vorabladen), die zweite Anfrage bekäme sonst „Verbindung abgelehnt“.
@@ -137,6 +160,7 @@ class YouTube {
         resolve(r);
       };
       const timer = setTimeout(() => finish({ ok: false, error: 'Die Anmeldung hat zu lange gedauert. Bitte noch einmal.' }), LOGIN_TIMEOUT_MS);
+      cancel = () => finish({ ok: false, superseded: true, error: 'Die Anmeldung wurde neu gestartet.' });
       const page = (res, ok) => {
         res.writeHead(ok ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`<!doctype html><meta charset="utf-8"><title>Zentrale</title><body style="font:16px -apple-system,sans-serif;padding:48px">${ok
@@ -162,8 +186,10 @@ class YouTube {
         Promise.resolve(this.openExternal(url)).catch(() => finish({ ok: false, error: 'Der Browser ließ sich nicht öffnen.' }));
       });
     });
+    const mine = { cancel };
+    this.login = mine;
     let r;
-    try { r = await this.login; } finally { this.login = null; }
+    try { r = await waiting; } finally { if (this.login === mine) this.login = null; }
     if (!r.ok) return r;
     try {
       const t = await this.tokenRequest({ code: r.code, client_id: client.id, client_secret: client.secret, redirect_uri: r.redirect,
@@ -172,12 +198,12 @@ class YouTube {
       this.access = { token: t.access_token, until: Date.now() + (Number(t.expires_in) || 3600) * 1000 - 60000 };
       const channel = await this.myChannel();
       if (!channel) return { ok: false, error: 'Zu diesem Google-Konto gibt es keinen YouTube-Kanal.' };
-      if (BLOCKED_CHANNELS.test(channel.title)) {
+      if (isBlocked(channel)) {
         await this.revoke(t.refresh_token);
         this.access = null;
         return { ok: false, error: `„${channel.title}“ ist ein MURIS-Kanal – den verbindet die Zentrale nicht.` };
       }
-      this.write({ ...this.read(), token: this.encrypt(JSON.stringify({ refresh: t.refresh_token })), channel, connectedAt: Date.now() });
+      this.write({ ...this.read(), token: this.encrypt(JSON.stringify({ refresh: t.refresh_token })), channel, connectedAt: Date.now(), lost: null });
       return { ok: true, channel };
     } catch (e) {
       return { ok: false, error: e.message };
@@ -194,14 +220,15 @@ class YouTube {
       this.access = { token: t.access_token, until: Date.now() + (Number(t.expires_in) || 3600) * 1000 - 60000 };
       return this.access.token;
     } catch (e) {
-      if (e.code === 'invalid_grant') this.write({ ...this.read(), token: null, channel: null, connectedAt: null });
+      if (e.code === 'invalid_grant') this.write({ ...this.read(), token: null, channel: null, connectedAt: null, lost: { at: Date.now() } });
       throw e;
     }
   }
 
   async api(pathAndQuery, init = {}) {
-    const res = await this.fetch(`${this.ep.api}${pathAndQuery}`, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${await this.accessToken()}` } });
+    const res = await fetchOrSay(this.fetch, `${this.ep.api}${pathAndQuery}`, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${await this.accessToken()}` } }, 'YouTube');
     const j = await res.json().catch(() => ({}));
+    if (res.status === 401) this.access = null; // nächstes Mal frisch holen statt bis zu einer Stunde denselben abgelehnten Schlüssel
     if (!res.ok) throw new Error(apiError(j, res.status));
     return j;
   }
@@ -209,7 +236,7 @@ class YouTube {
   async myChannel() {
     const j = await this.api('/channels?part=snippet&mine=true');
     const c = j.items && j.items[0];
-    return c ? { id: c.id, title: (c.snippet && c.snippet.title) || c.id } : null;
+    return c ? { id: c.id, title: (c.snippet && c.snippet.title) || c.id, handle: (c.snippet && c.snippet.customUrl) || null } : null;
   }
 
   async revoke(token) {
@@ -220,7 +247,7 @@ class YouTube {
     const tok = this.secret('token');
     if (tok) await this.revoke(tok.refresh);
     this.access = null;
-    this.write({ ...this.read(), token: null, channel: null, connectedAt: null });
+    this.write({ ...this.read(), token: null, channel: null, connectedAt: null, lost: null });
     return { ok: true };
   }
 
@@ -229,21 +256,34 @@ class YouTube {
     if (this.uploading) return { ok: false, error: 'Es läuft schon ein Upload.' };
     const st = this.status();
     if (!st.connected) return { ok: false, error: 'YouTube ist nicht verbunden (Verbindungen → YouTube).' };
-    if (BLOCKED_CHANNELS.test(st.channel.title)) return { ok: false, error: 'Auf diesen Kanal lädt die Zentrale nichts hoch.' };
+    if (isBlocked(st.channel)) return { ok: false, error: 'Auf diesen Kanal lädt die Zentrale nichts hoch.' };
     let size;
     try { size = fs.statSync(post.video).size; } catch { return { ok: false, error: `Das Video liegt nicht mehr hier: ${post.video}` }; }
     if (!size) return { ok: false, error: 'Die Videodatei ist leer.' };
-    this.uploading = { title: post.title, progress: 0 };
+    this.uploading = { id: post.id, title: post.title, progress: 0 };
     const resource = videoResource(post, now);
     let fd = null;
     try {
       const start = await this.fetch(`${this.ep.upload}?uploadType=resumable&part=snippet,status`, { method: 'POST', headers: {
         Authorization: `Bearer ${await this.accessToken()}`, 'Content-Type': 'application/json; charset=UTF-8',
         'X-Upload-Content-Length': String(size), 'X-Upload-Content-Type': 'video/*' }, body: JSON.stringify(resource) });
-      if (!start.ok) return { ok: false, error: apiError(await start.json().catch(() => ({})), start.status) };
+      if (!start.ok) {
+        if (start.status === 401) this.access = null;
+        return { ok: false, error: apiError(await start.json().catch(() => ({})), start.status) };
+      }
       const session = start.headers.get('location');
       if (!session) return { ok: false, error: 'YouTube hat keine Upload-Adresse geschickt.' };
       fd = fs.openSync(post.video, 'r');
+      // Fertig – egal ob die Antwort auf das letzte Stück kam oder erst auf die Nachfrage danach.
+      const finished = async (res) => {
+        const video = await res.json();
+        this.uploading = { id: post.id, title: post.title, progress: 1 };
+        onProgress(1);
+        const result = { id: video.id, url: `https://youtu.be/${video.id}`, privacy: video.status && video.status.privacyStatus,
+          publishAt: resource.status.publishAt || null, at: Date.now() };
+        this.write({ ...this.read(), lastUpload: { ...result, title: post.title } });
+        return { ok: true, ...result };
+      };
       let offset = 0;
       let retries = 0;
       while (true) {
@@ -257,15 +297,7 @@ class YouTube {
         } catch (e) {
           res = null;
         }
-        if (res && (res.status === 200 || res.status === 201)) {
-          const video = await res.json();
-          this.uploading = { title: post.title, progress: 1 };
-          onProgress(1);
-          const result = { id: video.id, url: `https://youtu.be/${video.id}`, privacy: video.status && video.status.privacyStatus,
-            publishAt: resource.status.publishAt || null, at: Date.now() };
-          this.write({ ...this.read(), lastUpload: { ...result, title: post.title } });
-          return { ok: true, ...result };
-        }
+        if (res && (res.status === 200 || res.status === 201)) return await finished(res);
         if (res && res.status === 308) {
           const range = res.headers.get('range');
           offset = range ? Number(range.split('-')[1]) + 1 : 0;
@@ -276,15 +308,17 @@ class YouTube {
           // Nachfragen, wie viel schon angekommen ist.
           const probe = await this.fetch(session, { method: 'PUT', headers: { Authorization: `Bearer ${await this.accessToken()}`, 'Content-Range': `bytes */${size}`, 'Content-Length': '0' } }).catch(() => null);
           if (probe && probe.status === 308) { const r = probe.headers.get('range'); offset = r ? Number(r.split('-')[1]) + 1 : 0; }
-          else if (probe && (probe.status === 200 || probe.status === 201)) { offset = size; continue; }
+          // Schon komplett angekommen (nur die Antwort ging verloren): kein leeres Stück mehr hinterherschicken.
+          else if (probe && (probe.status === 200 || probe.status === 201)) return await finished(probe);
         } else {
+          if (res.status === 401) this.access = null;
           return { ok: false, error: apiError(await res.json().catch(() => ({})), res.status) };
         }
-        this.uploading = { title: post.title, progress: offset / size };
+        this.uploading = { id: post.id, title: post.title, progress: offset / size };
         onProgress(offset / size);
       }
     } catch (e) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: offline(e) ? 'Keine Verbindung zu YouTube – bist du online?' : e.message };
     } finally {
       if (fd !== null) try { fs.closeSync(fd); } catch {}
       this.uploading = null;

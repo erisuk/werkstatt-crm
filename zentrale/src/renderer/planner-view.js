@@ -17,6 +17,10 @@ async function loadPlanner() {
   try {
     const [r, y] = await Promise.all([api.plannerList(), api.ytStatus().catch(() => null)]);
     plan.posts = r.posts; plan.tabs = r.tabs; plan.yt = y;
+    // Seite neu geladen (z. B. nach der App-Sperre), während der Upload im Hintergrund weiterläuft: wieder anzeigen.
+    const running = y && y.uploading;
+    if (!plan.upload && running && running.id) plan.upload = { id: running.id, progress: Number(running.progress) || 0, adopted: true };
+    else if (plan.upload && plan.upload.adopted && !running) plan.upload = null;
   } catch (e) { plan.message = e.message; }
   if (ui.view === 'planner') renderPlannerBody();
 }
@@ -59,6 +63,10 @@ function planForm() {
   when.addEventListener('input', () => { const ms = new Date(when.value).getTime(); if (Number.isFinite(ms)) f.dueAt = ms; });
   const social = plan.tabs.map((t) => ({ ...t, platform: platformOf(t.url) })).filter((t) => t.platform);
   if (plan.yt && plan.yt.connected) social.unshift({ id: YT_API, name: `YouTube direkt (${plan.yt.channel.title})`, platform: { id: 'youtube', name: 'offizielle Schnittstelle' } });
+  // Gewählte Ziele, die es gerade nicht gibt (YouTube getrennt, Web-Tab gelöscht), bleiben sichtbar – sonst ließen sie sich nicht abwählen.
+  for (const t of f.targets) {
+    if (!social.some((x) => x.id === t.tabId)) social.push({ id: t.tabId, name: t.tabName, platform: { id: t.platform, name: 'gerade nicht verfügbar' } });
+  }
   const targetBoxes = social.length ? social.map((t) => {
     const on = f.targets.some((x) => x.tabId === t.id);
     return h('label', { class: 'check-line' },
@@ -91,7 +99,8 @@ function planForm() {
       onClick: () => sendMessage(`Schau dir bitte mein Video ${JSON.stringify(f.video)} mit dem Skill „watch“ an und schlag mir dafür vor: einen Titel (max. 100 Zeichen), eine Beschreibung und bis zu 15 passende Hashtags – für ${f.targets.map((t) => t.tabName).join(', ') || 'YouTube, Instagram und TikTok'}. Ich trage sie dann im Planer ein.`) }, 'Texte von Claude'),
     h('span', { class: 'spacer' }),
     h('button', { type: 'button', class: 'btn ghost', 'data-focus': 'pl-new', onClick: () => { plan.form = null; renderPlannerBody(); } }, 'Abbrechen'),
-    h('button', { type: 'submit', class: 'btn', 'data-focus': 'pl-new' }, 'Speichern')));
+    // Eigener Fokus-Schlüssel: nach einem Fehler bleibt der Fokus auf „Speichern“, nicht auf „Abbrechen“ (Enter würde sonst alles verwerfen).
+    h('button', { type: 'submit', class: 'btn', 'data-focus': 'pl-save' }, 'Speichern')));
 }
 
 // YouTube direkt: die Zentrale lädt selbst hoch. Liegt die Wunschzeit noch vor uns, veröffentlicht YouTube dann selbst.
@@ -124,9 +133,14 @@ function planRow(p) {
       h('div', { class: 'sub', text: `${new Date(p.dueAt).toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${p.video.split('/').pop()}` })),
     open ? p.targets.map((t) => {
       const direct = t.tabId === YT_API;
+      if (t.doneAt) {
+        return h('button', { class: 'link', 'aria-label': `Schon hochgeladen: ${t.tabName} – ${p.title}`, 'data-focus': `pl-up:${p.id}:${t.tabId}`,
+          onClick: () => { if (t.url) api.openExternal(t.url); } }, `✓ ${direct ? 'YouTube direkt' : t.tabName}`);
+      }
       const running = direct && plan.upload && plan.upload.id === p.id;
       return h('button', { class: 'btn', 'aria-label': `Hochladen: ${t.tabName} – ${p.title}`, 'data-focus': `pl-up:${p.id}:${t.tabId}`,
-        disabled: direct ? !!plan.upload || !(plan.yt && plan.yt.connected) : !ui.state.claude.found, onClick: () => planUpload(p, t) },
+        disabled: direct ? !!plan.upload || !(plan.yt && plan.yt.connected) : !ui.state.claude.found,
+        title: direct && !(plan.yt && plan.yt.connected) ? 'YouTube ist nicht (mehr) verbunden – unter „Verbindungen“ neu anmelden.' : null, onClick: () => planUpload(p, t) },
         running ? `Lädt hoch … ${Math.round(plan.upload.progress * 100)} %` : direct ? 'Hochladen: YouTube direkt' : `Hochladen: ${t.tabName}`);
     }) : null,
     open ? h('button', { class: 'link', 'aria-label': `Bearbeiten: ${p.title}`, 'data-focus': `pl-edit:${p.id}`, onClick: () => openPlanForm(p) }, 'Bearbeiten') : null,
