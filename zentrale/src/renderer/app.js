@@ -524,7 +524,7 @@ function renderOverview(force) {
           modeBtn('topic', 'Nach Thema'), modeBtn('folder', 'Nach Ordner'))),
       h('div', { class: 'projects' }, groupCards)),
     h('section', { class: 'section' },
-      h('div', { class: 'section-head' },
+      h('div', { class: 'section-head wrap' },
         h('h2', { text: 'Gespräche' }),
         h('span', { class: 'sub', text: sel ? `${sel.emoji ? `${sel.emoji} ` : ''}${sel.name}` : '' }),
         h('span', { class: 'spacer' }),
