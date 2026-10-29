@@ -209,9 +209,6 @@ h2 { font-size: 16px; font-weight: 600; }
 .steps-list li { overflow-wrap: anywhere; }
 .typing { align-self: flex-start; display: flex; gap: 5px; padding: 12px 14px; border-radius: 18px; background: var(--card-strong); }
 .typing[hidden] { display: none; }
-.typing span:not(.sr-only) { width: 7px; height: 7px; border-radius: 50%; background: var(--text-2); animation: pulse 1s infinite; }
-.typing span:nth-child(2) { animation-delay: .15s; }
-.typing span:nth-child(3) { animation-delay: .3s; }
 .chat-approvals { display: flex; flex-direction: column; gap: 10px; }
 .chat-approvals:empty { display: none; }
 
@@ -713,12 +710,13 @@ h2 { font-size: 16px; font-weight: 600; }
 /* Claude arbeitet */
 .typing { align-self: stretch; display: flex; align-items: center; gap: 8px; padding: 2px 0; background: none; border-radius: 0; font-size: 14px; color: var(--text-2); }
 .typing[hidden] { display: none; }
-.spark { color: var(--claude); font-size: 18px; line-height: 1; display: inline-block; animation: spark-turn 2.4s linear infinite; }
+.spark { flex-shrink: 0; width: 18px; height: 18px; fill: none; stroke: var(--claude); stroke-width: 2.6; stroke-linecap: round;
+  transform-origin: 50% 50%; transform-box: fill-box; animation: spark-turn 2.4s linear infinite; }
 .typing-text { animation: pulse 1.6s ease-in-out infinite; }
 @keyframes spark-turn { to { transform: rotate(360deg); } }
 .chat-hint { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--text-2); text-align: center; }
 .chat-hint p { margin: 0; font-size: 20px; color: var(--text); }
-.spark.big { font-size: 34px; animation: none; }
+.spark.big { width: 36px; height: 36px; stroke-width: 2.2; animation: none; }
 
 /* Eingabe */
 .chat-composer { flex-direction: column; align-items: stretch; gap: 2px; padding: 4px 8px 8px 16px; border-radius: 22px; border: 1px solid var(--border-strong); }

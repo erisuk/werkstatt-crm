@@ -618,7 +618,7 @@ function renderChat() {
   attachDrop(form, input);
 
   const typing = h('div', { class: 'typing', id: 'typing', role: 'status', hidden: true },
-    h('span', { class: 'spark', 'aria-hidden': 'true', text: '✻' }), h('span', { class: 'typing-text', text: 'Claude arbeitet …' }));
+    sparkIcon('spark'), h('span', { class: 'typing-text', text: 'Claude arbeitet …' }));
   fill(main, h('div', { class: 'chat' },
     h('div', { class: 'chat-head', id: 'chat-head' }),
     h('div', { class: 'messages', id: 'messages' }, typing),
@@ -728,6 +728,16 @@ function messageEl(m) {
   return h('div', { class: `msg ${m.kind}`, text: m.text });
 }
 
+// Das orange Claude-Zeichen als Grafik: ein Schriftzeichen sitzt nicht mittig und eiert beim Drehen.
+function sparkIcon(cls) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', cls);
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = [0, 45, 90, 135].map((a) => `<path d="M12 3v18" transform="rotate(${a} 12 12)"/>`).join(''); // feste Form
+  return svg;
+}
+
 // Arbeitsschritte wie in der Claude-App: eine Zeile pro Werkzeug mit Symbol, Tätigkeit und Ziel.
 const STEP_ICONS = {
   terminal: '<path d="M4 6l5 5-5 5M11 17h8"/>',
@@ -794,7 +804,7 @@ function renderMessages() {
   if (ui.shown > ui.messages.length) ui.shown = 0;
   if (ui.shown === 0) {
     for (const el of [...box.children]) if (el !== typing) el.remove();
-    if (!ui.messages.length) box.insertBefore(h('div', { class: 'chat-hint', id: 'chat-hint' }, h('span', { class: 'spark big', 'aria-hidden': 'true', text: '✻' }), h('p', { text: 'Was soll Claude für dich tun?' })), typing);
+    if (!ui.messages.length) box.insertBefore(h('div', { class: 'chat-hint', id: 'chat-hint' }, sparkIcon('spark big'), h('p', { text: 'Was soll Claude für dich tun?' })), typing);
   }
   if (ui.messages.length > ui.shown) {
     const hint = $('#chat-hint');

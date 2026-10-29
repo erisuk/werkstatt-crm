@@ -52,7 +52,7 @@ function renderAssistant() {
     h('div', { class: 'assistant-log', id: 'assistant-log' },
       msgs.map((m) => messageEl(m)),
       steps ? h('div', { class: 'sub', text: `Claude hat ${plural(steps, 'Schritt', 'Schritte')} in n8n erledigt` }) : null,
-      busy && !approvals.length ? h('div', { class: 'typing' }, h('span'), h('span'), h('span')) : null),
+      busy && !approvals.length ? h('div', { class: 'typing' }, sparkIcon('spark'), h('span', { class: 'typing-text', text: 'Claude arbeitet …' })) : null),
     approvals.length ? h('div', { class: 'chat-approvals' }, approvals.map((a) => approvalCard(a, false))) : null,
     h('form', { class: 'composer', onSubmit: (e) => {
       e.preventDefault();
