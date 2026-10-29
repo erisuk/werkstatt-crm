@@ -91,7 +91,8 @@ class WebTabs extends EventEmitter {
     };
     wc.on('did-navigate', remember);
     // Feuert auch für eingebettete Rahmen (iframes) – die sind nicht die Adresse des Tabs.
-    wc.on('did-navigate-in-page', (e, url, isMainFrame) => { if (isMainFrame) remember(e, url); });
+    // Der Verlauf (Zurück/Vor) kann sich dabei trotzdem ändern, deshalb die Leiste aktualisieren.
+    wc.on('did-navigate-in-page', (e, url, isMainFrame) => { if (isMainFrame) remember(e, url); else changed(); });
     // Nur Webseiten innerhalb des Tabs; alles andere (file:, Programme-Links) wird blockiert.
     wc.on('will-navigate', (e, url) => { if (!isWeb(url)) e.preventDefault(); });
     wc.setWindowOpenHandler(({ url, disposition, features }) => {
