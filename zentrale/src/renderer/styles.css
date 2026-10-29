@@ -133,6 +133,7 @@ h2 { font-size: 16px; font-weight: 600; }
 .section-head { display: flex; align-items: center; gap: 10px; }
 .section-head .sub { color: var(--text-2); font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .section-head.wrap { flex-wrap: wrap; }
+.section-head .sub.multi { white-space: normal; } /* längere Hinweise umbrechen statt mit „…“ abschneiden */
 .section-head h2 { font-size: 18px; }
 .aside .section-head h2 { font-size: 16px; }
 .empty { padding: 24px 18px; text-align: center; color: var(--text-2); }

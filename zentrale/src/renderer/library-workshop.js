@@ -332,7 +332,7 @@ function renderDiscover() {
   if (ws.marketError) return h('div', { class: 'card empty warn' }, ws.marketError, ' ', h('button', { class: 'link', onClick: () => { ws.market = null; renderLibraryBody(); } }, 'Erneut versuchen'));
   return [
     h('div', { class: 'section-head wrap' },
-      h('span', { class: 'sub', text: `${ws.market.length} Plugins im Marktplatz · ${list.length > 200 ? `die ersten 200 von ${list.length} Treffern – Suche eingrenzen` : `${list.length} angezeigt`}` }), h('span', { class: 'spacer' }), sel),
+      h('span', { class: 'sub multi', text: `${ws.market.length} Plugins im Marktplatz · ${list.length > 200 ? `die ersten 200 von ${list.length} Treffern – Suche eingrenzen` : `${list.length} angezeigt`}` }), h('span', { class: 'spacer' }), sel),
     h('p', { class: 'date', text: 'Plugins bringen fertige Skills, Agenten und Verbindungen mit. „Installieren“ bittet Claude darum – bevor er etwas ausführt, fragt die Zentrale dich.' }),
     h('div', { class: 'card list' }, list.length ? list.slice(0, 200).map((p) => h('div', { class: 'row lib-row' },
       h('div', { class: 'grow' },
