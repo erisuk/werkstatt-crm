@@ -191,7 +191,7 @@ test('simplify übersetzt stream-json Ereignisse', () => {
     [{ kind: 'init', sessionId: 's1', model: 'm' }]);
   assert.deepStrictEqual(simplify({ type: 'assistant', message: { content: [
     { type: 'text', text: 'Hi' }, { type: 'tool_use', name: 'Bash', input: { command: 'ls -la\nzweite' } }] } }),
-  [{ kind: 'text', text: 'Hi' }, { kind: 'tool', text: 'Bash · ls -la' }]);
+  [{ kind: 'text', text: 'Hi' }, { kind: 'tool', text: 'Bash · ls -la', tool: 'Bash', detail: 'ls -la' }]);
   assert.deepStrictEqual(simplify({ type: 'result', is_error: true, result: 'kaputt' }),
     [{ kind: 'error', text: 'Claude hat einen Fehler gemeldet.', details: 'kaputt' }]);
   assert.deepStrictEqual(simplify({ type: 'result', is_error: false }), []);
