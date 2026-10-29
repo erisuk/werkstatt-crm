@@ -39,8 +39,14 @@ function cleanPost(raw, old = {}) {
   if (!video) return { ok: false, error: 'Bitte ein Video (mp4, mov, m4v, webm) aus deinem Benutzerordner wählen.' };
   const dueAt = Number(r.dueAt);
   if (!Number.isFinite(dueAt) || dueAt < Date.UTC(2020, 0, 1)) return { ok: false, error: 'Bitte Datum und Uhrzeit wählen.' };
+  // „Schon hochgeladen“ je Ziel kommt nur aus dem gespeicherten Stand (markTargetDone), nie aus der Oberfläche.
+  const oldTargets = Array.isArray(old.targets) ? old.targets : [];
   const targets = (Array.isArray(r.targets) ? r.targets : []).filter((t) => t && PLATFORMS[t.platform] && typeof t.tabId === 'string')
-    .map((t) => ({ platform: t.platform, tabId: clip(t.tabId, 64), tabName: clip(t.tabName, 40) }));
+    .map((t) => {
+      const tabId = clip(t.tabId, 64);
+      const prev = oldTargets.find((o) => o && o.tabId === tabId && Number.isFinite(o.doneAt));
+      return { platform: t.platform, tabId, tabName: clip(t.tabName, 40), ...(prev ? { doneAt: prev.doneAt, url: clip(prev.url, 200) } : {}) };
+    });
   if (!targets.length) return { ok: false, error: 'Bitte mindestens ein Ziel wählen (YouTube direkt oder einen Web-Tab).' };
   const title = clip(r.title, LIMITS.title).trim();
   if (!title) return { ok: false, error: 'Bitte einen Titel angeben.' };
@@ -92,6 +98,19 @@ class PlanStore {
     const p = this.posts.find((x) => x.id === id);
     if (!p || !STATUS.includes(status)) return { ok: false, error: 'Unbekannter Beitrag oder Status.' };
     return this.upsert({ ...p, status });
+  }
+
+  // Ein Ziel ist erledigt (z. B. YouTube direkt hochgeladen). Erst wenn alle Ziele erledigt sind, ist der Beitrag „hochgeladen“ –
+  // sonst bliebe „Hochladen“ für das schon erledigte Ziel klickbar und das Video käme doppelt.
+  markTargetDone(id, tabId, url = '') {
+    const p = this.posts.find((x) => x.id === id);
+    if (!p || !p.targets.some((t) => t.tabId === tabId)) return { ok: false, error: 'Unbekannter Beitrag oder Ziel.' };
+    const targets = p.targets.map((t) => (t.tabId === tabId ? { ...t, doneAt: Date.now(), url: String(url || '') } : t));
+    const res = cleanPost({ ...p, targets, status: targets.every((t) => t.doneAt) ? 'hochgeladen' : p.status }, { ...p, targets });
+    if (!res.ok) return res;
+    this.posts = this.posts.map((x) => (x.id === id ? res.post : x));
+    this.save();
+    return { ok: true, post: res.post };
   }
 
   // Fällige Beiträge: einmal melden und als „fällig“ markieren.

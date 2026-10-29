@@ -954,13 +954,13 @@ function setup() {
   ipcMain.handle('yt-disconnect', () => yt().disconnect());
   ipcMain.handle('yt-upload', async (_e, a) => {
     const post = plannerStore().list().find((p) => p.id === (a && a.id));
-    if (!post || !post.targets.some((t) => t.tabId === YT_API_TARGET)) return { ok: false, error: 'Beitrag nicht gefunden.' };
+    const target = post && post.targets.find((t) => t.tabId === YT_API_TARGET);
+    if (!target) return { ok: false, error: 'Beitrag nicht gefunden.' };
+    if (target.doneAt) return { ok: false, error: `Dieser Beitrag ist schon auf YouTube: ${target.url}` };
     const r = await yt().upload(post, { onProgress: (progress) => send('yt-progress', { id: post.id, progress }) });
-    if (r.ok) {
-      const others = post.targets.filter((t) => t.tabId !== YT_API_TARGET);
-      if (!others.length) plannerStore().setStatus(post.id, 'hochgeladen');
-      send('planner-changed');
-    }
+    // Nur dieses Ziel ist erledigt; „hochgeladen“ wird der Beitrag erst, wenn alle Ziele erledigt sind.
+    if (r.ok) plannerStore().markTargetDone(post.id, YT_API_TARGET, r.url);
+    send('planner-changed'); // auch bei Fehlern – z. B. wenn die Seite nach der App-Sperre neu geladen wurde
     return r;
   });
   ipcMain.handle('planner-upload', (_e, a) => {

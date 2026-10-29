@@ -124,6 +124,10 @@ function planRow(p) {
       h('div', { class: 'sub', text: `${new Date(p.dueAt).toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${p.video.split('/').pop()}` })),
     open ? p.targets.map((t) => {
       const direct = t.tabId === YT_API;
+      if (t.doneAt) {
+        return h('button', { class: 'link', 'aria-label': `Schon hochgeladen: ${t.tabName} – ${p.title}`, 'data-focus': `pl-up:${p.id}:${t.tabId}`,
+          onClick: () => { if (t.url) api.openExternal(t.url); } }, `✓ ${direct ? 'YouTube direkt' : t.tabName}`);
+      }
       const running = direct && plan.upload && plan.upload.id === p.id;
       return h('button', { class: 'btn', 'aria-label': `Hochladen: ${t.tabName} – ${p.title}`, 'data-focus': `pl-up:${p.id}:${t.tabId}`,
         disabled: direct ? !!plan.upload || !(plan.yt && plan.yt.connected) : !ui.state.claude.found, onClick: () => planUpload(p, t) },
