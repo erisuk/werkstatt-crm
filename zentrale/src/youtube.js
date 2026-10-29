@@ -260,7 +260,7 @@ class YouTube {
     let size;
     try { size = fs.statSync(post.video).size; } catch { return { ok: false, error: `Das Video liegt nicht mehr hier: ${post.video}` }; }
     if (!size) return { ok: false, error: 'Die Videodatei ist leer.' };
-    this.uploading = { title: post.title, progress: 0 };
+    this.uploading = { id: post.id, title: post.title, progress: 0 };
     const resource = videoResource(post, now);
     let fd = null;
     try {
@@ -277,7 +277,7 @@ class YouTube {
       // Fertig – egal ob die Antwort auf das letzte Stück kam oder erst auf die Nachfrage danach.
       const finished = async (res) => {
         const video = await res.json();
-        this.uploading = { title: post.title, progress: 1 };
+        this.uploading = { id: post.id, title: post.title, progress: 1 };
         onProgress(1);
         const result = { id: video.id, url: `https://youtu.be/${video.id}`, privacy: video.status && video.status.privacyStatus,
           publishAt: resource.status.publishAt || null, at: Date.now() };
@@ -314,7 +314,7 @@ class YouTube {
           if (res.status === 401) this.access = null;
           return { ok: false, error: apiError(await res.json().catch(() => ({})), res.status) };
         }
-        this.uploading = { title: post.title, progress: offset / size };
+        this.uploading = { id: post.id, title: post.title, progress: offset / size };
         onProgress(offset / size);
       }
     } catch (e) {

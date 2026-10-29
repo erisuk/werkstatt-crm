@@ -17,6 +17,10 @@ async function loadPlanner() {
   try {
     const [r, y] = await Promise.all([api.plannerList(), api.ytStatus().catch(() => null)]);
     plan.posts = r.posts; plan.tabs = r.tabs; plan.yt = y;
+    // Seite neu geladen (z. B. nach der App-Sperre), während der Upload im Hintergrund weiterläuft: wieder anzeigen.
+    const running = y && y.uploading;
+    if (!plan.upload && running && running.id) plan.upload = { id: running.id, progress: Number(running.progress) || 0, adopted: true };
+    else if (plan.upload && plan.upload.adopted && !running) plan.upload = null;
   } catch (e) { plan.message = e.message; }
   if (ui.view === 'planner') renderPlannerBody();
 }

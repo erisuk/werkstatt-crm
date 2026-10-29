@@ -145,7 +145,11 @@ test('YouTube: Upload mit Fortschritt, übersteht einen Verbindungsabbruch', asy
     assert.strictEqual((await yt.connect()).ok, true);
     yt.access = null; // erzwingt Erneuern über den Refresh-Token
     const progress = [];
-    const r = await yt.upload({ video, title: 'Bit erklärt KI', description: 'Hallo', hashtags: '#ki', dueAt: Date.now() - 1000 }, { onProgress: (p) => progress.push(p) });
+    let during = null;
+    const r = await yt.upload({ id: 'P1', video, title: 'Bit erklärt KI', description: 'Hallo', hashtags: '#ki', dueAt: Date.now() - 1000 },
+      { onProgress: (p) => { progress.push(p); during = during || yt.status().uploading; } });
+    assert.strictEqual(during.id, 'P1', 'nach dem Neuladen der Seite findet der Planer den laufenden Upload wieder');
+    assert.strictEqual(yt.status().uploading, null);
     assert.strictEqual(r.ok, true, r.error);
     assert.strictEqual(r.url, 'https://youtu.be/VID123');
     assert.strictEqual(r.privacy, 'public');
