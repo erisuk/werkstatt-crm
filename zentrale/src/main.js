@@ -1387,7 +1387,7 @@ function setup() {
 
   ipcMain.handle('web-open-browser', (_e, id) => {
     const url = typeof id === 'string' && webTabs.currentUrl(id);
-    if (url && /^https?:\/\//.test(url)) shell.openExternal(browserTarget(url));
+    if (url && /^https?:\/\//.test(url)) shell.openExternal(browserTarget(url)).catch(() => {});
   });
   ipcMain.handle('web-clear-logins', async () => {
     const { response } = await dialog.showMessageBox(win, {

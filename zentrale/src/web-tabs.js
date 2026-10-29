@@ -103,14 +103,14 @@ class WebTabs extends EventEmitter {
     // Nur Webseiten innerhalb des Tabs; alles andere (file:, Programme-Links) wird blockiert.
     wc.on('will-navigate', (e, url) => { if (!isWeb(url)) e.preventDefault(); });
     wc.setWindowOpenHandler(({ url, disposition, features }) => {
-      if (/^mailto:/i.test(url)) { shell.openExternal(url); return { action: 'deny' }; }
+      if (/^mailto:/i.test(url)) { shell.openExternal(url).catch(() => {}); return { action: 'deny' }; }
       if (!isWeb(url)) return { action: 'deny' };
       // Anmelde-Fenster (window.open mit Größe) bleiben in der Zentrale, damit das Login hier gespeichert wird.
       if (disposition === 'new-window' || features) {
         return { action: 'allow', overrideBrowserWindowOptions: { ...popupSize(features), autoHideMenuBar: true, webPreferences: prefs } };
       }
       // Normale Links „in neuem Tab“ öffnen im Standardbrowser.
-      shell.openExternal(url);
+      shell.openExternal(url).catch(() => {});
       return { action: 'deny' };
     });
     // Anmelde-Fenster dürfen selbst nichts weiter öffnen und nur Webseiten laden.
