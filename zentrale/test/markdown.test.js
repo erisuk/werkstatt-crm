@@ -62,3 +62,22 @@ test('Arbeitsschritte: kurze Angaben pro Werkzeug', () => {
   assert.deepStrictEqual(toolStep('Grep', { pattern: 'TODO' }), { tool: 'Grep', detail: 'TODO' });
   assert.strictEqual(toolStep(null, null).tool, 'Werkzeug');
 });
+
+test('Markdown: Tabelle mit kurzer Trennzeile (|:-:|) und Überschrift „C#“', () => {
+  const b = parseMarkdown('| a | b | c |\n|:-|-:|:-:|\n| 1 | 2 | 3 |\n\n# C#\n\n## Titel ##');
+  assert.strictEqual(b[0].type, 'table');
+  assert.deepStrictEqual(b[0].align, [null, 'right', 'center']);
+  assert.deepStrictEqual(b[1], { type: 'heading', level: 1, text: 'C#' });
+  assert.deepStrictEqual(b[2], { type: 'heading', level: 2, text: 'Titel' });
+});
+
+test('Inline: Adressen mit Klammern, <Adresse> und Bild-Link', () => {
+  const p = parseInline('[Wiki](https://de.wikipedia.org/wiki/Ulm_(Stadt)) und https://de.wikipedia.org/wiki/Ulm_(Stadt).');
+  assert.deepStrictEqual(p.map((x) => x.t), ['link', 'text', 'link', 'text']);
+  assert.strictEqual(p[0].href, 'https://de.wikipedia.org/wiki/Ulm_(Stadt)');
+  assert.strictEqual(p[2].href, 'https://de.wikipedia.org/wiki/Ulm_(Stadt)');
+  assert.strictEqual(p[3].v, '.');
+  const q = parseInline('(siehe https://a.de/x) und <https://b.de> ![Bild](https://c.de/a.png)');
+  assert.deepStrictEqual(q.map((x) => x.href || x.v), ['(siehe ', 'https://a.de/x', ') und ', 'https://b.de', ' ', 'https://c.de/a.png']);
+  assert.deepStrictEqual(parseInline('Maß_a_b'), [{ t: 'text', v: 'Maß_a_b' }]);
+});

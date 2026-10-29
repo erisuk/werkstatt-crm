@@ -650,7 +650,8 @@ h2 { font-size: 16px; font-weight: 600; }
 .msg { max-width: 100%; padding: 0; border-radius: 0; white-space: normal; font-size: 15px; line-height: 1.65; }
 .msg.user { align-self: flex-end; width: auto; max-width: min(80%, 620px); margin-right: 0; padding: 10px 16px; border-radius: 20px;
   background: var(--bubble); color: var(--text); white-space: pre-wrap; }
-.msg.assistant { align-self: stretch; background: none; border: 0; box-shadow: none; color: var(--text); }
+/* display: block – sonst greift die Flex-Regel der n8n-Karte „.assistant“ */
+.msg.assistant { display: block; align-self: stretch; background: none; border: 0; box-shadow: none; color: var(--text); }
 .msg.error { padding: 10px 14px; border-radius: 12px; }
 .msg-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .msg-files:last-child { margin-bottom: 0; }
@@ -661,7 +662,7 @@ h2 { font-size: 16px; font-weight: 600; }
 
 /* Markdown */
 .md > :first-child { margin-top: 0; }
-.md > :last-child { margin-bottom: 0; }
+.md > :last-child, .md blockquote > :last-child, .md li > :last-child { margin-bottom: 0; }
 .md p { margin: 0 0 12px; }
 .md h2, .md h3, .md h4, .md h5, .md h6, .md h7 { margin: 20px 0 8px; line-height: 1.3; font-weight: 650; }
 .md .md-h1 { font-size: 21px; }
@@ -721,6 +722,8 @@ h2 { font-size: 16px; font-weight: 600; }
 /* Eingabe */
 .chat-composer { flex-direction: column; align-items: stretch; gap: 2px; padding: 4px 8px 8px 16px; border-radius: 22px; border: 1px solid var(--border-strong); }
 .chat-composer textarea { padding: 12px 0 6px; font-size: 15px; line-height: 1.5; max-height: 240px; }
+/* Schmales Fenster: Platzhalter einzeilig mit „…“ statt halb abgeschnittener zweiter Zeile */
+.chat-composer textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .composer-tools { display: flex; align-items: center; gap: 4px; }
 .chat-composer .shot-btn { width: 34px; height: 34px; border-radius: 10px; }
 .chat-composer .shot-btn svg { width: 18px; height: 18px; }

@@ -77,6 +77,25 @@ test('readMessages liefert nur echte Nachrichten und fasst Antworten zusammen', 
   ]);
 });
 
+test('readMessages mit Schritten: Reihenfolge wie live, ohne Skill-Text, Zusammenfassung und Abbruch-Hinweis', () => {
+  const root = tmp('zentrale-');
+  const file = path.join(root, 'x.jsonl');
+  const lines = [
+    { type: 'user', message: { content: 'Mach das' } },
+    { type: 'user', isMeta: true, message: { content: [{ type: 'text', text: 'Base directory for this skill: /x' }] } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'Ich schaue nach.' }, { type: 'tool_use', name: 'Read', input: { file_path: '/a/b.js' } }, { type: 'text', text: 'Gefunden.' }] } },
+    { type: 'user', message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] } },
+    { type: 'user', isCompactSummary: true, message: { content: 'This session is being continued …' } },
+  ];
+  fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  assert.deepStrictEqual(readMessages(file, 200, { tools: true }), [
+    { role: 'user', text: 'Mach das' },
+    { role: 'assistant', text: 'Ich schaue nach.' },
+    { role: 'tool', tool: 'Read', detail: 'b.js' },
+    { role: 'assistant', text: 'Gefunden.' },
+  ]);
+});
+
 test('shortTitle kürzt am Wort mit Auslassungszeichen', () => {
   assert.strictEqual(shortTitle('Kurz\nzweite Zeile'), 'Kurz');
   const long = 'also ich will eine Zentrale bauen in der ich dich bedienen kann aber in meinem eigenen stil';
