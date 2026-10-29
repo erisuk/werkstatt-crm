@@ -535,7 +535,7 @@ h2 { font-size: 16px; font-weight: 600; }
 .cockpit-tile.warn .value { color: var(--pill-red); }
 /* Uhrzeit der Morgen-Mitteilung: wie die übrigen Eingabefelder statt nacktem Systemfeld mit schwarzem Rahmen. */
 .section-head input[type="time"] { height: 30px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--card-strong); color: var(--text); font-size: 13px; }
-.section-head input[type="time"]:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.section-head input[type="time"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 
 /* Bildschirm-Helfer im Eingabefeld */
 .composer .shot-btn { width: 44px; height: 44px; flex-shrink: 0; border-radius: 12px; }
