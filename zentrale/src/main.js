@@ -1401,8 +1401,9 @@ function setup() {
   });
 
   // ---------- App-Sperre ----------
-  function lockApp() {
-    if (appLocked || !settings || !settings.get().appLock.enabled) return;
+  // manual: Knopf „Sperren“ – sperrt auch, wenn die automatische Sperre aus ist (sonst passierte beim Klick nichts).
+  function lockApp(manual = false) {
+    if (appLocked || !settings || (manual !== true && !settings.get().appLock.enabled)) return;
     appLocked = true;
     finLock();
     if (webTabs) webTabs.setVisible(false);
@@ -1419,16 +1420,22 @@ function setup() {
       { timeout: 120000 }, (err) => resolve(!err)));
     return ok ? { ok: true } : { ok: false, cancelled: true };
   }
+  // Nur eine Abfrage gleichzeitig: ein zweiter Klick (z. B. erst Touch ID, dann Mac-Passwort) wartet auf die laufende,
+  // statt einen zweiten Dialog zu öffnen, der nach dem Entsperren noch offen stünde.
+  let unlocking = null;
   ipcMain.handle('app-unlock', async (e, method) => {
     if (!win || e.sender !== win.webContents) return { ok: false, error: 'Nicht erlaubt.' };
     if (!appLocked) return { ok: true };
-    const r = await verifyUser(method === 'password' ? 'password' : 'touchid');
-    if (!r.ok) return r;
-    appLocked = false;
-    loadPage();
-    return { ok: true };
+    if (!unlocking) {
+      unlocking = verifyUser(method === 'password' ? 'password' : 'touchid').then((r) => {
+        if (r.ok && appLocked) { appLocked = false; loadPage(); }
+        return r;
+      }).finally(() => { unlocking = null; });
+    }
+    const r = await unlocking;
+    return r.ok ? { ok: true } : r;
   });
-  ipcMain.handle('app-lock', () => { lockApp(); return { ok: true }; });
+  ipcMain.handle('app-lock', () => { lockApp(true); return { ok: true }; });
   const lockTimer = setInterval(() => {
     const l = settings && settings.get().appLock;
     if (l && l.enabled && !appLocked && powerMonitor.getSystemIdleTime() >= l.minutes * 60) lockApp();
@@ -1516,12 +1523,21 @@ function setup() {
     if (ok.response !== 0) return { ok: false, cancelled: true, error: 'Abgebrochen – nichts geändert.' };
     return backup.enableFirewall({ stealth });
   });
+  // Läuft alle 30 s mit an. Ein echter Fehler (Cloud-Ordner, Platte voll …) meldet sich einmal und wartet bis morgen,
+  // sonst käme alle 30 s dieselbe Mitteilung. Eine fehlende Platte probiert es weiter, bis sie angesteckt ist.
+  let backupRunning = false;
   async function dailyBackup() {
     const cfg = settings.get().backup;
-    if (!backup.isDue(cfg, backupStore.get().lastDay)) return;
-    const r = await doBackup(true);
-    if (r.ok) notify('Gesichert', `Die Daten der Zentrale liegen jetzt auch in ${path.basename(path.dirname(path.dirname(r.dir)))}.`, 'kontrolle');
-    else if (!r.missing) notify('Sicherung ging nicht', r.error, 'kontrolle');
+    if (backupRunning || !backup.isDue(cfg, backupStore.get().lastDay, new Date(), backupStore.get().failDay)) return;
+    backupRunning = true;
+    try {
+      const r = await doBackup(true);
+      if (r.ok) notify('Gesichert', `Die Daten der Zentrale liegen jetzt auch in ${path.basename(path.dirname(path.dirname(r.dir)))}.`, 'kontrolle');
+      else if (!r.missing) {
+        backupStore.set({ ...backupStore.get(), failDay: backup.localDay() });
+        notify('Sicherung ging nicht', r.error, 'kontrolle');
+      }
+    } finally { backupRunning = false; }
   }
 
   // ---------- Lernen & Training ----------

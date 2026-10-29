@@ -99,10 +99,17 @@ function krSimulation() {
   ];
 }
 
+// Einstellung ändern und den Schutz-Bereich neu zeichnen – app.js zeichnet den Kontrollraum bei neuem Zustand
+// nicht neu; ohne das blieben Schalter und Text auf dem alten Stand und ein zweiter Klick schickte denselben Wert.
+async function krSetting(patch) {
+  try { await api.updateSettings(patch); } catch (e) { kr.message = e.message; }
+  if (ui.view === 'kontrolle' && kr.tab === 'schutz') renderKontrolleBody();
+}
+
 function krSchutz() {
   const r = kr.report;
   const lock = settings().appLock || { enabled: true, minutes: 15 };
-  const minutes = h('select', { id: 'kr-lock-min', 'data-focus': 'kr-lock-min', onChange: (e) => api.updateSettings({ appLock: { minutes: Number(e.target.value) } }) },
+  const minutes = h('select', { id: 'kr-lock-min', 'data-focus': 'kr-lock-min', onChange: (e) => krSetting({ appLock: { minutes: Number(e.target.value) } }) },
     [1, 5, 15, 30, 60].map((m) => h('option', { value: String(m) }, `${m} Min`)));
   minutes.value = String(lock.minutes);
   const askFirst = settings().askFirst === true;
@@ -111,7 +118,7 @@ function krSchutz() {
       h('div', { class: 'card form' },
         h('label', { class: 'toggle-line full' },
           h('button', { class: 'switch', role: 'switch', 'aria-checked': String(!askFirst), 'aria-label': 'Claude arbeitet ohne Rückfrage', 'data-focus': 'kr-ask',
-            onClick: () => api.updateSettings({ askFirst: !askFirst }) }),
+            onClick: () => krSetting({ askFirst: !askFirst }) }),
           'Claude arbeitet ohne Rückfrage – Befehle, Dateien, Internet, Web-Tabs, Mails: alles sofort'),
         h('p', { class: 'date', text: askFirst
           ? 'Aus: Claude fragt vor Befehlen, Webseiten und Aktionen nach deiner Freigabe.'
@@ -121,7 +128,7 @@ function krSchutz() {
       h('div', { class: 'card form' },
         h('label', { class: 'toggle-line full' },
           h('button', { class: 'switch', role: 'switch', 'aria-checked': String(lock.enabled), 'aria-label': 'App-Sperre mit Touch ID', 'data-focus': 'kr-lock',
-            onClick: async () => { if (lock.enabled && !confirm('App-Sperre wirklich ausschalten? Dann sieht jeder, der an deinen Mac kommt, alles in der Zentrale.')) return; await api.updateSettings({ appLock: { enabled: !lock.enabled } }); } }),
+            onClick: async () => { if (lock.enabled && !confirm('App-Sperre wirklich ausschalten? Dann sieht jeder, der an deinen Mac kommt, alles in der Zentrale.')) return; await krSetting({ appLock: { enabled: !lock.enabled } }); } }),
           'Sperre mit Touch ID beim Start und nach'), h('div', { class: 'field' }, h('label', { for: 'kr-lock-min', text: 'ohne Nutzung' }), minutes))),
     ...krBackupSections(),
     h('section', { class: 'section' }, h('h2', { text: 'Sicherheits-Check' }),

@@ -369,16 +369,18 @@ class ClaudeChat extends EventEmitter {
   }
 
   // Alle offenen Rückfragen auf einmal erlauben (wenn „Ohne Rückfrage arbeiten“ eingeschaltet wird).
+  // Auch zu lange: Neue Anfragen erlaubt handleControl dann ebenfalls ungesehen – ein „abgelehnt“ wäre gelogen.
   allowPending() {
-    for (const id of [...this.approvals.keys()]) this.respond(id, 'allow');
+    for (const id of [...this.approvals.keys()]) this.respond(id, 'allow', { unseen: true });
   }
 
-  // decision: 'allow' | 'always' | 'deny'. Was nicht vollständig angezeigt werden konnte, lässt sich nur ablehnen.
-  respond(id, decision) {
+  // decision: 'allow' | 'always' | 'deny'. Was nicht vollständig angezeigt werden konnte, lässt sich nur ablehnen
+  // (außer unseen: der Nutzer hat „Ohne Rückfrage arbeiten“ gewählt).
+  respond(id, decision, { unseen = false } = {}) {
     const a = this.approvals.get(id);
     if (!a) return false;
     this.approvals.delete(id);
-    const allow = (decision === 'allow' || decision === 'always') && !a.truncated;
+    const allow = (decision === 'allow' || decision === 'always') && (!a.truncated || unseen === true);
     if (decision === 'always' && allow && a.canAlways) this.alwaysAllow.add(a.key);
     this.write({ type: 'control_response', response: { subtype: 'success', request_id: id,
       response: allow ? { behavior: 'allow', updatedInput: a.input }

@@ -50,14 +50,14 @@ async function check(facts) {
 
   // 6. Backup: sonst ist bei einem Defekt alles weg (auch Projekte und Finanzen).
   const tm = await run('/usr/bin/tmutil', ['destinationinfo']);
-  add(/Name\s*:/.test(tm), 'Backup (Time Machine)', /Name\s*:/.test(tm) ? 'Time Machine sichert den Mac – inklusive der Daten der Zentrale.' : 'Kein Backup eingerichtet. Geht der Mac kaputt oder verloren, sind alle lokalen Daten weg. Einrichten: unten unter „Backup“ → „Time Machine einrichten“ (externe Platte).', 'rot');
+  add(/Name\s*:/.test(tm), 'Backup (Time Machine)', /Name\s*:/.test(tm) ? 'Time Machine sichert den Mac – inklusive der Daten der Zentrale.' : 'Kein Backup eingerichtet. Geht der Mac kaputt oder verloren, sind alle lokalen Daten weg. Einrichten: Kontrollraum → Schutz → Backup → „Einrichten“ (externe Platte).', 'rot');
   const b = facts.backup || {};
   const fresh = b.lastAt && Date.now() - b.lastAt < 3 * 24 * 3600 * 1000;
-  add(!!fresh, 'Sicherung der Zentrale', fresh ? `Zuletzt gesichert am ${new Date(b.lastAt).toLocaleDateString('de-DE')}.` : b.dir ? 'Seit über 3 Tagen keine Sicherung – ist die Platte angesteckt?' : 'Noch kein Ordner für die eigene Sicherung gewählt (unten unter „Backup“).', b.dir ? 'gelb' : 'info');
+  add(!!fresh, 'Sicherung der Zentrale', fresh ? `Zuletzt gesichert am ${new Date(b.lastAt).toLocaleDateString('de-DE')}.` : b.dir && b.lastAt ? 'Seit über 3 Tagen keine Sicherung – ist die Platte angesteckt?' : b.dir ? 'Noch nie gesichert – Kontrollraum → Schutz → Backup → „Jetzt sichern“.' : 'Noch kein Ordner für die eigene Sicherung gewählt (Kontrollraum → Schutz → Backup).', b.dir ? 'gelb' : 'info');
 
   // 7. Mac-Firewall (Systemeinstellung – ändert nur Eris).
   const fw = await run('/usr/libexec/ApplicationFirewall/socketfilterfw', ['--getglobalstate']);
-  add(/enabled|State = [12]/.test(fw), 'Mac-Firewall', /enabled|State = [12]/.test(fw) ? 'Eingehende Verbindungen werden gefiltert.' : 'Aus. Die Zentrale selbst lauscht nicht, andere Programme vielleicht schon. Einschalten: unten unter „Firewall“.', 'info');
+  add(/enabled|State = [12]/.test(fw), 'Mac-Firewall', /enabled|State = [12]/.test(fw) ? 'Eingehende Verbindungen werden gefiltert.' : 'Aus. Die Zentrale selbst lauscht nicht, andere Programme vielleicht schon. Einschalten: Kontrollraum → Schutz → Firewall.', 'info');
 
   return out;
 }
