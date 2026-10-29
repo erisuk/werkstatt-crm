@@ -616,7 +616,9 @@ h2 { font-size: 16px; font-weight: 600; }
 
 /* Schnellsprung (Cmd+K) */
 .switcher-backdrop { position: fixed; inset: 0; z-index: 1000; background: rgba(0, 0, 0, .28); display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh; }
-.switcher { width: min(640px, calc(100vw - 32px)); padding: 10px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 24px 80px rgba(0, 0, 0, .3); background: var(--card-strong); }
+.switcher { width: min(640px, calc(100vw - 32px)); padding: 10px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 24px 80px rgba(0, 0, 0, .3);
+  /* Deckend: --card-strong allein ist halbdurchsichtig (dunkel nur 10 %) – sonst scheint die Seite dahinter durch. */
+  background: linear-gradient(var(--card-strong), var(--card-strong)), var(--bg); }
 .switcher input { font: inherit; font-size: 17px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--fill); color: var(--text); outline: none; }
 .switcher input:focus-visible { border-color: var(--accent); }
 .switcher-list { list-style: none; margin: 0; padding: 0; max-height: 52vh; overflow-y: auto; }
