@@ -14,7 +14,8 @@ const ENDPOINTS = {
   api: 'https://www.googleapis.com/youtube/v3',
   upload: 'https://www.googleapis.com/upload/youtube/v3/videos',
 };
-const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+const LINGER_MS = 15 * 1000;
 const CHUNK = 8 * 1024 * 1024; // Vielfaches von 256 KB, wie Google es für fortsetzbare Uploads verlangt
 const MAX_RETRIES = 4;
 const BLOCKED_CHANNELS = /muris/i; // Regel: MURIS-Konten nie anfassen
@@ -123,19 +124,32 @@ class YouTube {
     const state = b64url(crypto.randomBytes(24));
     let server;
     this.login = new Promise((resolve) => {
-      let done = false;
-      const finish = (r) => { if (done) return; done = true; clearTimeout(timer); server.close(); resolve(r); };
+      let done = null;
+      // Nach dem Ergebnis bleibt der Server noch kurz offen: Chrome fragt die Rückleitung manchmal doppelt an
+      // (Vorabladen), die zweite Anfrage bekäme sonst „Verbindung abgelehnt“.
+      const finish = (r) => {
+        if (done) return;
+        done = r;
+        clearTimeout(timer);
+        setTimeout(() => server.close(), LINGER_MS).unref();
+        resolve(r);
+      };
       const timer = setTimeout(() => finish({ ok: false, error: 'Die Anmeldung hat zu lange gedauert. Bitte noch einmal.' }), LOGIN_TIMEOUT_MS);
-      server = http.createServer((req, res) => {
-        const u = new URL(req.url, 'http://127.0.0.1');
-        if (u.pathname !== '/') { res.writeHead(404).end(); return; }
-        const ok = u.searchParams.get('state') === state && u.searchParams.get('code');
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      const page = (res, ok) => {
+        res.writeHead(ok ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`<!doctype html><meta charset="utf-8"><title>Zentrale</title><body style="font:16px -apple-system,sans-serif;padding:48px">${ok
           ? '<h1>Fertig ✓</h1><p>YouTube ist mit der Zentrale verbunden. Du kannst dieses Fenster schließen.</p>'
           : '<h1>Nicht geklappt</h1><p>Die Anmeldung wurde abgebrochen. Versuch es in der Zentrale noch einmal.</p>'}</body>`);
-        if (!ok) { finish({ ok: false, error: u.searchParams.get('error') === 'access_denied' ? 'Du hast die Anmeldung bei Google abgebrochen.' : 'Die Anmeldung ging nicht.' }); return; }
-        finish({ ok: true, code: u.searchParams.get('code'), redirect: `http://127.0.0.1:${server.address().port}` });
+      };
+      server = http.createServer((req, res) => {
+        const u = new URL(req.url, 'http://127.0.0.1');
+        // Nur Googles Rückleitung mit unserem state zählt – alles andere (Favicon, Vorabladen, Fremde) wird ignoriert.
+        if (u.pathname !== '/' || u.searchParams.get('state') !== state) { res.writeHead(404).end(); return; }
+        if (done) { page(res, done.ok); return; }
+        const code = u.searchParams.get('code');
+        page(res, !!code);
+        if (!code) { finish({ ok: false, error: u.searchParams.get('error') === 'access_denied' ? 'Du hast die Anmeldung bei Google abgebrochen.' : 'Die Anmeldung ging nicht.' }); return; }
+        finish({ ok: true, code, redirect: `http://127.0.0.1:${server.address().port}` });
       });
       server.on('error', () => finish({ ok: false, error: 'Die Zentrale konnte die Rückleitung von Google nicht empfangen.' }));
       server.listen(0, '127.0.0.1', () => {

@@ -147,3 +147,28 @@ test('YouTube: Upload mit Fortschritt, übersteht einen Verbindungsabbruch', asy
     assert.match((await yt.upload({ video: '/gibt/es/nicht.mp4', title: 'x', dueAt: 0 })).error, /nicht mehr hier/);
   } finally { g.server.close(); }
 });
+
+test('YouTube: fremde Anfragen an die Rückleitung stören nicht, doppelte Rückleitung bekommt „Fertig“', async () => {
+  const g = await fakeGoogle();
+  const get = (url) => new Promise((resolve) => http.get(url, (r) => { let b = ''; r.on('data', (c) => { b += c; }); r.on('end', () => resolve({ status: r.statusCode, body: b })); }).on('error', (e) => resolve({ error: e.code })));
+  let replay = null;
+  const browser = async (url) => {
+    const u = new URL(url);
+    const back = new URL(u.searchParams.get('redirect_uri'));
+    await get(`${back.origin}/`); // Vorabladen ohne state
+    await get(`${back.origin}/favicon.ico`);
+    back.searchParams.set('state', u.searchParams.get('state'));
+    back.searchParams.set('code', 'CODE');
+    replay = back.toString();
+    setTimeout(() => get(replay), 20);
+  };
+  const yt = makeYt(g, { browser });
+  try {
+    yt.setClient(CLIENT);
+    const r = await yt.connect();
+    assert.strictEqual(r.ok, true, r.error);
+    const again = await get(replay);
+    assert.strictEqual(again.status, 200);
+    assert.match(again.body, /Fertig/);
+  } finally { g.server.close(); }
+});
