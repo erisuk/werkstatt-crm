@@ -86,7 +86,8 @@ test('Echte Dateien: der Wächter sortiert, sobald die Datei fertig ist', async 
   const done = new Promise((resolve) => w.once('moved', resolve));
   fs.writeFileSync(path.join(src, 'Bit.mp4.part'), 'lädt');
   fs.writeFileSync(path.join(src, 'Bit.mp4'), 'video');
-  const m = await Promise.race([done, new Promise((r) => setTimeout(() => r(null), 20000))]);
+  // Fällt das macOS-Ereignis unter Last aus, holt der Sicherheits-Durchgang die Datei.
+  const m = await Promise.race([done, new Promise((r) => setTimeout(() => r(null), 20000))]) || (w.scan(), await Promise.race([done, new Promise((r) => setTimeout(() => r(null), 10000))]));
   w.stop();
   assert.ok(m, 'nicht einsortiert');
   assert.ok(fs.existsSync(path.join(dst, 'Bit.mp4')));
@@ -111,5 +112,24 @@ test('Regel mit noch fehlendem Zielordner bleibt erhalten; nie überschreiben', 
   fs.symlinkSync('/etc/hosts', path.join(src, 'link.pdf'));
   w.settle(src, 'link.pdf', -1);
   assert.ok(fs.lstatSync(path.join(src, 'link.pdf')).isSymbolicLink());
+  w.stop();
+});
+
+test('Sicherheits-Durchgang: holt neue Dateien nach, lässt Altbestand und Zurückgeholtes liegen', async () => {
+  const { src, dst, file } = dirs();
+  fs.writeFileSync(path.join(src, 'alt.mp4'), 'schon da');
+  const w = new FolderWatcher(file);
+  w.saveRule({ folder: src, pattern: '*.mp4', target: dst });
+  for (const x of w.watchers.values()) x.close(); // Ereignisse „verlieren“
+  await new Promise((r) => setTimeout(r, 50));
+  fs.writeFileSync(path.join(src, 'neu.mp4'), 'video');
+  const moved = new Promise((resolve) => w.once('moved', resolve));
+  w.scan();
+  const m = await Promise.race([moved, new Promise((r) => setTimeout(() => r(null), 10000))]);
+  assert.ok(m && m.to.endsWith('neu.mp4'), 'neue Datei nicht nachgeholt');
+  assert.ok(fs.existsSync(path.join(src, 'alt.mp4')), 'Altbestand darf liegen bleiben');
+  assert.strictEqual(w.undo(m.id).ok, true);
+  w.scan();
+  assert.strictEqual(w.pending.size, 0, 'zurückgeholte Datei nicht erneut einplanen');
   w.stop();
 });
