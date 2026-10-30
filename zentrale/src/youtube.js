@@ -20,7 +20,7 @@ const ENDPOINTS = {
   api: 'https://www.googleapis.com/youtube/v3',
   upload: 'https://www.googleapis.com/upload/youtube/v3/videos',
 };
-const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+const LOGIN_TIMEOUT_MS = 60 * 60 * 1000; // großzügig: Bestätigen im Browser dauert manchmal länger
 const LINGER_MS = 15 * 1000;
 const CHUNK = 8 * 1024 * 1024; // Vielfaches von 256 KB, wie Google es für fortsetzbare Uploads verlangt
 const MAX_RETRIES = 4;
