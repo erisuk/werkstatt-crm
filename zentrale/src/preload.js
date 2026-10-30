@@ -167,6 +167,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   ytTrashFile: (file) => ipcRenderer.invoke('yt-trash-file', file),
   ytConnect: () => ipcRenderer.invoke('yt-connect'),
   ytDisconnect: () => ipcRenderer.invoke('yt-disconnect'),
+  ytDelete: (id) => ipcRenderer.invoke('yt-delete', id),
   ytUpload: (id) => ipcRenderer.invoke('yt-upload', { id }),
   onYtProgress: (fn) => ipcRenderer.on('yt-progress', (_e, p) => fn(p)),
   webState: () => ipcRenderer.invoke('web-state'),

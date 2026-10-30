@@ -10,6 +10,7 @@ test('Nur wichtige Server werden beobachtet', () => {
   assert.ok(isWatched(srv(4310, { launchd: true })));
   assert.ok(isWatched(srv(8788)));
   assert.ok(!isWatched(srv(5173)));
+  assert.ok(!isWatched(srv(54627, { launchd: true, self: true })), 'eigene Anmelde-Rückleitung der Zentrale ist kein Server');
   assert.ok(!isWatched(srv(5000, { system: true, launchd: true })));
 });
 

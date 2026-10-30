@@ -285,8 +285,12 @@ window.zentrale.onWebActivity((a) => {
 });
 
 // Grobe Erkennung für den Knopf; die genaue Prüfung macht die Zentrale beim Klick.
-const VIDEO_PAGE = [/youtube\.com\/(watch|shorts\/|live\/)/, /youtu\.be\/[\w-]{6,}/, /instagram\.com\/(reels?|p|tv)\/[\w-]+/, /tiktok\.com\/@[^/]+\/video\/\d+/,
-  /reddit\.com\/r\/[^/]+\/comments\//, /(x|twitter)\.com\/[^/]+\/status\/\d+/, /vimeo\.com\/\d+/, /loom\.com\/share\//, /facebook\.com\/(reel\/|watch|[^/]+\/videos\/)/];
+// Seite + Pfad getrennt prüfen, damit z. B. linux.com nicht als x.com zählt.
+const VIDEO_PAGE = [[/^(www\.|m\.)?youtube\.com$/, /^\/(watch|shorts\/|live\/)/], [/^youtu\.be$/, /^\/[\w-]{6,}/], [/^(www\.)?instagram\.com$/, /^\/(reels?|p|tv)\/[\w-]+/],
+  [/^(www\.)?tiktok\.com$/, /^\/@[^/]+\/video\/\d+/], [/^(www\.|old\.)?reddit\.com$/, /^\/r\/[^/]+\/comments\//], [/^(www\.)?(x|twitter)\.com$/, /^\/[^/]+\/status\/\d+/],
+  [/^(www\.)?vimeo\.com$/, /^\/\d+/], [/^(www\.)?loom\.com$/, /^\/share\//], [/^(www\.|m\.)?facebook\.com$/, /^\/(reel\/|watch|[^/]+\/videos\/)/]];
 function isVideoPage(url) {
-  return typeof url === 'string' && url.startsWith('https://') && VIDEO_PAGE.some((re) => re.test(url));
+  let u;
+  try { u = new URL(String(url)); } catch { return false; }
+  return u.protocol === 'https:' && VIDEO_PAGE.some(([host, p]) => host.test(u.hostname) && p.test(u.pathname));
 }

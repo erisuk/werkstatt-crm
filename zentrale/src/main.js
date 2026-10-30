@@ -440,8 +440,18 @@ function setup() {
     pageTimer = setTimeout(() => loadPage(true), PAGE_TIMEOUT_MS);
     win.loadFile(pageFile()).catch(() => {}); // Fehler meldet did-fail-load
   }
+  // Bremse: Stürzt die Seite gleich nach jedem Laden wieder ab, nicht endlos neu laden (höchstens 6 Mal pro Minute).
+  const CRASH_WINDOW_MS = 60 * 1000;
+  const CRASH_LIMIT = 6;
+  let crashes = [];
   function watchPage(w) {
-    const again = () => { clearTimeout(pageTimer); pageTimer = setTimeout(() => loadPage(true), 1000); };
+    const again = () => {
+      const now = Date.now();
+      crashes = [...crashes.filter((t) => now - t < CRASH_WINDOW_MS), now];
+      clearTimeout(pageTimer);
+      if (crashes.length > CRASH_LIMIT) { console.error('Zentrale: Seite stürzt immer wieder ab – Neuladen pausiert für eine Minute.'); pageTimer = setTimeout(() => { crashes = []; loadPage(true); }, CRASH_WINDOW_MS); return; }
+      pageTimer = setTimeout(() => loadPage(true), 1000);
+    };
     w.webContents.on('did-finish-load', () => { clearTimeout(pageTimer); pageTries = 0; });
     w.webContents.on('did-fail-load', (_e, code, _d, _u, isMainFrame) => { if (isMainFrame && code !== -3) again(); }); // -3 = abgebrochen durch neues Laden
     w.webContents.on('render-process-gone', again);
@@ -960,6 +970,19 @@ function setup() {
   });
   ipcMain.handle('yt-connect', () => yt().connect());
   ipcMain.handle('yt-disconnect', () => yt().disconnect());
+  // Löschen ist endgültig: Die Rückfrage kommt von macOS (die Oberfläche kann sie nicht überspringen),
+  // und gelöscht werden nur Videos, die die Zentrale selbst hochgeladen hat. Claude hat dafür kein Werkzeug.
+  ipcMain.handle('yt-delete', async (_e, id) => {
+    if (typeof id !== 'string') return { ok: false, error: 'Unbekanntes Video.' };
+    const video = yt().status().uploads.find((u) => u.id === id);
+    if (!video) return { ok: false, error: 'Die Zentrale löscht nur Videos, die sie selbst hochgeladen hat.' };
+    const { response } = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Abbrechen', 'Endgültig löschen'], defaultId: 0, cancelId: 0,
+      message: `„${video.title}“ von YouTube löschen?`, detail: `${video.url}\n\nDas Video ist danach bei YouTube weg – samt Aufrufen und Kommentaren. Das lässt sich nicht rückgängig machen.` });
+    if (response !== 1) return { ok: false, cancelled: true };
+    const r = await yt().deleteVideo(id);
+    if (r.ok) send('planner-changed');
+    return r;
+  });
   ipcMain.handle('yt-upload', async (_e, a) => {
     const post = plannerStore().list().find((p) => p.id === (a && a.id));
     const target = post && post.targets.find((t) => t.tabId === YT_API_TARGET);
@@ -1409,10 +1432,31 @@ function setup() {
   });
 
   // ---------- App-Sperre ----------
+  // Die Sperre übersteht einen Neustart der App (z. B. nach einem Neubau): War die Zentrale bis vor Kurzem entsperrt
+  // und der Mac seitdem nicht länger als die Sperr-Zeit unbenutzt, startet sie entsperrt. Gespeichert wird nur ein
+  // verschlüsselter Zeitstempel (Schlüsselbund) – von Hand fälschen lässt er sich nicht.
+  const SESSION_FILE = () => path.join(app.getPath('userData'), 'sitzung.json');
+  function rememberSession(alive) {
+    try {
+      const at = alive ? Date.now() : 0;
+      const data = safeStorage.isEncryptionAvailable() ? { v: safeStorage.encryptString(String(at)).toString('base64') } : { v: null };
+      fs.writeFileSync(SESSION_FILE(), JSON.stringify(data), { mode: 0o600 });
+    } catch {}
+  }
+  function sessionStillOpen(minutes) {
+    try {
+      const { v } = JSON.parse(fs.readFileSync(SESSION_FILE(), 'utf8'));
+      if (!v) return false;
+      const at = Number(safeStorage.decryptString(Buffer.from(v, 'base64')));
+      const max = minutes * 60 * 1000;
+      return at > 0 && Date.now() - at < max && Date.now() >= at && powerMonitor.getSystemIdleTime() * 1000 < max;
+    } catch { return false; }
+  }
   // manual: Knopf „Sperren“ – sperrt auch, wenn die automatische Sperre aus ist (sonst passierte beim Klick nichts).
   function lockApp(manual = false) {
     if (appLocked || !settings || (manual !== true && !settings.get().appLock.enabled)) return;
     appLocked = true;
+    rememberSession(false);
     finLock();
     if (webTabs) webTabs.setVisible(false);
     loadPage();
@@ -1436,7 +1480,7 @@ function setup() {
     if (!appLocked) return { ok: true };
     if (!unlocking) {
       unlocking = verifyUser(method === 'password' ? 'password' : 'touchid').then((r) => {
-        if (r.ok && appLocked) { appLocked = false; loadPage(); }
+        if (r.ok && appLocked) { appLocked = false; rememberSession(true); loadPage(); }
         return r;
       }).finally(() => { unlocking = null; });
     }
@@ -1447,6 +1491,7 @@ function setup() {
   const lockTimer = setInterval(() => {
     const l = settings && settings.get().appLock;
     if (l && l.enabled && !appLocked && powerMonitor.getSystemIdleTime() >= l.minutes * 60) lockApp();
+    else if (!appLocked && powerMonitor.getSystemIdleTime() < 60) rememberSession(true); // „gerade benutzt“
   }, 20000);
   powerMonitor.on('lock-screen', lockApp);
   powerMonitor.on('suspend', lockApp);
@@ -1690,7 +1735,9 @@ function setup() {
 
   app.whenReady().then(async () => {
     settings = new Settings(path.join(app.getPath('userData'), 'settings.json'));
-    appLocked = settings.get().appLock.enabled; // beim Start gesperrt
+    // Beim Start gesperrt – außer die Zentrale war bis eben entsperrt und der Mac seitdem in Benutzung (siehe sessionStillOpen).
+    const lockCfg = settings.get().appLock;
+    appLocked = lockCfg.enabled && !sessionStillOpen(lockCfg.minutes);
     topicStore = new TopicStore(path.join(app.getPath('userData'), 'topics.json'));
     webTabs = new WebTabs(new PortalStore(path.join(app.getPath('userData'), 'portals.json')));
     webTabs.on('change', () => send('web-state', webState()));
@@ -1752,6 +1799,7 @@ function setup() {
 
   // Beim Beenden warten, bis Claude und laufende Aufgaben wirklich gestoppt sind.
   app.on('before-quit', (e) => {
+    if (!appLocked && settings) rememberSession(true); // Neustart (z. B. nach Neubau) kurz danach: bleibt entsperrt
     quitting = true;
     if (cleanedUp) return;
     e.preventDefault();

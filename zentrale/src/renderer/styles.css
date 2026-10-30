@@ -115,8 +115,8 @@ h2 { font-size: 16px; font-weight: 600; }
 
 .body { flex: 1; min-height: 0; display: flex; }
 
-.sidebar { width: 208px; flex-shrink: 0; padding: 18px 12px; display: flex; flex-direction: column; gap: 4px; border-right: 1px solid var(--line); background: var(--panel); }
-.nav-item { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 12px; border: 0; border-radius: 12px; background: transparent; color: var(--text-3); text-align: left; font-size: 14px; }
+.sidebar { width: 208px; flex-shrink: 0; padding: 18px 12px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
+.nav-item { display: flex; flex-shrink: 1; min-height: 36px; align-items: center; gap: 10px; height: 44px; padding: 0 12px; border: 0; border-radius: 12px; background: transparent; color: var(--text-3); text-align: left; font-size: 14px; }
 .nav-item svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .nav-item:hover { background: var(--card-soft); }
 .nav-item.active { background: var(--nav-active); color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06); }
@@ -759,3 +759,9 @@ h2 { font-size: 16px; font-weight: 600; }
 .web-google { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 12px; background: var(--notice-bg); color: var(--notice); font-size: 13px; line-height: 1.45; }
 .web-google-app { display: flex; align-items: center; gap: 16px; padding: 18px 20px; }
 .web-google-app .sub { margin-top: 4px; line-height: 1.5; }
+
+/* Verbindungen → YouTube: eigene Uploads */
+.yt-uploads { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.yt-uploads > .title { font-weight: 600; }
+.btn.ghost.danger { color: var(--pill-red); }
+.btn.ghost.danger:hover, .btn.ghost.danger:focus-visible { background: var(--pill-red-bg); }

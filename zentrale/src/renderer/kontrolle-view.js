@@ -110,7 +110,7 @@ function krSchutz() {
   const r = kr.report;
   const lock = settings().appLock || { enabled: true, minutes: 15 };
   const minutes = h('select', { id: 'kr-lock-min', 'data-focus': 'kr-lock-min', onChange: (e) => krSetting({ appLock: { minutes: Number(e.target.value) } }) },
-    [1, 5, 15, 30, 60].map((m) => h('option', { value: String(m) }, `${m} Min`)));
+    [1, 5, 15, 30, 60, 120, 240, 480].map((m) => h('option', { value: String(m) }, m < 60 ? `${m} Min` : `${m / 60} Std`)));
   minutes.value = String(lock.minutes);
   const askFirst = settings().askFirst === true;
   return [
@@ -129,7 +129,7 @@ function krSchutz() {
         h('label', { class: 'toggle-line full' },
           h('button', { class: 'switch', role: 'switch', 'aria-checked': String(lock.enabled), 'aria-label': 'App-Sperre mit Touch ID', 'data-focus': 'kr-lock',
             onClick: async () => { if (lock.enabled && !confirm('App-Sperre wirklich ausschalten? Dann sieht jeder, der an deinen Mac kommt, alles in der Zentrale.')) return; await krSetting({ appLock: { enabled: !lock.enabled } }); } }),
-          'Sperre mit Touch ID beim Start und nach'), h('div', { class: 'field' }, h('label', { for: 'kr-lock-min', text: 'ohne Nutzung' }), minutes))),
+          'Sperre mit Touch ID nach – gilt auch über Neustarts der App:'), h('div', { class: 'field' }, h('label', { for: 'kr-lock-min', text: 'ohne Nutzung' }), minutes))),
     ...krBackupSections(),
     h('section', { class: 'section' }, h('h2', { text: 'Sicherheits-Check' }),
       !r ? h('div', { class: 'card empty', text: 'Prüft …' }) : h('div', { class: 'card list sb' }, r.security.map((s) => h('div', { class: 'row' },

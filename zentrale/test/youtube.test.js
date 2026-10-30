@@ -294,3 +294,38 @@ test('YouTube: jeder „Öffnen ↗“-Link der Anleitung ist im Hauptprozess er
   for (const l of links) assert.ok(allowed.includes(`'${l}'`), `nicht erlaubt: ${l}`);
   assert.match(main, /YT_VIDEO_LINK\.test\(url\)/);
 });
+
+test('YouTube: löschen nur eigene Uploads, nur mit erweitertem Recht, MURIS nie', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push(`${init.method || 'GET'} ${url}`);
+    if (String(url).includes('/token')) return new Response(JSON.stringify({ access_token: 'AT', expires_in: 3600 }), { status: 200 });
+    if (init.method === 'DELETE') return new Response(null, { status: String(url).includes('weg123') ? 404 : 204 });
+    return new Response('{}', { status: 500 });
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zentrale-yt-del-'));
+  const enc = (t) => Buffer.from(`enc:${t}`).toString('base64');
+  const yt = new YouTube({ file: path.join(dir, 'youtube.json'), encrypt: enc, decrypt: (b) => Buffer.from(b, 'base64').toString().replace(/^enc:/, ''),
+    openExternal: async () => {}, fetchImpl, endpoints: { token: 'http://x/token', api: 'http://x/api' } });
+  const base = { client: enc(JSON.stringify({ id: 'a.apps.googleusercontent.com', secret: 's' })), token: enc(JSON.stringify({ refresh: 'RT' })),
+    channel: { id: 'UC1', title: 'BIT AI News' }, uploads: [{ id: 'NyY-63eyuVY', title: 'Test', url: 'https://youtu.be/NyY-63eyuVY', privacy: 'private', at: 1 }, { id: 'weg123', title: 'Alt', url: 'https://youtu.be/weg123', at: 0 }] };
+  fs.writeFileSync(yt.file, JSON.stringify({ ...base, scopes: 'https://www.googleapis.com/auth/youtube.upload' }));
+  assert.match((await yt.deleteVideo('NyY-63eyuVY')).error, /erweitertes Recht/);
+  fs.writeFileSync(yt.file, JSON.stringify({ ...base, scopes: 'https://www.googleapis.com/auth/youtube.force-ssl' }));
+  assert.match((await yt.deleteVideo('fremdes99')).error, /selbst hochgeladen/);
+  const r = await yt.deleteVideo('NyY-63eyuVY');
+  assert.strictEqual(r.ok, true, r.error);
+  assert.ok(calls.some((c) => c === 'DELETE http://x/api/videos?id=NyY-63eyuVY'));
+  assert.deepStrictEqual(yt.status().uploads.map((u) => u.id), ['weg123']);
+  const gone = await yt.deleteVideo('weg123');
+  assert.strictEqual(gone.alreadyGone, true);
+  assert.strictEqual(yt.status().uploads.length, 0);
+  fs.writeFileSync(yt.file, JSON.stringify({ ...base, channel: { id: 'UC2', title: 'Shop', handle: '@shop.muris' }, scopes: 'https://www.googleapis.com/auth/youtube.force-ssl' }));
+  assert.match((await yt.deleteVideo('NyY-63eyuVY')).error, /löscht die Zentrale nichts/);
+});
+
+test('YouTube: Wunschzeit nur knapp voraus → gleich öffentlich; alter Speicher kennt nur lastUpload', () => {
+  const now = Date.UTC(2026, 9, 29, 10);
+  assert.strictEqual(videoResource({ title: 'T', dueAt: now + 5 * 60e3 }, now).status.privacyStatus, 'public');
+  assert.strictEqual(videoResource({ title: 'T', dueAt: now + 30 * 60e3 }, now).status.privacyStatus, 'private');
+});

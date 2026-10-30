@@ -307,20 +307,22 @@ test('Chat: ungespeicherte Sitzung wird neu angelegt statt fortgesetzt', async (
   const log = path.join(tmp('args-'), 'args.log');
   const root = tmp('projects-');
   const chat = new ClaudeChat({ bin: FAKE, env: { ...process.env, FAKE_ARGS_LOG: log, FAKE_DELAY: '2000' }, cwd: os.tmpdir(), projectsRoot: root });
-  const runs = () => fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const runs = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  // Auf den Start des Hilfsprozesses warten statt feste Zeit – unter Last dauert er länger.
+  const started = (n) => waitFor(() => runs().length >= n, 15000);
   try {
     await chat.send('erste');
-    await wait(300);
+    assert.ok(await started(1));
     await chat.stop({ interrupt: true }); // gestoppt, bevor Claude Code etwas gespeichert hat
     await chat.send('zweite');
-    await wait(300);
+    assert.ok(await started(2));
     assert.deepStrictEqual(runs().map((a) => a.includes('--session-id')), [true, true]);
     // Sobald Claude Code die Sitzung gespeichert hat, wird fortgesetzt.
     fs.mkdirSync(path.join(root, 'p'));
     fs.writeFileSync(path.join(root, 'p', `${chat.sessionId}.jsonl`), '');
     await chat.stop();
     await chat.send('dritte');
-    await wait(300);
+    assert.ok(await started(3));
     assert.ok(runs()[2].includes('--resume'));
   } finally {
     await chat.stop();

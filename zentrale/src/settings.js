@@ -10,7 +10,7 @@ const DEFAULTS = {
   backup: { dir: null, auto: false }, // eigene Sicherung der Zentrale-Daten (Ordner auf einer Platte, nie Cloud)
   askFirst: false, // false = Claude darf alles ohne Rückfrage (Eris' Wunsch), true = jede Aktion braucht eine Freigabe
 };
-const LOCK_MINUTES = [1, 5, 15, 30, 60];
+const LOCK_MINUTES = [1, 5, 15, 30, 60, 120, 240, 480];
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 const THEMES = ['system', 'light', 'dark'];

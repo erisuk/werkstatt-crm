@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const TEMP_FILE = /\.(crdownload|download|part|partial|tmp)$|^\.|^~\$/i;
 const MAX_LOG = 200;
 const SETTLE_MS = 1500;
+const SCAN_MS = 30 * 1000; // Sicherheits-Durchgang: macOS meldet unter Last nicht jede neue Datei
 
 // Einfaches Muster: * = beliebig viele Zeichen, ? = ein Zeichen; Groß/klein egal.
 function patternToRegex(pattern) {
@@ -97,6 +98,8 @@ class FolderWatcher extends EventEmitter {
     this.unsorted = [];
     this.watchers = new Map();
     this.pending = new Map();
+    this.kept = new Set(); // zurückgeholte Dateien – nie wieder automatisch wegsortieren
+    this.scanTimer = null;
   }
 
   load() {
@@ -147,9 +150,30 @@ class FolderWatcher extends EventEmitter {
         this.watchers.set(dir, w);
       } catch {}
     }
+    // Nur Dateien, die nach dem Start des Wächters entstanden sind – Altbestand sortiert niemand ungefragt.
+    this.startedAt = Date.now();
+    clearInterval(this.scanTimer);
+    this.scanTimer = setInterval(() => this.scan(), SCAN_MS);
+    this.scanTimer.unref();
+  }
+
+  scan() {
+    for (const dir of this.watchers.keys()) {
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch { continue; }
+      for (const name of names) {
+        const full = path.join(dir, name);
+        if (this.pending.has(full) || this.kept.has(full) || TEMP_FILE.test(name)) continue;
+        if (!this.rules.some((r) => r.enabled && r.folder === dir && patternToRegex(r.pattern).test(name))) continue;
+        try { if (fs.lstatSync(full).birthtimeMs < this.startedAt) continue; } catch { continue; }
+        this.schedule(dir, name);
+      }
+    }
   }
 
   stop() {
+    clearInterval(this.scanTimer);
+    this.scanTimer = null;
     for (const w of this.watchers.values()) try { w.close(); } catch {}
     this.watchers.clear();
     for (const t of this.pending.values()) clearTimeout(t);
@@ -211,6 +235,7 @@ class FolderWatcher extends EventEmitter {
     // Nicht sofort wieder einsortieren, wenn die Datei zurückkommt.
     this.skipOnce = freeName(path.dirname(e.from), path.basename(e.from));
     try { this.skipOnce = moveFree(e.to, path.dirname(e.from), path.basename(e.from)); } catch (err) { return { ok: false, error: err.message }; }
+    this.kept.add(this.skipOnce);
     this.log = this.log.map((x) => (x.id === id ? { ...x, undone: true } : x));
     this.save();
     return { ok: true };
