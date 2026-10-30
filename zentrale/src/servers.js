@@ -104,7 +104,7 @@ async function listServers({ all = false, selfPids = [], started = [] } = {}) {
     const s = { ...x, cmd: i.cmd || x.proc, cwd: i.cwd, project: project.name, projectDir: project.dir,
       uptime: etimeToText(i.etime), launchd: i.ppid === 1, startedByZentrale: startedByPid.has(x.pid),
       url: `http://127.0.0.1:${x.port}`, system: isSystem(x.proc) };
-    return { ...s, protected: protectedReason(s, selfPids) };
+    return { ...s, self: selfPids.includes(s.pid), protected: protectedReason(s, selfPids) };
   }).filter((s) => all || !s.system);
   await Promise.all(list.map(async (s) => { s.title = s.system ? '' : await probeTitle(s.port); }));
   return list.sort((a, b) => a.port - b.port);

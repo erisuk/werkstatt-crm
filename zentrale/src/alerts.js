@@ -5,8 +5,9 @@ const ERROR_STATUS = new Set(['error', 'crashed', 'failed']);
 const RUNNING_STATUS = new Set(['running', 'waiting', 'new', 'unknown']);
 
 // Wichtig = von der Zentrale gestartet, startet automatisch (launchd) oder ein geschützter Dienst wie der Signal-Server.
+// Kurzlebige Ports der Zentrale selbst (z. B. die Rückleitung der YouTube-Anmeldung) sind kein Server, der ausfallen kann.
 function isWatched(s) {
-  return !s.system && (s.startedByZentrale || s.launchd || /signalserver|8788/.test(String(s.protected || '')) || s.port === 8788);
+  return !s.system && !s.self && (s.startedByZentrale || s.launchd || /signalserver|8788/.test(String(s.protected || '')) || s.port === 8788);
 }
 
 class AlertWatch {
