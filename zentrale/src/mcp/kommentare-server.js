@@ -5,6 +5,7 @@
 const { serve } = require('./core');
 const k = require('../kommentare');
 const bitvideos = require('../bitvideos');
+const bitPosten = require('../bit-posten');
 
 const FILE = process.env.ZENTRALE_KOMMENTARE_FILE;
 
@@ -32,6 +33,15 @@ const TOOLS = [
     description: 'Setzt den Status eines Eintrags: offen, vorbereitet (Nachricht steht im Chatfeld, noch nicht gesendet), gesendet, ignoriert. „gesendet“ nur, wenn der Nutzer selbst auf Senden gedrückt hat.',
     inputSchema: { type: 'object', required: ['id', 'status'], properties: { id: { type: 'string' }, status: { type: 'string', enum: k.STATUS } } },
     run: (a) => k.status(FILE, a.id, a.status) },
+  { name: 'bit_gepostet', readOnly: false,
+    description: 'Hakt ein Bit-Video auf einer Plattform als gepostet ab (Posting-Liste der Zentrale und des Telegram-Bots). Nur aufrufen, wenn der Beitrag wirklich veröffentlicht und sichtbar ist.',
+    inputSchema: { type: 'object', required: ['video', 'plattform'], properties: {
+      video: { type: 'string', description: 'z. B. v018' }, plattform: { type: 'string', enum: Object.keys(bitPosten.PLATTFORMEN) },
+      adresse: { type: 'string', description: 'Adresse des veröffentlichten Beitrags' } } },
+    run: (a) => {
+      const adresse = /^https:\/\/(www\.)?(instagram\.com|tiktok\.com|youtube\.com|youtu\.be)\//.test(String(a.adresse || '')) ? String(a.adresse).slice(0, 300) : null;
+      return bitPosten.gepostetSetzen(a.video, [a.plattform], true, adresse ? { [`url_${a.plattform}`]: adresse } : {});
+    } },
 ];
 
 // Lokale Listen, nichts geht nach draußen: alle ohne Rückfrage.

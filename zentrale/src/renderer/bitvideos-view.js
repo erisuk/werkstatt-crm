@@ -1,15 +1,12 @@
 // Ansicht „Bit-Videos“: worüber Bit jeden Tag ein Video macht – Status, Wunschthemen, Radar-Themen, Suchradius, letzte Videos.
 // Alles wirkt ab dem nächsten automatischen Lauf (täglich 10:00). Nutzt die Helfer aus app.js (h, fill, ui, api …).
 
-const bit = { daten: null, komm: null, meldung: null, fehler: false, timer: null, meldungTimer: null, entwurf: {} };
+const bit = { daten: null, komm: null, meldung: null, fehler: false, timer: null, meldungTimer: null, entwurf: {}, reiter: 'videos' };
+const BIT_REITER = [['videos', 'Videos'], ['kommentare', 'Kommentare'], ['automatik', 'Automatik & Themen']];
 const BIT_POLL_MS = 10000;      // Radar und Telegram-Freigaben ändern die Dateien auch von außen
 const BIT_MELDUNG_MS = 4000;
-const BIT_VIDEOS_ANZAHL = 8;
 const FORMAT_NAME = { superkraft: 'Neue Fähigkeit', 'tool-ersatz': 'Spart Geld', 'github-fund': 'GitHub-Fund',
   'top-liste': 'Top-Liste', 'trend-erklaert': 'Erklärt', raum: 'Raum-Video' };
-const VIDEO_STATUS = { wartet: ['wartet auf Freigabe', 'amber'], freigegeben: ['freigegeben', 'green'],
-  abgelehnt: ['abgelehnt', ''], 'in Arbeit': ['in Arbeit', ''] };
-const PLATTFORM_KURZ = { insta: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube' };
 const PUNKTE_NAME = { superkraft: 'Superkraft', spart: 'Ersparnis', wow: 'Wow', einfach: 'einfach', aktuell: 'aktuell' };
 
 const datumDE = (iso) => (iso ? iso.split('-').reverse().join('.') : '');
@@ -17,6 +14,7 @@ const morgenISO = () => { const d = new Date(); d.setDate(d.getDate() + 1); retu
 
 async function loadBitVideos() {
   if (ui.view !== 'bitvideos') { clearInterval(bit.timer); bit.timer = null; return; }
+  if (bit.reiter === 'videos') bvLaden();
   let res;
   let kres;
   try { [res, kres] = await Promise.all([api.bit(), api.kommentare()]); } catch (e) { res = { ok: false, error: String(e.message || e) }; }
@@ -203,44 +201,35 @@ function bitSuchradius(d) {
   return [quellen, form];
 }
 
-// 5. Die letzten Videos.
-function bitVideos(d) {
-  if (!d.videos.length) return h('div', { class: 'card empty', text: 'Noch keine Videos.' });
-  return h('div', { class: 'card list' }, d.videos.slice(0, BIT_VIDEOS_ANZAHL).map((v) => {
-    const [label, farbe] = VIDEO_STATUS[v.status] || [v.status, ''];
-    const wort = v.aktion ? h('span', { class: `pill ${v.aktion.aktiv ? 'blue' : ''}`, title: 'Stichwort für die Kommentare', text: `💬 ${v.aktion.stichwort}` }) : null;
-    const gepostet = v.gepostet.length ? `gepostet: ${v.gepostet.map((p) => PLATTFORM_KURZ[p] || p).join(', ')}` : 'noch nicht gepostet';
-    const wann = /^\d{4}-\d{2}-\d{2}/.test(v.zeit) ? ` · ${v.zeit.slice(8, 10)}.${v.zeit.slice(5, 7)}.` : '';
-    return h('div', { class: 'row bit-row' },
-      h('span', { class: 'pill', text: `#${String(v.nr).padStart(3, '0')}` }),
-      h('div', { class: 'grow' }, h('div', { class: 'title', text: v.thema }), h('div', { class: 'sub', text: gepostet + wann })),
-      wort,
-      h('span', { class: `pill ${farbe}`, text: label }));
-  }));
-}
-
 function renderBitBody() {
   const box = $('#bit-body');
   if (!box) return;
+  const reiter = h('div', { class: 'segmented bit-reiter', role: 'group', 'aria-label': 'Bereich wählen' },
+    BIT_REITER.map(([id, name]) => h('button', { 'aria-pressed': String(bit.reiter === id), 'data-focus': `bit-reiter:${id}`,
+      onClick: () => { bit.reiter = id; ui.sig.bitvideos = null; renderBitBody(); loadBitVideos(); } }, name)));
+  if (bit.reiter === 'videos') { keepFocus(() => fill(box, reiter, ...bvAnsicht())); return; }
   const d = bit.daten;
   const meldung = bit.meldung ? h('div', { class: `notice bit-meldung${bit.fehler ? ' bit-fehler' : ''}`, role: 'status', text: bit.meldung }) : null;
-  if (!d) { fill(box, meldung || h('div', { class: 'card empty', text: 'Lädt …' })); return; }
+  if (!d) { fill(box, reiter, meldung || h('div', { class: 'card empty', text: 'Lädt …' })); return; }
+  if (bit.reiter === 'kommentare') {
+    keepFocus(() => fill(box, reiter, meldung,
+      h('section', { class: 'section' }, bitSchritt(1, 'Kommentare & Antworten',
+        'Bit sagt im Video „Schreib WORT in die Kommentare“. Wer das macht, landet hier und bekommt die Antwort des Videos.'), bitKommentare(bit.komm))));
+    return;
+  }
   const radarText = d.radar.datum ? `Stand ${datumDE(d.radar.datum)}. Punkte: Superkraft, Ersparnis, Wow, einfach, aktuell – je bis 5.` : '';
-  keepFocus(() => fill(box, meldung,
+  keepFocus(() => fill(box, reiter, meldung,
     h('section', { class: 'section' }, bitSchritt(1, 'Läuft die Automatik?'), bitStatus(d)),
-    h('section', { class: 'section' }, bitSchritt(2, 'Kommentare & Antworten',
-      'Bit sagt im Video „Schreib WORT in die Kommentare“. Wer das macht, landet hier und bekommt die Antwort des Videos.'), bitKommentare(bit.komm)),
-    h('section', { class: 'section' }, bitSchritt(3, 'Deine Wunschthemen', 'Kommen vor dem Radar dran – das oberste als Nächstes.'), bitWuensche(d)),
-    h('section', { class: 'section' }, bitSchritt(4, 'Themen vom Radar', radarText), bitRadar(d)),
-    h('section', { class: 'section' }, bitSchritt(5, 'Wo Bit nach Themen sucht', 'Schalter wirken sofort, die Felder darunter erst mit „Speichern“.'), bitSuchradius(d)),
-    h('section', { class: 'section' }, bitSchritt(6, 'Letzte Videos', `die letzten ${BIT_VIDEOS_ANZAHL}`), bitVideos(d))));
+    h('section', { class: 'section' }, bitSchritt(2, 'Deine Wunschthemen', 'Kommen vor dem Radar dran – das oberste als Nächstes.'), bitWuensche(d)),
+    h('section', { class: 'section' }, bitSchritt(3, 'Themen vom Radar', radarText), bitRadar(d)),
+    h('section', { class: 'section' }, bitSchritt(4, 'Wo Bit nach Themen sucht', 'Schalter wirken sofort, die Felder darunter erst mit „Speichern“.'), bitSuchradius(d))));
 }
 
 function renderBitVideos() {
   fill($('#main'),
     h('div', { class: 'section-head wrap' }, h('h1', { text: 'Bit-Videos' }), h('span', { class: 'spacer' }),
       h('button', { class: 'btn ghost', onClick: () => { ui.sig.bitvideos = null; loadBitVideos(); } }, 'Aktualisieren')),
-    h('p', { class: 'date', text: 'Hier steuerst du, worüber Bit jeden Tag ein Video macht. Änderungen gelten ab dem nächsten Lauf.' }),
+    h('p', { class: 'date', text: 'Alle Videos von Bit – was schon gepostet ist, was noch fehlt. Klick ein Video an, um es anzusehen und zu posten.' }),
     h('div', { id: 'bit-body', class: 'section' }));
   bit.meldung = null;
   bit.fehler = false;

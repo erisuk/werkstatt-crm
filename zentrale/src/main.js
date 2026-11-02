@@ -7,6 +7,10 @@ const fs = require('fs');
 const { resolveClaude, ClaudeChat, runTask, stopAllTasks, listMcpServers, permissionModeFor } = require('./claude');
 const { ChatPool, chatTitle } = require('./chat-pool');
 const { createChatEnv } = require('./chat-env');
+const bitPosten = require('./bit-posten');
+const bitMedien = require('./bit-medien');
+// Muss vor „ready“ angemeldet sein: Videos abspielen (Stream, Vorspulen) über bitvideo://
+require('electron').protocol.registerSchemesAsPrivileged([{ scheme: bitMedien.SCHEME, privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }]);
 const { listProjects, readMessages, watchSessions, shortTitle, DEFAULT_ROOT, renameSession, lastContext } = require('./sessions');
 const { TaskScheduler } = require('./tasks');
 const { Settings } = require('./settings');
@@ -1354,6 +1358,59 @@ function setup() {
   ipcMain.handle('bit-aktion', (_e, a) => bitvideos.aktionSetzen(a && a.video, a && a.patch));
   ipcMain.handle('bit-sperren', (_e, a) => bitvideos.sperren(a && a.thema, !!(a && a.an)));
 
+  // ---------- Bit-Videos posten ----------
+  // Liste aller Videos mit Posting-Stand; Posten nur nach Rückfrage von macOS (die Oberfläche kann sie nicht überspringen).
+  // YouTube lädt die Zentrale selbst hoch, Instagram/TikTok übernimmt Claude im Web-Tab „Bit · …“ mit Kontoprüfung.
+  const bitKanalOk = (ch) => !!ch && /\bbit/i.test(`${ch.title || ''} ${ch.handle || ''}`);
+  ipcMain.handle('bit-videos', () => {
+    try {
+      const st = yt().status();
+      const tabs = bitPosten.bitTabs(plannerTabs());
+      return { ok: true, videos: bitPosten.liste(), youtube: { verbunden: st.connected && bitKanalOk(st.channel), kanal: st.channel ? st.channel.title : null,
+        laeuft: st.uploading ? st.uploading.id : null }, tabs: { insta: tabs.insta ? tabs.insta.name : null, tiktok: tabs.tiktok ? tabs.tiktok.name : null } };
+    } catch (e) { return { ok: false, error: `Bit-Videos nicht lesbar: ${e.message}` }; }
+  });
+  ipcMain.handle('bit-gepostet', (_e, a) => {
+    const r = bitPosten.gepostetSetzen(a && a.video, a && a.plattformen, !(a && a.an === false));
+    send('bit-changed');
+    return r;
+  });
+  async function bitYoutubeHochladen(v) {
+    const post = { id: `bit-${v.id}`, title: v.texte.youtube.titel, description: v.texte.youtube.text, hashtags: '', video: v.datei, aiLabel: v.kiLabel };
+    const r = await yt().upload(post, { onProgress: (progress) => send('bit-progress', { video: v.id, progress }) });
+    if (r.ok) bitPosten.gepostetSetzen(v.id, ['youtube'], true, { youtube_url: r.url });
+    notify(r.ok ? `YouTube: Video ${v.nr} ist online` : `YouTube: Video ${v.nr} ging nicht`, r.ok ? r.url : r.error, 'bitvideos');
+    send('bit-changed');
+  }
+  ipcMain.handle('bit-posten', async (_e, a) => {
+    const v = bitPosten.finde(bitvideos.studioPfad(), a && a.video);
+    const ps = bitPosten.plattformenOk(a && a.plattformen);
+    if (!v || !ps) return { ok: false, error: 'Unbekanntes Video oder unbekannte Plattform.' };
+    const offen = ps.filter((p) => !v.gepostet.includes(p));
+    if (!offen.length) return { ok: false, error: 'Auf diesen Plattformen ist das Video schon gepostet.' };
+    const hindernis = bitPosten.hindernis(v, offen);
+    if (hindernis) return { ok: false, error: hindernis };
+    const tabs = bitPosten.bitTabs(plannerTabs());
+    const web = offen.filter((p) => p !== 'youtube');
+    const ohneTab = web.filter((p) => !tabs[p]);
+    if (ohneTab.length) return { ok: false, error: `Der Web-Tab „Bit · ${bitPosten.PLATTFORMEN[ohneTab[0]]}“ fehlt (Bereich Web → + Neuer Tab).` };
+    if (offen.includes('youtube')) {
+      const st = yt().status();
+      if (!st.connected) return { ok: false, error: 'YouTube ist nicht verbunden (Verbindungen → YouTube).' };
+      if (!bitKanalOk(st.channel)) return { ok: false, error: `YouTube ist mit „${st.channel && st.channel.title}“ verbunden, nicht mit Bits Kanal – dort lädt die Zentrale nichts hoch.` };
+      if (st.uploading) return { ok: false, error: 'Es läuft schon ein YouTube-Upload – bitte kurz warten.' };
+    }
+    const namen = offen.map((p) => bitPosten.PLATTFORMEN[p]).join(', ');
+    const { response } = await dialog.showMessageBox(win, { type: 'question', buttons: ['Abbrechen', 'Veröffentlichen'], defaultId: 0, cancelId: 0,
+      message: `Video ${v.nr} jetzt veröffentlichen?`,
+      detail: `„${v.thema}“\n\nAuf: ${namen} – öffentlich${v.kiLabel ? ', mit KI-Label' : ''}.\n\n`
+        + `${offen.includes('youtube') ? 'YouTube lädt die Zentrale direkt hoch. ' : ''}`
+        + `${web.length ? 'Instagram/TikTok übernimmt Claude im Web-Tab und prüft vorher, ob das Bit-Konto angemeldet ist.' : ''}` });
+    if (response !== 1) return { ok: false, cancelled: true };
+    if (offen.includes('youtube')) bitYoutubeHochladen(v).catch((e) => notify('YouTube-Upload ging nicht', e.message, 'bitvideos'));
+    return { ok: true, auftrag: web.length ? bitPosten.auftrag(v, web, tabs) : null, youtube: offen.includes('youtube') };
+  });
+
   ipcMain.handle('vault-info', () => ({ vault: currentVault() }));
   const vaultCache = new Map(); // Suchwort → { at, res }
   ipcMain.handle('vault-search', (_e, q) => {
@@ -1872,6 +1929,7 @@ function setup() {
   });
 
   app.whenReady().then(async () => {
+    require('electron').protocol.handle(bitMedien.SCHEME, (req) => bitMedien.antwort(req, bitvideos.studioPfad()));
     settings = new Settings(path.join(app.getPath('userData'), 'settings.json'));
     // Beim Start gesperrt – außer die Zentrale war bis eben entsperrt und der Mac seitdem in Benutzung (siehe sessionStillOpen).
     const lockCfg = settings.get().appLock;
