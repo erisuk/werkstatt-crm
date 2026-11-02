@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { toolStep } = require('./tool-steps');
+const { contextTokens } = require('./usage');
 
 function execText(cmd, args, opts) {
   return new Promise((resolve) => {
@@ -82,14 +83,6 @@ function describeTool(name, input) {
 }
 
 // Wandelt ein rohes stream-json-Ereignis in eine einfache Liste für die Oberfläche um.
-// Wie voll das Gespräch ist: alles, was Claude bei dieser Anfrage gelesen hat (neu + aus dem Zwischenspeicher).
-function contextTokens(usage) {
-  if (!usage || typeof usage !== 'object') return null;
-  const n = (v) => (Number.isFinite(v) ? v : 0);
-  const sum = n(usage.input_tokens) + n(usage.cache_read_input_tokens) + n(usage.cache_creation_input_tokens);
-  return sum > 0 ? sum : null;
-}
-
 function simplify(ev) {
   if (!ev || typeof ev !== 'object') return [];
   if (ev.type === 'system' && ev.subtype === 'init') {

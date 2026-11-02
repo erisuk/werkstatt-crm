@@ -4,6 +4,7 @@ const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { toolStep } = require('./tool-steps');
+const { contextTokens } = require('./usage');
 
 const DEFAULT_ROOT = path.join(os.homedir(), '.claude', 'projects');
 const HEAD_BYTES = 256 * 1024;
@@ -242,6 +243,20 @@ function watchSessions(root = DEFAULT_ROOT) {
   return emitter;
 }
 
+// Füllstand eines gespeicherten Gesprächs: die letzte Antwort des Hauptchats (nicht der Unteragenten).
+// So zeigt die Info-Leiste ihn schon beim Öffnen, bevor die Zentrale selbst eine Antwort bekommen hat.
+function lastContext(file) {
+  const lines = parseLines(readRange(file, TAIL_BYTES, true));
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const o = lines[i];
+    if (o.type === 'assistant' && !o.isSidechain && o.message && o.message.usage) {
+      const n = contextTokens(o.message.usage);
+      if (n) return n;
+    }
+  }
+  return null;
+}
+
 // Neuer Name für ein Gespräch – im selben Format wie „/rename“ in Claude Code, damit ihn auch Claude selbst kennt.
 const MAX_TITLE = 120;
 function cleanTitle(title) {
@@ -257,4 +272,4 @@ function renameSession(file, sessionId, title) {
 }
 
 module.exports = { DEFAULT_ROOT, listProjects, parseSession, readMessages, watchSessions, isRealPrompt, shortTitle, continuationTitle,
-  renameSession, cleanTitle };
+  renameSession, cleanTitle, lastContext };

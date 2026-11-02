@@ -768,7 +768,7 @@ h2 { font-size: 16px; font-weight: 600; }
 .meta-btn.done { color: var(--pill-green, #2f9e5b); }
 
 /* Schritte als Satz, fehlgeschlagene rot, Bildvorschau rechts */
-.steps summary .steps-count { font-weight: 500; }
+.steps summary .steps-count { font-weight: 500; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .steps-thumb-slot { margin-left: auto; display: flex; }
 .steps-thumb { border: 0; padding: 0; background: none; border-radius: 6px; cursor: zoom-in; }
 .steps-thumb img { display: block; height: 30px; max-width: 64px; object-fit: cover; border-radius: 6px; border: 2px solid var(--accent); }
@@ -840,3 +840,13 @@ h2 { font-size: 16px; font-weight: 600; }
 .info-toggle { width: 36px; height: 36px; border-radius: 10px; color: var(--text-2); }
 .info-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .info-toggle.on { color: var(--accent-text); background: var(--line); }
+
+/* Der Chat passt sich jeder Fenstergröße an – nie waagerecht scrollen (wie in der Claude-App):
+   lange Sätze, Tabellen und Code brechen um, statt den Chat breiter zu machen. */
+.messages { overflow-x: hidden; }
+.messages > * { min-width: 0; max-width: 100%; }
+.msg.assistant { min-width: 0; overflow-wrap: anywhere; }
+.md table { width: 100%; min-width: 0; }
+.md th, .md td { overflow-wrap: break-word; }
+.md-code pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.steps summary { min-width: 0; }
