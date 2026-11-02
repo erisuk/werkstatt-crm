@@ -154,7 +154,11 @@ function bvDetail(v) {
 function bvAnsicht() {
   if (!bv.liste) return [h('div', { class: 'card empty', text: 'Lädt …' })];
   const liste = bvGefiltert();
-  if (!bv.auswahl || !bv.liste.some((v) => bvSchluessel(v) === bv.auswahl)) bv.auswahl = liste.length ? bvSchluessel(liste[0]) : null;
+  // Ohne Auswahl: das erste Video, das man wirklich posten kann – nicht eines, das noch gebaut wird.
+  if (!bv.auswahl || !bv.liste.some((v) => bvSchluessel(v) === bv.auswahl)) {
+    const erstes = liste.find((v) => bvPostbar(v) && !bvFertig(v)) || liste[0];
+    bv.auswahl = erstes ? bvSchluessel(erstes) : null;
+  }
   const gewaehlt = bv.liste.find((v) => bvSchluessel(v) === bv.auswahl) || null;
   const offenZahl = bv.liste.filter((v) => !bvFertig(v) && bvPostbar(v)).length;
   const fertigZahl = bv.liste.filter(bvFertig).length;
