@@ -95,12 +95,14 @@ function parseSession(file) {
       if (isRealPrompt(t)) { title = continuationTitle(t) || shortTitle(t); snippet = t.trim().slice(0, 1500); }
     }
   }
-  customTitle = lastCustomTitle(file) || customTitle;
+  const renamed = lastCustomTitle(file);
+  customTitle = renamed || customTitle;
   return {
     id: path.basename(file, '.jsonl'),
     file,
     cwd,
     title: customTitle || title || 'Ohne Titel',
+    renamed: !!renamed,
     firstPrompt: title,
     snippet,
     updatedAt: stat.mtimeMs,
@@ -229,4 +231,19 @@ function watchSessions(root = DEFAULT_ROOT) {
   return emitter;
 }
 
-module.exports = { DEFAULT_ROOT, listProjects, parseSession, readMessages, watchSessions, isRealPrompt, shortTitle, continuationTitle };
+// Neuer Name für ein Gespräch – im selben Format wie „/rename“ in Claude Code, damit ihn auch Claude selbst kennt.
+const MAX_TITLE = 120;
+function cleanTitle(title) {
+  const t = String(title == null ? '' : title).replace(/\s+/g, ' ').trim();
+  return t && t.length <= MAX_TITLE ? t : null;
+}
+
+function renameSession(file, sessionId, title) {
+  const t = cleanTitle(title);
+  if (!t) return null;
+  fs.appendFileSync(file, `${JSON.stringify({ type: 'custom-title', customTitle: t, sessionId })}\n`);
+  return t;
+}
+
+module.exports = { DEFAULT_ROOT, listProjects, parseSession, readMessages, watchSessions, isRealPrompt, shortTitle, continuationTitle,
+  renameSession, cleanTitle };

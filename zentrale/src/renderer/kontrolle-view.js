@@ -81,7 +81,6 @@ function krSimulation() {
         h('div', { class: 'field' }, h('label', { for: 'kr-dry-detail', text: 'Genauer' }), detail),
         h('div', { class: 'actions full' }, h('span', { class: 'spacer' }),
           h('button', { class: 'btn', disabled: !ui.state.claude.found, onClick: async () => {
-            if (!okToLeaveBusyChat()) return;
             const r = await api.simDryRunStart(kr.dryKind, kr.dryDetail);
             if (r && r.ok) sendMessage(r.prompt);
           } }, 'Probelauf starten')))),
@@ -91,7 +90,6 @@ function krSimulation() {
         h('div', { class: 'field full' }, h('label', { for: 'kr-bit-topic', text: 'Thema' }), topic),
         h('div', { class: 'actions full' }, h('span', { class: 'spacer' }),
           h('button', { class: 'btn', disabled: !ui.state.claude.found, onClick: async () => {
-            if (!okToLeaveBusyChat()) return;
             const r = await api.simBitPreview(kr.bitTopic);
             if (r && r.ok) sendMessage(r.prompt);
           } }, 'Vorab simulieren')))),

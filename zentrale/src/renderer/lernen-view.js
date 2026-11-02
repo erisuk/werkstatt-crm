@@ -14,7 +14,6 @@ async function loadLernen() {
 }
 
 async function lernStart(id, review) {
-  if (!okToLeaveBusyChat()) return;
   const r = await api.learnPrompt(id, review);
   if (!r || !r.ok) { lern.message = (r && r.error) || 'Ging nicht.'; renderLernenBody(); return; }
   sendMessage(r.prompt);
@@ -84,7 +83,6 @@ function lernThemen() {
 }
 
 async function trainStart(t) {
-  if (!okToLeaveBusyChat()) return;
   lern.busy = true; renderLernenBody();
   const r = await api.trainStart(t.id);
   lern.busy = false;

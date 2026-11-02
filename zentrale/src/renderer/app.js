@@ -541,18 +541,12 @@ function stat(label, value) {
 }
 
 // Fragt nach, bevor ein arbeitender Claude unterbrochen wird.
-function okToLeaveBusyChat() {
-  if (!chatBusy()) return true;
-  return confirm(`Claude arbeitet noch an „${ui.state.chat.title || 'Neues Gespräch'}“. Trotzdem wechseln? Die laufende Arbeit wird dann abgebrochen.`);
-}
-
 async function addProject() {
   const dir = await api.pickFolder();
   if (dir) newSession(dir);
 }
 
 async function newSession(cwd) {
-  if (!okToLeaveBusyChat()) return;
   const res = await api.newSession({ cwd });
   if (!res || res.error || !res.chat) { if (res && res.error) alert(res.error); return; }
   resetChat(res.chat.gen, []);
@@ -563,7 +557,6 @@ async function openSession(session) {
   const cur = ui.state.chat;
   // Dasselbe Gespräch ist schon offen: nur hinwechseln, nichts neu starten.
   if (cur && cur.sessionId === session.id && ui.chatGen === cur.gen) { setView('chat'); return; }
-  if (!okToLeaveBusyChat()) return;
   const res = await api.openSession({ sessionId: session.id });
   if (!res || res.error || !res.chat) { alert((res && res.error) || 'Claude Code wurde nicht gefunden.'); return; }
   resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, text: m.text, tool: m.tool, detail: m.detail })));
@@ -859,22 +852,93 @@ api.onChatEvent((ev) => {
 
 // ---------- Seitenleiste rechts ----------
 
-function renderAside() {
+const MAX_PARALLEL_CHATS = 3; // wie im Hauptprozess (Arbeitsspeicher)
+
+function chatPill(c) {
+  if (c.waiting) return { pill: 'blue', text: 'wartet auf dich' };
+  if (c.status === 'busy') return { pill: 'amber', text: 'arbeitet' };
+  if (c.status === 'error') return { pill: 'red', text: 'Fehler' };
+  return { pill: 'green', text: 'bereit' };
+}
+
+// Ein laufender Chat in der Agenten-Leiste. Hintergrund-Chats arbeiten weiter; ein Klick holt sie nach vorn.
+// Über „⋯“: umbenennen, Thema wählen, in den Papierkorb, schließen.
+function chatCard(c) {
+  const st = chatPill(c);
+  const open = () => (c.active ? setView('chat') : openSession({ id: c.sessionId }));
+  const menuOpen = ui.chatMenu === c.sessionId;
+  const renaming = ui.chatRename === c.sessionId;
+  const nameEl = renaming ? renameField(c) : h('div', { class: 'name', text: c.title, title: c.title });
+  return h('div', { class: `card agent${c.active ? ' active' : ''}` },
+    h('div', { class: 'top' },
+      h('div', { class: 'claude-avatar', text: 'C' }),
+      h('div', { class: 'grow' }, nameEl, h('div', { class: 'where', text: c.active ? `${c.name} · offen` : c.name })),
+      h('span', { class: `pill ${st.pill}`, text: st.text })),
+    h('div', { class: 'agent-actions' },
+      h('button', { class: 'link start', 'data-focus': `aside-chat:${c.sessionId}`, onClick: open }, c.active ? 'Zum Chat' : 'Öffnen'),
+      h('button', { class: 'icon-btn more-btn', 'aria-label': `Funktionen für „${c.title}“`, 'aria-expanded': String(menuOpen),
+        'data-focus': `aside-more:${c.sessionId}`, onClick: () => { ui.chatMenu = menuOpen ? null : c.sessionId; ui.chatRename = null; renderAside(true); } }, '⋯')),
+    menuOpen ? chatMenu(c) : null);
+}
+
+function sessionById(id) {
+  for (const p of projects()) { const x = (p.sessions || []).find((y) => y.id === id); if (x) return x; }
+  return null;
+}
+
+function chatMenu(c) {
+  const x = sessionById(c.sessionId);
+  const busy = c.status === 'busy';
+  const topic = h('select', { class: 'topic-select', 'aria-label': `Thema von ${c.title}`, 'data-focus': `aside-topic:${c.sessionId}`, disabled: !x });
+  topic.append(h('option', { value: '' }, 'Thema: automatisch'));
+  for (const t of (ui.state.topics || [])) topic.append(h('option', { value: t.id }, `${t.emoji} ${t.label}`));
+  topic.value = x && x.topicManual ? x.topic : '';
+  topic.addEventListener('change', async () => { await api.setTopic([c.sessionId], topic.value || null); topic.blur(); });
+  const close = () => {
+    if (busy && !confirm(`Claude arbeitet noch an „${c.title}“. Trotzdem schließen? Die laufende Arbeit wird abgebrochen, das Gespräch bleibt gespeichert.`)) return;
+    ui.chatMenu = null;
+    api.closeChat(c.sessionId);
+  };
+  const trash = async () => {
+    ui.chatMenu = null;
+    await trashSessions([{ id: c.sessionId, title: c.title }]);
+  };
+  return h('div', { class: 'agent-menu' },
+    h('button', { class: 'btn ghost small', 'data-focus': `aside-rename:${c.sessionId}`, disabled: !x,
+      onClick: () => { ui.chatRename = c.sessionId; renderAside(true); } }, 'Umbenennen'),
+    topic,
+    c.active ? null : h('button', { class: 'btn ghost small', 'data-focus': `aside-close:${c.sessionId}`, onClick: close }, 'Schließen'),
+    h('button', { class: 'btn ghost small danger', 'data-focus': `aside-trash:${c.sessionId}`, disabled: busy || !x,
+      title: busy ? 'Erst löschen, wenn Claude fertig ist' : 'In den Papierkorb (wiederherstellbar)', onClick: trash }, 'Löschen'));
+}
+
+function renameField(c) {
+  const input = h('input', { class: 'rename-input', value: c.title === 'Neues Gespräch' ? '' : c.title, maxlength: '120',
+    placeholder: 'Neuer Name', 'aria-label': 'Neuer Name für den Chat', 'data-focus': `aside-rename-input:${c.sessionId}` });
+  const done = () => { ui.chatRename = null; renderAside(true); };
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); done(); return; }
+    if (e.key !== 'Enter' || e.isComposing) return;
+    e.preventDefault();
+    const res = await api.renameSession(c.sessionId, input.value);
+    if (!res || !res.ok) { alert((res && res.error) || 'Umbenennen ging nicht.'); return; }
+    ui.chatMenu = null;
+    done();
+  });
+  setTimeout(() => { if (document.activeElement !== input) input.focus(); }, 0);
+  return input;
+}
+
+function renderAside(force) {
   const s = ui.state;
   const minute = Math.floor(Date.now() / 60000);
   renderApprovals();
-  if (!changed('aside', [s.chat, s.tasks, s.claude.found, minute, (s.approvals || []).length])) return;
-  const agents = [];
-  if (s.chat) {
-    const st = chatStatus();
-    agents.push(h('div', { class: 'card agent' },
-      h('div', { class: 'top' },
-        h('div', { class: 'claude-avatar', text: 'C' }),
-        h('div', { class: 'grow' },
-          h('div', { class: 'name', text: s.chat.title || 'Neues Gespräch' }),
-          h('div', { class: 'where', text: s.chat.name })),
-        h('span', { class: `pill ${st.pill || ''}`, text: st.short || st.text })),
-      h('button', { class: 'link start', 'data-focus': 'aside-chat', onClick: () => setView('chat') }, 'Zum Chat')));
+  // Beim Umbenennen nicht neu zeichnen – sonst wäre der halb getippte Name weg.
+  if (!force && ui.chatRename) return;
+  if (!force && !changed('aside', [s.chat, s.chats, s.tasks, s.claude.found, minute, (s.approvals || []).length, ui.chatMenu, ui.chatRename])) return;
+  const agents = (s.chats || []).map(chatCard);
+  if ((s.chats || []).length >= MAX_PARALLEL_CHATS) {
+    agents.push(h('div', { class: 'sub agents-limit', text: `Mehr als ${MAX_PARALLEL_CHATS} Chats gleichzeitig gehen nicht – für einen neuen schließt sich der am längsten untätige.` }));
   }
   for (const t of s.tasks.filter((x) => x.running)) {
     agents.push(h('div', { class: 'card agent' },
