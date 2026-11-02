@@ -85,7 +85,9 @@ function describeTool(name, input) {
 function simplify(ev) {
   if (!ev || typeof ev !== 'object') return [];
   if (ev.type === 'system' && ev.subtype === 'init') {
-    return [{ kind: 'init', sessionId: ev.session_id, model: ev.model || null }];
+    const servers = Array.isArray(ev.mcp_servers)
+      ? ev.mcp_servers.filter((x) => x && x.status === 'connected').map((x) => String(x.name)) : null;
+    return [{ kind: 'init', sessionId: ev.session_id, model: ev.model || null, servers }];
   }
   if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
     const out = [];
@@ -444,7 +446,10 @@ class ClaudeChat extends EventEmitter {
         return;
       }
       if (ev.session_id) this.sessionId = ev.session_id;
-      for (const item of simplify(ev)) this.emit('event', item);
+      for (const item of simplify(ev)) {
+        if (item.kind === 'init' && item.servers) this.connectedServers = item.servers;
+        this.emit('event', item);
+      }
       // Erst "bereit", wenn alle gesendeten Nachrichten beantwortet sind.
       if (ev.type === 'result') {
         this.pending = Math.max(0, this.pending - 1);
@@ -469,6 +474,13 @@ class ClaudeChat extends EventEmitter {
       this.emit('event', { kind: 'error', text: explainExit(this.stderr), details });
       this.setStatus('error');
     });
+  }
+
+  // Verbindungen, die jetzt bereitstehen, die dieser Claude-Prozess beim Start aber noch nicht hatte
+  // (z. B. gerade auf claude.ai verbunden). null = noch unbekannt.
+  missingServers(connectedNow) {
+    if (!this.connectedServers || !Array.isArray(connectedNow)) return null;
+    return connectedNow.filter((n) => !this.connectedServers.includes(n));
   }
 
   async send(text) {

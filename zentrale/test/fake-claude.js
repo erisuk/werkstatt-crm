@@ -36,7 +36,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     return;
   }
   const text = msg.message.content[0].text;
-  out({ type: 'system', subtype: 'init', session_id: sid, model: 'fake' });
+  out({ type: 'system', subtype: 'init', session_id: sid, model: 'fake',
+    mcp_servers: (process.env.FAKE_SERVERS || '').split(',').filter(Boolean).map((n) => ({ name: n, status: 'connected' })) });
   const answer = (reply) => {
     out({ type: 'assistant', session_id: sid, message: { content: [{ type: 'text', text: reply }] } });
     out({ type: 'result', session_id: sid, is_error: false, result: 'ok' });

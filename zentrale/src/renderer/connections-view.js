@@ -94,9 +94,11 @@ function renderConnections() {
     connCard({ icon: 'G', title: 'Gmail',
       text: 'Über deine claude.ai-Verbindung: Mails lesen, zusammenfassen, Entwürfe schreiben.',
       right: statusPill(gmail, ui.connections ? 'nicht verbunden' : '–'),
-      extra: h('div', { class: 'conn-extra' },
-        h('div', { class: 'sub', text: 'Verbinde Gmail einmal auf claude.ai unter „Connectors“ – danach steht es hier automatisch zur Verfügung. Alternativ: Gmail im Browser über Chrome.' }),
-        h('div', { class: 'actions' }, link('https://claude.ai/settings/connectors', 'Auf claude.ai verbinden'))) }),
+      extra: gmail.some((c) => c.status === 'connected')
+        ? h('div', { class: 'sub', text: 'Claude kann deine Mails lesen, zusammenfassen und Entwürfe schreiben – ohne weitere Einrichtung.' })
+        : h('div', { class: 'conn-extra' },
+          h('div', { class: 'sub', text: 'Verbinde Gmail einmal auf claude.ai unter „Connectors“ – danach steht es hier automatisch zur Verfügung. Alternativ: Gmail im Browser über Chrome.' }),
+          h('div', { class: 'actions' }, link('https://claude.ai/settings/connectors', 'Auf claude.ai verbinden'))) }),
 
     connCard({ icon: 'O', title: 'Outlook',
       text: 'Drei Wege – nimm, was zu dir passt:',
