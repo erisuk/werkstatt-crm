@@ -242,9 +242,20 @@ function safetySettings(permissionMode) {
   const ask = ['Bash', 'WebFetch', 'WebSearch', 'mcp__claude-in-chrome', 'mcp__Claude_in_Chrome'];
   if (permissionMode !== 'acceptEdits') ask.push(...EDIT_TOOLS);
   // Auch im Projektordner: Einstellungen, Hooks und Git-Interna nie ohne Rückfrage ändern.
-  else for (const t of EDIT_TOOLS) ask.push(`${t}(**/.claude/**)`, `${t}(**/.git/**)`, `${t}(**/.mcp.json)`);
-  return JSON.stringify({ permissions: { ask } });
+  // Pfad-Regeln gelten nur als Edit(…) – sie decken Write, MultiEdit und NotebookEdit mit ab.
+  else ask.push('Edit(**/.claude/**)', 'Edit(**/.git/**)', 'Edit(**/.mcp.json)');
+  return JSON.stringify({ permissions: { ask }, autoMemoryDirectory: mainMemoryDir() });
 }
+
+// Claude merkt sich Dinge sonst pro Ordner: Ein Chat im Projektordner sähe Eris' Regeln und Vorlieben nicht.
+// Darum nutzt jeder Chat der Zentrale das Hauptgedächtnis – dasselbe wie Claude in der App im Benutzerordner.
+function mainMemoryDir(home = os.homedir()) {
+  return path.join(home, '.claude', 'projects', path.resolve(home).replace(/[^a-zA-Z0-9]/g, '-'), 'memory');
+}
+
+const CHAT_QUESTION_TOOLS = new Set(['AskUserQuestion']);
+const CHAT_QUESTION_HINT = 'Stell diese Frage stattdessen als normale Chat-Nachricht (kurz, mit den Möglichkeiten als '
+  + 'Liste) und beende deine Antwort – Eris antwortet in der nächsten Nachricht. Erwähne nicht, dass das Auswahl-Werkzeug fehlt.';
 
 // Reine Lese-Befehle winkt die Zentrale selbst durch. Streng: ein einziger Befehl aus der Liste,
 // ohne Verkettung, Umleitung oder eingebettete Befehle.
@@ -346,6 +357,13 @@ class ClaudeChat extends EventEmitter {
     const req = ev.request || {};
     if (req.subtype !== 'can_use_tool') {
       this.write({ type: 'control_response', response: { subtype: 'error', request_id: ev.request_id, error: 'Nicht unterstützt' } });
+      return;
+    }
+    // Auswahlfragen kann die Zentrale nicht als Formular zeigen – „erlauben“ hieße: Claude rät die Antwort.
+    // Stattdessen fragt Claude ganz normal im Chat, und Eris antwortet mit der nächsten Nachricht.
+    if (CHAT_QUESTION_TOOLS.has(req.tool_name)) {
+      this.write({ type: 'control_response', response: { subtype: 'success', request_id: ev.request_id,
+        response: { behavior: 'deny', message: CHAT_QUESTION_HINT } } });
       return;
     }
     const key = approvalKey(req.tool_name, req.input);
@@ -569,6 +587,6 @@ async function listMcpServers({ bin, env, cwd }) {
 
 module.exports = {
   resolveClaude, cleanEnv, ClaudeChat, simplify, describeTool, describeApproval, approvalKey, permissionModeFor,
-  safetySettings, isReadOnlyCommand,
+  safetySettings, mainMemoryDir, isReadOnlyCommand,
   runTask, stopAllTasks, terminate, parseMcpList, listMcpServers,
 };
