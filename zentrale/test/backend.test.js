@@ -7,7 +7,7 @@ const path = require('path');
 const { listProjects, readMessages, isRealPrompt, shortTitle } = require('../src/sessions');
 const { isDue, dayKey, TaskScheduler } = require('../src/tasks');
 const { simplify, describeTool, describeApproval, approvalKey, permissionModeFor, parseMcpList, cleanEnv, ClaudeChat, runTask,
-  safetySettings, isReadOnlyCommand } = require('../src/claude');
+  safetySettings, mainMemoryDir, isReadOnlyCommand } = require('../src/claude');
 const { Settings } = require('../src/settings');
 
 const FAKE = path.join(__dirname, 'fake-claude.js');
@@ -264,8 +264,7 @@ test('Chat: fehlendes Programm meldet Fehler statt ewig zu arbeiten', async () =
   const chat = new ClaudeChat({ bin: '/gibt/es/nicht/claude', env: process.env, cwd: os.tmpdir() });
   const events = collect(chat);
   await chat.send('hallo');
-  await wait(300);
-  assert.strictEqual(chat.status, 'error');
+  assert.ok(await waitFor(() => chat.status === 'error', 10000));
   assert.ok(events.some((e) => e.kind === 'error'));
 });
 
@@ -273,12 +272,10 @@ test('Chat: abgestürzter Prozess wird verständlich gemeldet und Senden stürzt
   const chat = new ClaudeChat({ bin: FAKE, env: { ...process.env, FAKE_FAIL: '1' }, cwd: os.tmpdir(), resume: 'abc' });
   const events = collect(chat);
   chat.start();
-  await wait(400);
-  assert.strictEqual(chat.status, 'error');
+  assert.ok(await waitFor(() => chat.status === 'error', 10000));
   assert.strictEqual(events[0].text, 'Dieses Gespräch konnte nicht fortgesetzt werden.');
   await chat.send('noch mal');
-  await wait(400);
-  assert.strictEqual(chat.status, 'error');
+  assert.ok(await waitFor(() => chat.status === 'error', 10000));
 });
 
 test('Chat: bleibt "arbeitet", bis alle Nachrichten beantwortet sind', async () => {
@@ -518,7 +515,7 @@ test('safetySettings: Befehle fragen immer, Dateiänderungen nur außerhalb von 
   const project = JSON.parse(safetySettings('acceptEdits')).permissions.ask;
   assert.ok(project.includes('Bash') && project.includes('WebFetch') && project.includes('WebSearch') && project.includes('mcp__claude-in-chrome'));
   assert.ok(!project.includes('Edit'));
-  assert.ok(project.includes('Edit(**/.claude/**)') && project.includes('Write(**/.git/**)'));
+  assert.ok(project.includes('Edit(**/.claude/**)') && project.includes('Edit(**/.git/**)'));
   assert.ok(JSON.parse(safetySettings('default')).permissions.ask.includes('Edit'));
 });
 
@@ -612,4 +609,10 @@ test('Settings speichert nur gültige Werte', () => {
   assert.deepStrictEqual(new Settings(file).get(), { theme: 'dark', connections: { mac: true, chrome: false, web: false }, morning: { enabled: false, time: '08:00' }, appLock: { enabled: true, minutes: 15 }, backup: { dir: null, auto: false }, askFirst: false });
   fs.writeFileSync(file, 'kaputt');
   assert.strictEqual(new Settings(file).get().theme, 'system');
+});
+
+test('safetySettings: jeder Chat nutzt das Hauptgedächtnis, egal in welchem Ordner', () => {
+  assert.strictEqual(mainMemoryDir('/Users/eris'), '/Users/eris/.claude/projects/-Users-eris/memory');
+  assert.strictEqual(JSON.parse(safetySettings('acceptEdits')).autoMemoryDirectory, mainMemoryDir());
+  assert.strictEqual(JSON.parse(safetySettings('default')).autoMemoryDirectory, mainMemoryDir());
 });

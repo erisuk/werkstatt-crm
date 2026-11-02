@@ -242,8 +242,15 @@ function safetySettings(permissionMode) {
   const ask = ['Bash', 'WebFetch', 'WebSearch', 'mcp__claude-in-chrome', 'mcp__Claude_in_Chrome'];
   if (permissionMode !== 'acceptEdits') ask.push(...EDIT_TOOLS);
   // Auch im Projektordner: Einstellungen, Hooks und Git-Interna nie ohne Rückfrage ändern.
-  else for (const t of EDIT_TOOLS) ask.push(`${t}(**/.claude/**)`, `${t}(**/.git/**)`, `${t}(**/.mcp.json)`);
-  return JSON.stringify({ permissions: { ask } });
+  // Pfad-Regeln gelten nur als Edit(…) – sie decken Write, MultiEdit und NotebookEdit mit ab.
+  else ask.push('Edit(**/.claude/**)', 'Edit(**/.git/**)', 'Edit(**/.mcp.json)');
+  return JSON.stringify({ permissions: { ask }, autoMemoryDirectory: mainMemoryDir() });
+}
+
+// Claude merkt sich Dinge sonst pro Ordner: Ein Chat im Projektordner sähe Eris' Regeln und Vorlieben nicht.
+// Darum nutzt jeder Chat der Zentrale das Hauptgedächtnis – dasselbe wie Claude in der App im Benutzerordner.
+function mainMemoryDir(home = os.homedir()) {
+  return path.join(home, '.claude', 'projects', path.resolve(home).replace(/[^a-zA-Z0-9]/g, '-'), 'memory');
 }
 
 // Reine Lese-Befehle winkt die Zentrale selbst durch. Streng: ein einziger Befehl aus der Liste,
@@ -569,6 +576,6 @@ async function listMcpServers({ bin, env, cwd }) {
 
 module.exports = {
   resolveClaude, cleanEnv, ClaudeChat, simplify, describeTool, describeApproval, approvalKey, permissionModeFor,
-  safetySettings, isReadOnlyCommand,
+  safetySettings, mainMemoryDir, isReadOnlyCommand,
   runTask, stopAllTasks, terminate, parseMcpList, listMcpServers,
 };
