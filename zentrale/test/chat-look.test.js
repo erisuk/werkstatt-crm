@@ -43,3 +43,23 @@ test('Umgebung: Commits, PR und Zwischenspeicher', async () => {
   const none = createChatEnv({ exec: async () => null });
   assert.deepStrictEqual(await none('/tmp/kein-git'), { cwd: '/tmp/kein-git', folder: 'kein-git', git: false });
 });
+
+test('Füllstand eines gespeicherten Gesprächs: letzte Antwort des Hauptchats, Unteragenten zählen nicht', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { lastContext } = require('../src/sessions');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fuellstand-'));
+  const file = path.join(dir, 's.jsonl');
+  const usage = (n) => ({ input_tokens: 1, cache_read_input_tokens: n, cache_creation_input_tokens: 0 });
+  fs.writeFileSync(file, [
+    { type: 'assistant', message: { content: [], usage: usage(1000) } },
+    { type: 'assistant', message: { content: [], usage: usage(5000) } },
+    { type: 'assistant', isSidechain: true, message: { content: [], usage: usage(99999) } },
+    { type: 'user', message: { content: 'weiter' } },
+  ].map((x) => JSON.stringify(x)).join('\n'));
+  assert.strictEqual(lastContext(file), 5001);
+  fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { content: 'nur Frage' } }));
+  assert.strictEqual(lastContext(file), null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

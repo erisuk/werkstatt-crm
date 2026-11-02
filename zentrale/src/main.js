@@ -7,7 +7,7 @@ const fs = require('fs');
 const { resolveClaude, ClaudeChat, runTask, stopAllTasks, listMcpServers, permissionModeFor } = require('./claude');
 const { ChatPool, chatTitle } = require('./chat-pool');
 const { createChatEnv } = require('./chat-env');
-const { listProjects, readMessages, watchSessions, shortTitle, DEFAULT_ROOT, renameSession } = require('./sessions');
+const { listProjects, readMessages, watchSessions, shortTitle, DEFAULT_ROOT, renameSession, lastContext } = require('./sessions');
 const { TaskScheduler } = require('./tasks');
 const { Settings } = require('./settings');
 const mac = require('./mac');
@@ -196,6 +196,23 @@ function setup() {
   // Bis zu drei Gespräche laufen gleichzeitig: `chat` ist das sichtbare, die anderen parken in `pool`
   // und arbeiten im Hintergrund weiter (src/chat-pool.js).
   const pool = new ChatPool();
+  const lastKnown = { window: null, mcp: null }; // aus irgendeinem Chat oder der Konnektoren-Prüfung
+  // Die Fenstergröße (z. B. 1M) über Neustarts merken – sonst stimmen die Prozente erst nach der ersten Antwort.
+  const WINDOW_FILE = () => path.join(app.getPath('userData'), 'kontextfenster.json');
+  let windowLoaded = false;
+  // Erst beim ersten Gebrauch lesen: dann steht der Speicherort der App sicher fest.
+  function knownWindow() {
+    if (!windowLoaded) {
+      windowLoaded = true;
+      try { const w = JSON.parse(fs.readFileSync(WINDOW_FILE(), 'utf8')).window; if (!lastKnown.window && Number.isFinite(w) && w > 0) lastKnown.window = w; } catch { /* noch unbekannt */ }
+    }
+    return lastKnown.window;
+  }
+  function rememberWindow(w) {
+    if (!Number.isFinite(w) || w <= 0 || w === lastKnown.window) return;
+    lastKnown.window = w;
+    try { fs.writeFileSync(WINDOW_FILE(), JSON.stringify({ window: w })); } catch { /* nur Bequemlichkeit */ }
+  }
   const allChats = () => pool.all(chat);
 
   function chatInfo() {
@@ -203,8 +220,9 @@ function setup() {
     return { gen: chatGen, cwd: chat.cwd, name: path.basename(chat.cwd) || chat.cwd, sessionId: chat.sessionId, status: chat.status,
       title: chat.title, careful: chat.permissionMode !== 'acceptEdits' && !allowAll(), allowAll: allowAll(),
       busySince: chat.status === 'busy' ? chat.busySince || null : null,
-      context: chat.context ? { used: chat.context, window: chat.contextWindow || null, baseline: chat.baseline || null } : null,
-      mcp: chat.mcp || null };
+      // Bis der Chat selbst geantwortet hat: Fenstergröße und Konnektoren vom letzten Chat bzw. der letzten Prüfung.
+      context: chat.context ? { used: chat.context, window: chat.contextWindow || knownWindow(), baseline: chat.baseline || null } : null,
+      mcp: chat.mcp || lastKnown.mcp };
   }
 
   // Einstellung „Ohne Rückfrage arbeiten“: Claude darf alles, ohne zu fragen (Standard, Eris' Wunsch).
@@ -416,6 +434,8 @@ function setup() {
     c.lastActive = Date.now();
     chat = c;
     c.on('event', (ev) => {
+      if (ev.kind === 'window') rememberWindow(ev.contextWindow);
+      if (ev.kind === 'init' && ev.mcp) lastKnown.mcp = ev.mcp;
       send('chat-event', { ...ev, gen: c.gen });
       // Abgemeldet? (Fehler mit Login/OAuth) – fällt im Kontrollraum als blinder Fleck auf.
       if (ev.kind === 'error' && /log ?in|oauth|authent|401|anmeld/i.test(`${ev.text || ''} ${ev.details || ''}`)) claudeAuthProblemAt = Date.now();
@@ -559,6 +579,11 @@ function setup() {
     if (chat && chat.sessionId === sessionId) return { chat: chatInfo(), history };
     if (!pool.get(sessionId) && !pool.hasRoom(chat)) return { error: pool.fullMessage() };
     const info = await openChat({ cwd: session.cwd, sessionId, title: session.title });
+    // Füllstand gleich aus dem gespeicherten Gespräch – nicht erst nach der nächsten Antwort.
+    if (chat && chat.sessionId === sessionId && !chat.context) {
+      try { chat.context = lastContext(session.file); } catch { /* ohne Füllstand weiter */ }
+      if (chat.context) { pushState(); return { chat: chatInfo(), history }; }
+    }
     return { chat: info, history };
   });
 
@@ -655,6 +680,7 @@ function setup() {
     if (!claude.bin) return null;
     const list = await listMcpServers({ bin: claude.bin, env: claude.env, cwd: os.homedir() });
     const connected = list ? list.filter((s) => s.status === 'connected').map((s) => s.name) : null;
+    if (list && !lastKnown.mcp) lastKnown.mcp = list.map((s) => ({ name: s.name, status: s.status === 'auth' ? 'needs-auth' : s.status }));
     for (const c of allChats()) {
       const missing = connected ? c.missingServers(connected) : null;
       if (missing && missing.length) c.needsRestart = true;
@@ -662,6 +688,8 @@ function setup() {
     return list;
   }
   setInterval(() => { scanConnectors().catch(() => {}); }, CONNECTOR_CHECK_MS).unref();
+  // Einmal kurz nach dem Start, damit die Info-Leiste Konnektoren zeigt, bevor der erste Chat antwortet.
+  setTimeout(() => { scanConnectors().then(() => pushState()).catch(() => {}); }, 60 * 1000).unref();
 
   ipcMain.handle('connections-list', () => scanConnectors());
 
