@@ -207,7 +207,7 @@ test('beim Beenden unterbrochene Aufgabe wird als Fehler angezeigt', () => {
 
 test('simplify übersetzt stream-json Ereignisse', () => {
   assert.deepStrictEqual(simplify({ type: 'system', subtype: 'init', session_id: 's1', model: 'm' }),
-    [{ kind: 'init', sessionId: 's1', model: 'm' }]);
+    [{ kind: 'init', sessionId: 's1', model: 'm', servers: null }]);
   assert.deepStrictEqual(simplify({ type: 'assistant', message: { content: [
     { type: 'text', text: 'Hi' }, { type: 'tool_use', name: 'Bash', input: { command: 'ls -la\nzweite' } }] } }),
   [{ kind: 'text', text: 'Hi' }, { kind: 'tool', text: 'Bash · ls -la', tool: 'Bash', detail: 'ls -la' }]);
@@ -625,6 +625,22 @@ test('Chat: Auswahlfragen werden nie blind erlaubt – Claude soll im Chat frage
     await chat.send('AUSWAHL:Welche Farbe?');
     assert.ok(await waitFor(() => texts().some((x) => x.startsWith('deny:') && x.includes('normale Chat-Nachricht')), 10000));
     assert.strictEqual(chat.pendingApprovals().length, 0);
+  } finally {
+    await chat.stop();
+  }
+});
+
+test('Chat: merkt neu verbundene Konnektoren und startet beim nächsten Senden mit ihnen neu', async () => {
+  assert.deepStrictEqual(simplify({ type: 'system', subtype: 'init', session_id: 's', mcp_servers: [
+    { name: 'claude.ai Gmail', status: 'connected' }, { name: 'higgsfield', status: 'needs-auth' }] })[0].servers, ['claude.ai Gmail']);
+  const chat = new ClaudeChat({ bin: FAKE, env: { ...process.env, FAKE_SERVERS: 'claude.ai Gmail' }, cwd: os.tmpdir() });
+  const events = collect(chat);
+  try {
+    assert.strictEqual(chat.missingServers(['claude.ai Gmail']), null); // vor dem Start unbekannt
+    await chat.send('hallo');
+    assert.ok(await waitFor(() => events.some((e) => e.kind === 'text'), 10000));
+    assert.deepStrictEqual(chat.missingServers(['claude.ai Gmail']), []);
+    assert.deepStrictEqual(chat.missingServers(['claude.ai Gmail', 'claude.ai Higgsfield AI']), ['claude.ai Higgsfield AI']);
   } finally {
     await chat.stop();
   }

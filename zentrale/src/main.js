@@ -595,11 +595,21 @@ function setup() {
     return { settings: next, applied, interrupted: turnedOff && applied };
   });
 
-  ipcMain.handle('connections-list', async () => {
+  // Neu verbundene Konnektoren (z. B. Higgsfield auf claude.ai) kennt ein laufender Claude-Prozess nicht.
+  // Die Zentrale schaut regelmäßig nach und startet den Chat beim nächsten Senden mit ihnen neu.
+  const CONNECTOR_CHECK_MS = 15 * 60 * 1000;
+  async function scanConnectors() {
     await claudeReady;
     if (!claude.bin) return null;
-    return listMcpServers({ bin: claude.bin, env: claude.env, cwd: os.homedir() });
-  });
+    const list = await listMcpServers({ bin: claude.bin, env: claude.env, cwd: os.homedir() });
+    const connected = list ? list.filter((s) => s.status === 'connected').map((s) => s.name) : null;
+    const missing = chat && connected ? chat.missingServers(connected) : null;
+    if (missing && missing.length) chat.needsRestart = true;
+    return list;
+  }
+  setInterval(() => { scanConnectors().catch(() => {}); }, CONNECTOR_CHECK_MS).unref();
+
+  ipcMain.handle('connections-list', () => scanConnectors());
 
   // launch: true nur, wenn du selbst aktualisierst – sonst öffnen sich keine Apps ungefragt.
   ipcMain.handle('mac-today', async (_e, args) => {
