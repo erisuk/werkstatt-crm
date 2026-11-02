@@ -559,7 +559,7 @@ async function openSession(session) {
   if (cur && cur.sessionId === session.id && ui.chatGen === cur.gen) { setView('chat'); return; }
   const res = await api.openSession({ sessionId: session.id });
   if (!res || res.error || !res.chat) { alert((res && res.error) || 'Claude Code wurde nicht gefunden.'); return; }
-  resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, text: m.text, tool: m.tool, detail: m.detail, path: m.path, error: m.error, at: m.at })));
+  resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, id: m.id, text: m.text, tool: m.tool, detail: m.detail, path: m.path, error: m.error, at: m.at })));
   setView('chat');
 }
 
@@ -576,12 +576,12 @@ function renderChat() {
   const s = ui.state;
   const main = $('#main');
   if (!s.chat) {
-    const recent = projects().find((p) => p.path);
+    // Wie beim Start: ein neues Gespräch beginnt allgemein im Benutzerordner.
     fill(main, h('div', { class: 'card empty chat-empty' },
       h('p', { text: s.claude.found ? 'Gerade ist kein Chat offen.' : 'Claude Code wurde nicht gefunden.' }),
       s.claude.found ? h('div', { class: 'actions center' },
-        recent ? h('button', { class: 'btn', onClick: () => newSession(recent.path) }, `Neuer Chat in ${recent.name}`) : null,
-        h('button', { class: 'btn ghost', onClick: addProject }, 'Ordner wählen …')) : null));
+        h('button', { class: 'btn', onClick: () => newSession() }, 'Neues Gespräch'),
+        h('button', { class: 'btn ghost', onClick: addProject }, 'In einem Ordner …')) : null));
     return;
   }
   if (ui.chatGen !== s.chat.gen) resetChat(s.chat.gen, []);
@@ -1015,7 +1015,9 @@ function chatMenu(c) {
 function renameField(c) {
   const input = h('input', { class: 'rename-input', value: c.title === 'Neues Gespräch' ? '' : c.title, maxlength: '120',
     placeholder: 'Neuer Name', 'aria-label': 'Neuer Name für den Chat', 'data-focus': `aside-rename-input:${c.sessionId}` });
-  const done = () => { ui.chatRename = null; renderAside(true); };
+  const done = () => { if (ui.chatRename !== c.sessionId) return; ui.chatRename = null; renderAside(true); };
+  // Wegklicken bricht ab – sonst bliebe die Agenten-Leiste stehen (sie zeichnet beim Umbenennen nicht neu).
+  input.addEventListener('blur', () => setTimeout(done, 150));
   input.addEventListener('keydown', async (e) => {
     if (e.key === 'Escape') { e.preventDefault(); done(); return; }
     if (e.key !== 'Enter' || e.isComposing) return;

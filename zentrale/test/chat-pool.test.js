@@ -46,6 +46,7 @@ test('ChatPool: bei zu vielen schließt sich der am längsten untätige, arbeite
   const busy = fakeChat('busy', { status: 'busy', lastActive: 0 });
   const newer = fakeChat('neu', { lastActive: 5 });
   for (const c of [old, busy, newer]) pool.park(c);
+  Object.assign(old, { lastActive: 1 }); Object.assign(busy, { lastActive: 0 }); Object.assign(newer, { lastActive: 5 });
   pool.trim();
   assert.ok(old.disposed, 'ältester untätiger geschlossen');
   assert.ok(!busy.disposed && !newer.disposed);
@@ -64,6 +65,7 @@ test('ChatPool: Platz für einen neuen Chat nur, wenn einer weichen kann', () =>
   pool.get('c').pendingApprovals = () => [1];
   assert.strictEqual(pool.hasRoom(active), false, 'wartet auf Freigabe → bleibt');
   assert.strictEqual(pool.hasRoom(fakeChat('leer', { saved: false })), true, 'ein leerer sichtbarer Chat zählt nicht');
+  assert.strictEqual(pool.hasRoom(fakeChat('erste', { saved: false, status: 'busy' })), false, 'arbeitet schon, Datei noch nicht da → zählt mit');
 });
 
 test('ChatPool: untätige Hintergrund-Chats schließen sich nach der Wartezeit', () => {
@@ -72,6 +74,7 @@ test('ChatPool: untätige Hintergrund-Chats schließen sich nach der Wartezeit',
   const busy = fakeChat('busy', { status: 'busy', lastActive: 0 });
   const fresh = fakeChat('fresh', { lastActive: 4500 });
   for (const c of [idle, busy, fresh]) pool.park(c);
+  Object.assign(idle, { lastActive: 0 }); Object.assign(busy, { lastActive: 0 }); Object.assign(fresh, { lastActive: 4500 });
   assert.strictEqual(pool.sweep(5000), 1);
   assert.ok(idle.disposed && !busy.disposed && !fresh.disposed);
 });
@@ -103,4 +106,15 @@ test('Umbenennen: schreibt den Namen im Claude-Code-Format, leere oder zu lange 
   assert.strictEqual(renameSession(file, 'abc', 'x'.repeat(121)), null);
   assert.strictEqual(parseSession(file).title, 'Imbiss Logo');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('ChatPool: Parken zählt als gerade benutzt, Schließen liefert das Beenden zum Abwarten', async () => {
+  const pool = new ChatPool({ idleMs: 1000 });
+  const c = fakeChat('a', { lastActive: 0 });
+  pool.park(c);
+  assert.ok(Date.now() - c.lastActive < 1000);
+  assert.strictEqual(pool.sweep(), 0);
+  await pool.close(c);
+  assert.ok(c.disposed);
+  assert.strictEqual(pool.get('a'), null);
 });

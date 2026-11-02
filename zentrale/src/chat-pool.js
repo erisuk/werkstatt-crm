@@ -32,9 +32,10 @@ class ChatPool {
     return c;
   }
 
+  // Gibt das Beenden zurück: Wer danach Dateien löscht, wartet darauf (sonst schreibt Claude noch hinein).
   close(c) {
     if (this.parked.get(c.sessionId) === c) this.parked.delete(c.sessionId);
-    c.dispose().catch(() => {});
+    return c.dispose().catch(() => {});
   }
 
   // Der bisher sichtbare Chat wandert in den Hintergrund – außer er hatte noch keine einzige Nachricht.
@@ -43,6 +44,7 @@ class ChatPool {
     if (!c.sessionSaved() && c.status !== 'busy') { c.dispose().catch(() => {}); return; }
     const prev = this.parked.get(c.sessionId);
     if (prev && prev !== c) prev.dispose().catch(() => {});
+    c.lastActive = Date.now(); // gerade noch angeschaut – nicht sofort als „untätig“ schließen
     this.parked.set(c.sessionId, c);
   }
 
@@ -58,7 +60,7 @@ class ChatPool {
   // Platz für einen weiteren Claude-Prozess? Sonst muss erst ein Chat fertig werden.
   hasRoom(active) {
     const all = this.all(active);
-    return all.length < this.max || all.some(closable) || (!!active && !active.sessionSaved());
+    return all.length < this.max || all.some(closable) || (!!active && active.status !== 'busy' && !active.sessionSaved());
   }
 
   // Untätige Hintergrund-Chats nach idleMs schließen. Gibt zurück, wie viele es waren.
