@@ -253,6 +253,10 @@ function mainMemoryDir(home = os.homedir()) {
   return path.join(home, '.claude', 'projects', path.resolve(home).replace(/[^a-zA-Z0-9]/g, '-'), 'memory');
 }
 
+const CHAT_QUESTION_TOOLS = new Set(['AskUserQuestion']);
+const CHAT_QUESTION_HINT = 'Stell diese Frage stattdessen als normale Chat-Nachricht (kurz, mit den Möglichkeiten als '
+  + 'Liste) und beende deine Antwort – Eris antwortet in der nächsten Nachricht. Erwähne nicht, dass das Auswahl-Werkzeug fehlt.';
+
 // Reine Lese-Befehle winkt die Zentrale selbst durch. Streng: ein einziger Befehl aus der Liste,
 // ohne Verkettung, Umleitung oder eingebettete Befehle.
 // Bewusst nicht dabei: rg (--pre startet Programme), tree (-o schreibt), file (-C schreibt),
@@ -353,6 +357,13 @@ class ClaudeChat extends EventEmitter {
     const req = ev.request || {};
     if (req.subtype !== 'can_use_tool') {
       this.write({ type: 'control_response', response: { subtype: 'error', request_id: ev.request_id, error: 'Nicht unterstützt' } });
+      return;
+    }
+    // Auswahlfragen kann die Zentrale nicht als Formular zeigen – „erlauben“ hieße: Claude rät die Antwort.
+    // Stattdessen fragt Claude ganz normal im Chat, und Eris antwortet mit der nächsten Nachricht.
+    if (CHAT_QUESTION_TOOLS.has(req.tool_name)) {
+      this.write({ type: 'control_response', response: { subtype: 'success', request_id: ev.request_id,
+        response: { behavior: 'deny', message: CHAT_QUESTION_HINT } } });
       return;
     }
     const key = approvalKey(req.tool_name, req.input);

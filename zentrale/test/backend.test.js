@@ -616,3 +616,16 @@ test('safetySettings: jeder Chat nutzt das Hauptgedächtnis, egal in welchem Ord
   assert.strictEqual(JSON.parse(safetySettings('acceptEdits')).autoMemoryDirectory, mainMemoryDir());
   assert.strictEqual(JSON.parse(safetySettings('default')).autoMemoryDirectory, mainMemoryDir());
 });
+
+test('Chat: Auswahlfragen werden nie blind erlaubt – Claude soll im Chat fragen', async () => {
+  const chat = new ClaudeChat({ bin: FAKE, env: process.env, cwd: os.tmpdir(), allowAll: () => true });
+  const events = collect(chat);
+  const texts = () => events.filter((e) => e.kind === 'text').map((e) => e.text);
+  try {
+    await chat.send('AUSWAHL:Welche Farbe?');
+    assert.ok(await waitFor(() => texts().some((x) => x.startsWith('deny:') && x.includes('normale Chat-Nachricht')), 10000));
+    assert.strictEqual(chat.pendingApprovals().length, 0);
+  } finally {
+    await chat.stop();
+  }
+});

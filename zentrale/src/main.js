@@ -420,9 +420,10 @@ function setup() {
     await c.dispose();
   }
 
+  // Der freie Chat startet im Benutzerordner – wie Claude in der App: von dort erreicht er jeden Ordner.
+  // Ein bestimmtes Projekt öffnet man über die Projektliste, dann läuft der Chat in dessen Ordner.
   function defaultCwd() {
-    const recent = projectsCache.find((p) => isDir(p.path));
-    return recent ? recent.path : os.homedir();
+    return os.homedir();
   }
 
   // Seite ins Fenster laden – mit Wächter: kommt sie nicht an (z. B. weil macOS beim Start am Schlüsselbund-Dialog
