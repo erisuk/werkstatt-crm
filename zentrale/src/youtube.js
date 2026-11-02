@@ -75,7 +75,9 @@ function videoResource(post, now = Date.now()) {
   return {
     snippet: { title: String(post.title || '').slice(0, LIMITS.title), description, tags: tagsFrom(post.hashtags), categoryId: '22' },
     status: { privacyStatus: fixed || (later ? 'private' : 'public'), ...(later ? { publishAt: new Date(post.dueAt).toISOString() } : {}),
-      selfDeclaredMadeForKids: false },
+      selfDeclaredMadeForKids: false,
+      // KI-Kennzeichnung („Veränderte oder synthetische Inhalte“) – Pflicht für Bit-Videos.
+      ...(post.aiLabel === true ? { containsSyntheticMedia: true } : {}) },
   };
 }
 

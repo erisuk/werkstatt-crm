@@ -100,7 +100,7 @@ function videos(studio) {
     const objekt = (f) => { const x = lesen(path.join(studio, 'videos', n, f), {}); return istObjekt(x) ? x : {}; };
     const sk = objekt('skript.json');
     const s = istObjekt(status[id]) ? status[id] : {};
-    return { id, nr: Number(n.slice(0, 3)), thema: String(sk.thema || n.slice(4)), format: String(sk.format || ''),
+    return { id, nr: Number(n.slice(0, 3)), ordner: n, thema: String(sk.thema || n.slice(4)), format: String(sk.format || ''),
       status: String(s.status || 'in Arbeit'), gepostet: Array.isArray(s.gepostet) ? s.gepostet.map(String) : [], zeit: String(s.zeit || ''),
       aktion: aktionVon(sk, objekt('post.json'), istObjekt(eigene[id]) ? eigene[id] : {}) };
   });
@@ -279,4 +279,6 @@ function sperren(thema, an, studio = studioPfad()) {
 }
 
 module.exports = { uebersicht, aktionen, aktionSetzen, pauseSetzen, einstellen, wunschHinzu, wunschEntfernen, wunschVor, sperren, einstellungen, linkOk,
-  STANDARD, QUELLEN_IDS, MAX_VERSUCHE };
+  STANDARD, QUELLEN_IDS, MAX_VERSUCHE,
+  // für bit-posten.js
+  studioPfad, lesen, schreiben, datei, istObjekt, videos };
