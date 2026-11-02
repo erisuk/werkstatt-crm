@@ -57,7 +57,7 @@ test('Inline: HTML aus einer Antwort bleibt reiner Text', () => {
 
 test('Arbeitsschritte: kurze Angaben pro Werkzeug', () => {
   assert.deepStrictEqual(toolStep('Bash', { command: 'npm test\nmehr', description: 'Tests laufen lassen' }), { tool: 'Bash', detail: 'Tests laufen lassen' });
-  assert.deepStrictEqual(toolStep('Edit', { file_path: '/Users/x/projekt/src/app.js' }), { tool: 'Edit', detail: 'app.js' });
+  assert.deepStrictEqual(toolStep('Edit', { file_path: '/Users/x/projekt/src/app.js' }), { tool: 'Edit', detail: 'app.js', path: '/Users/x/projekt/src/app.js' });
   assert.deepStrictEqual(toolStep('WebFetch', { url: 'https://docs.example.com/a?b' }), { tool: 'WebFetch', detail: 'docs.example.com' });
   assert.deepStrictEqual(toolStep('Grep', { pattern: 'TODO' }), { tool: 'Grep', detail: 'TODO' });
   assert.strictEqual(toolStep(null, null).tool, 'Werkzeug');

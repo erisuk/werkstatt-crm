@@ -5,7 +5,9 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { resolveClaude, ClaudeChat, runTask, stopAllTasks, listMcpServers, permissionModeFor } = require('./claude');
-const { listProjects, readMessages, watchSessions, shortTitle, DEFAULT_ROOT } = require('./sessions');
+const { ChatPool, chatTitle } = require('./chat-pool');
+const { createChatEnv } = require('./chat-env');
+const { listProjects, readMessages, watchSessions, shortTitle, DEFAULT_ROOT, renameSession } = require('./sessions');
 const { TaskScheduler } = require('./tasks');
 const { Settings } = require('./settings');
 const mac = require('./mac');
@@ -172,7 +174,8 @@ function setup() {
     return projects.map((p) => ({ ...p, sessions: p.sessions.map((x) => {
       const m = meta.get(x.id);
       if (!m) return x;
-      const title = m.title && !generic.test(m.title) ? m.title : x.title;
+      // Selbst umbenannt (Zentrale oder /rename) geht vor dem Titel der Claude-App.
+      const title = !x.renamed && m.title && !generic.test(m.title) ? m.title : x.title;
       return { ...x, title, archived: m.archived, scheduled: m.scheduled };
     }) }));
   }
@@ -190,10 +193,18 @@ function setup() {
     return projectsCache;
   }
 
+  // Bis zu drei Gespräche laufen gleichzeitig: `chat` ist das sichtbare, die anderen parken in `pool`
+  // und arbeiten im Hintergrund weiter (src/chat-pool.js).
+  const pool = new ChatPool();
+  const allChats = () => pool.all(chat);
+
   function chatInfo() {
     if (!chat) return null;
     return { gen: chatGen, cwd: chat.cwd, name: path.basename(chat.cwd) || chat.cwd, sessionId: chat.sessionId, status: chat.status,
-      title: chat.title, careful: chat.permissionMode !== 'acceptEdits' && !allowAll(), allowAll: allowAll() };
+      title: chat.title, careful: chat.permissionMode !== 'acceptEdits' && !allowAll(), allowAll: allowAll(),
+      busySince: chat.status === 'busy' ? chat.busySince || null : null,
+      context: chat.context ? { used: chat.context, window: chat.contextWindow || null, baseline: chat.baseline || null } : null,
+      mcp: chat.mcp || null };
   }
 
   // Einstellung „Ohne Rückfrage arbeiten“: Claude darf alles, ohne zu fragen (Standard, Eris' Wunsch).
@@ -203,7 +214,7 @@ function setup() {
 
   function approvals() {
     const list = [];
-    if (chat) for (const a of chat.pendingApprovals()) list.push({ ...a, source: chat.title ? `Chat „${chat.title}“` : 'Chat' });
+    for (const c of allChats()) for (const a of c.pendingApprovals()) list.push({ ...a, source: `Chat „${chatTitle(c)}“` });
     for (const [c, name] of taskChats) for (const a of c.pendingApprovals()) list.push({ ...a, source: `Tägliche Aufgabe „${name}“` });
     return list.sort((a, b) => a.createdAt - b.createdAt);
   }
@@ -215,6 +226,7 @@ function setup() {
       projects: projectsCache,
       topics: TOPICS,
       chat: chatInfo(),
+      chats: pool.list(chat),
       tasks: scheduler ? scheduler.list() : [],
       approvals: approvals(),
       settings: settings ? settings.get() : null,
@@ -350,7 +362,7 @@ function setup() {
     } catch { return false; }
     n8nConfig = next;
     // Claude startet vor der nächsten Nachricht neu und kennt dann die n8n-Werkzeuge.
-    if (chat) chat.needsRestart = true;
+    for (const c of allChats()) c.needsRestart = true;
     return true;
   }
 
@@ -387,28 +399,53 @@ function setup() {
     const old = chat;
     chatGen += 1;
     const gen = chatGen;
+    // Läuft das Gespräch schon im Hintergrund, wird es nur nach vorn geholt – ohne Neustart, die Arbeit läuft weiter.
+    const waiting = sessionId ? pool.take(sessionId) : null;
+    if (waiting) {
+      waiting.gen = gen;
+      chat = waiting;
+      pool.park(old);
+      pushState();
+      return chatInfo();
+    }
     // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
     const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
     const args = agent ? () => [...extraArgs(), '--agent', agent] : extraArgs;
     const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll });
+    c.gen = gen;
+    c.lastActive = Date.now();
     chat = c;
     c.on('event', (ev) => {
-      send('chat-event', { ...ev, gen });
+      send('chat-event', { ...ev, gen: c.gen });
       // Abgemeldet? (Fehler mit Login/OAuth) – fällt im Kontrollraum als blinder Fleck auf.
       if (ev.kind === 'error' && /log ?in|oauth|authent|401|anmeld/i.test(`${ev.text || ''} ${ev.details || ''}`)) claudeAuthProblemAt = Date.now();
       else if (ev.kind === 'text' || ev.kind === 'result') claudeAuthProblemAt = 0;
     });
-    c.on('status', () => pushState());
+    c.on('status', () => {
+      const was = c.lastStatus;
+      c.lastStatus = c.status;
+      if (c.status === 'busy' && was !== 'busy') c.busySince = Date.now();
+      c.lastActive = Date.now();
+      // Ein Hintergrund-Chat ist fertig: Mitteilung, damit niemand ständig nachschauen muss.
+      if (was === 'busy' && c.status === 'ready' && c !== chat && pool.get(c.sessionId) === c) {
+        notify(`Fertig: ${chatTitle(c)}`, 'Claude ist mit diesem Chat fertig. Rechts unter „Agenten“ kannst du ihn öffnen.', 'chat');
+      }
+      pushState();
+    });
     c.on('approvals', onApprovalsChanged);
-    // Den alten Claude im Hintergrund beenden – nicht darauf warten, sonst dauert jeder Wechsel ~1 s.
-    // Ausnahme: dasselbe Gespräch – dann erst fertig beenden, sonst schreiben zwei Prozesse in dieselbe Datei.
+    // Dasselbe Gespräch: den alten Prozess erst fertig beenden, sonst schreiben zwei Prozesse in dieselbe Datei.
+    // Sonst läuft der bisherige Chat im Hintergrund weiter.
     if (old && old.sessionId === sessionId) await old.dispose().catch(() => {});
-    else if (old) old.dispose().catch(() => {});
+    else pool.park(old);
+    pool.trim();
     if (gen !== chatGen || chat !== c) return chatInfo();
     c.start();
     pushState();
     return chatInfo();
   }
+
+  // Untätige Hintergrund-Chats nach 30 Minuten schließen – ihr Gespräch bleibt gespeichert.
+  setInterval(() => { if (pool.sweep()) pushState(); }, 60 * 1000).unref();
 
   // Löst den offenen Chat (z. B. weil sein Gespräch gelöscht wird) und beendet ihn.
   async function detachChat() {
@@ -520,6 +557,7 @@ function setup() {
     let history = [];
     try { history = readMessages(session.file, 400, { tools: true }); } catch {}
     if (chat && chat.sessionId === sessionId) return { chat: chatInfo(), history };
+    if (!pool.get(sessionId) && !pool.hasRoom(chat)) return { error: pool.fullMessage() };
     const info = await openChat({ cwd: session.cwd, sessionId, title: session.title });
     return { chat: info, history };
   });
@@ -530,6 +568,7 @@ function setup() {
     if (!isDir(cwd)) return { error: 'Dieser Ordner existiert nicht.' };
     await claudeReady;
     if (!claude.bin) return { error: 'Claude Code wurde nicht gefunden.' };
+    if (!pool.hasRoom(chat)) return { error: pool.fullMessage() };
     return { chat: await openChat({ cwd }), history: [] };
   });
 
@@ -553,11 +592,20 @@ function setup() {
     pushState();
   });
 
+  // Einen Hintergrund-Chat schließen (Agenten-Leiste). Das Gespräch bleibt gespeichert.
+  ipcMain.handle('chat-close', (_e, sessionId) => {
+    const c = typeof sessionId === 'string' ? pool.get(sessionId) : null;
+    if (!c) return false;
+    pool.close(c);
+    pushState();
+    return true;
+  });
+
   ipcMain.handle('approval-respond', (_e, args) => {
     const id = args && typeof args.id === 'string' ? args.id : null;
     const decision = args && ['allow', 'always', 'deny'].includes(args.decision) ? args.decision : null;
     if (!id || !decision) return false;
-    for (const c of [chat, ...taskChats.keys()]) if (c && c.respond(id, decision)) return true;
+    for (const c of [...allChats(), ...taskChats.keys()]) if (c.respond(id, decision)) return true;
     return false;
   });
 
@@ -582,7 +630,7 @@ function setup() {
     const next = settings.update(patch);
     nativeTheme.themeSource = next.theme;
     // Rückfragen gerade ausgeschaltet: was noch auf eine Freigabe wartet, läuft sofort weiter.
-    if (!next.askFirst) for (const c of [chat, ...taskChats.keys()]) if (c) c.allowPending();
+    if (!next.askFirst) for (const c of [...allChats(), ...taskChats.keys()]) c.allowPending();
     let applied = true;
     const changed = Object.keys(next.connections).some((k) => next.connections[k] !== before[k]);
     const turnedOff = Object.keys(next.connections).some((k) => before[k] && !next.connections[k]);
@@ -591,6 +639,8 @@ function setup() {
       if (chat.status === 'busy' && !turnedOff) { applied = false; chat.needsRestart = true; }
       else { const c = chat; await c.stop(); if (c === chat) c.start(); }
     }
+    // Hintergrund-Chats: Ausgeschaltetes gilt sofort, Neues ab ihrer nächsten Nachricht.
+    if (changed) for (const c of pool.all(null)) { if (turnedOff) await c.stop(); else c.needsRestart = true; }
     pushState();
     return { settings: next, applied, interrupted: turnedOff && applied };
   });
@@ -603,8 +653,10 @@ function setup() {
     if (!claude.bin) return null;
     const list = await listMcpServers({ bin: claude.bin, env: claude.env, cwd: os.homedir() });
     const connected = list ? list.filter((s) => s.status === 'connected').map((s) => s.name) : null;
-    const missing = chat && connected ? chat.missingServers(connected) : null;
-    if (missing && missing.length) chat.needsRestart = true;
+    for (const c of allChats()) {
+      const missing = connected ? c.missingServers(connected) : null;
+      if (missing && missing.length) c.needsRestart = true;
+    }
     return list;
   }
   setInterval(() => { scanConnectors().catch(() => {}); }, CONNECTOR_CHECK_MS).unref();
@@ -645,6 +697,20 @@ function setup() {
     return true;
   });
 
+  // Gespräch umbenennen – auch ein gerade laufender Chat bekommt den Namen sofort.
+  ipcMain.handle('session-rename', (_e, args) => {
+    const id = args && typeof args.id === 'string' ? args.id : null;
+    const s = id && findSession(id);
+    if (!s) return { ok: false, error: 'Dieses Gespräch wurde nicht gefunden.' };
+    let title;
+    try { title = renameSession(s.file, id, args.title); } catch (e) { return { ok: false, error: e.message }; }
+    if (!title) return { ok: false, error: 'Der Name darf nicht leer und höchstens 120 Zeichen lang sein.' };
+    for (const c of allChats()) if (c.sessionId === id) c.title = title;
+    refreshProjects();
+    pushState();
+    return { ok: true, title };
+  });
+
   // Gespräche wandern in den Papierkorb (wiederherstellbar), samt Ordner für Unteragenten und Anhänge.
   ipcMain.handle('sessions-trash', async (_e, args) => {
     const ids = Array.isArray(args && args.ids) ? args.ids.filter((x) => typeof x === 'string') : [];
@@ -653,13 +719,15 @@ function setup() {
     for (const id of ids) {
       const s = findSession(id);
       if (!s) continue;
-      const ours = !!chat && chat.sessionId === id;
-      if (ours && chat.status === 'busy') { result.skipped.push({ title: s.title, reason: 'Claude arbeitet gerade daran.' }); continue; }
+      const mine = allChats().find((c) => c.sessionId === id);
+      const ours = !!mine;
+      if (ours && mine.status === 'busy') { result.skipped.push({ title: s.title, reason: 'Claude arbeitet gerade daran.' }); continue; }
       if (!ours && Date.now() - s.updatedAt < IN_USE_MS) {
         result.skipped.push({ title: s.title, reason: 'Wird gerade in einem anderen Claude-Fenster benutzt.' });
         continue;
       }
-      if (ours) await detachChat();
+      if (mine === chat) await detachChat();
+      else if (mine) pool.close(mine);
       try {
         await shell.trashItem(s.file);
         const extra = s.file.replace(/\.jsonl$/, '');
@@ -684,10 +752,9 @@ function setup() {
     if (!known || files.isProtected(p) || permissionModeFor(fs.realpathSync.native(p)) !== 'acceptEdits') {
       return { ok: false, error: 'Dieser Ordner ist geschützt und kann über die Zentrale nicht gelöscht werden.' };
     }
-    if (chat && (chat.cwd === p || chat.cwd.startsWith(p + path.sep))) {
-      if (chat.status === 'busy') return { ok: false, error: 'Claude arbeitet gerade in diesem Ordner.' };
-      await detachChat();
-    }
+    const inside = allChats().filter((c) => c.cwd === p || c.cwd.startsWith(p + path.sep));
+    if (inside.some((c) => c.status === 'busy')) return { ok: false, error: 'Claude arbeitet gerade in diesem Ordner.' };
+    for (const c of inside) { if (c === chat) await detachChat(); else pool.close(c); }
     try { await shell.trashItem(p); } catch (e) { return { ok: false, error: e.message }; }
     pushState();
     return { ok: true };
@@ -726,8 +793,8 @@ function setup() {
   const runningSource = dataLayer.source('laufende-arbeit', () => library.runningWork((id) => { const s = findSession(id); return s ? s.title : null; }), { ttl: 4000 });
   ipcMain.handle('running-work', async () => {
     const work = await runningSource();
-    const ownId = chat && chat.sessionId;
-    return { ...work, sessions: work.sessions.filter((x) => x.id !== ownId) };
+    const own = new Set(allChats().map((c) => c.sessionId));
+    return { ...work, sessions: work.sessions.filter((x) => !own.has(x.id)) };
   });
 
   // ---------- Mein Mac: Apps und Ordner ----------
@@ -771,6 +838,27 @@ function setup() {
   });
 
   ipcMain.handle('fs-reveal', (_e, p) => { if (files.validPath(p)) shell.showItemInFolder(p); });
+
+  // Info-Leiste im Chat: Git-Branch, letzte Commits, offener PR des Arbeitsordners (nur lesen, 60 s zwischengespeichert).
+  const chatEnv = createChatEnv();
+  ipcMain.handle('chat-env', async (_e, args) => {
+    const cwd = args && typeof args.cwd === 'string' ? args.cwd : null;
+    if (!cwd || !isDir(cwd)) return null;
+    return chatEnv(cwd, { force: args.force === true });
+  });
+
+  // Kleine Vorschau eines Bildes, das Claude angeschaut hat (Chat-Schritte). Nur echte Bilddateien.
+  const THUMB_EXT = /\.(png|jpe?g|gif|webp|heic|tiff?|bmp)$/i;
+  const THUMB_MAX_BYTES = 60 * 1024 * 1024;
+  ipcMain.handle('image-thumb', (_e, p) => {
+    if (typeof p !== 'string' || !THUMB_EXT.test(p) || !files.validPath(p)) return null;
+    try {
+      if (fs.statSync(p).size > THUMB_MAX_BYTES) return null;
+      const img = nativeImage.createFromPath(p);
+      if (img.isEmpty()) return null;
+      return img.resize({ width: 160, quality: 'good' }).toDataURL();
+    } catch { return null; }
+  });
 
   ipcMain.handle('fs-trash', async (_e, p) => {
     if (!files.validPath(p) || !fs.existsSync(p)) return { ok: false, error: 'Nicht gefunden.' };
@@ -1615,7 +1703,7 @@ function setup() {
   }
   let trainObj = null;
   const trainStore = () => trainObj || (trainObj = new training.TrainingStore(path.join(app.getPath('userData'), 'training.json')));
-  const restartForLearning = () => { if (chat) chat.needsRestart = true; }; // neues Lernthema gilt ab der nächsten Nachricht
+  const restartForLearning = () => { for (const c of allChats()) c.needsRestart = true; }; // neues Lernthema gilt ab der nächsten Nachricht
   ipcMain.handle('learn-list', () => learnStore().refresh());
   ipcMain.handle('learn-add', (_e, raw) => { const r = learnStore().add(raw); if (r.ok) restartForLearning(); return r; });
   ipcMain.handle('learn-remove', (_e, id) => { learnStore().remove(id); restartForLearning(); return learnStore().list(); });
@@ -1830,7 +1918,7 @@ function setup() {
     if (webTabs) jobs.push(webTabs.saveLogins());
     if (n8nProxy) n8nProxy.close();
     if (browserProxy) browserProxy.close();
-    if (chat) jobs.push(chat.dispose());
+    for (const c of allChats()) jobs.push(c.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });
 

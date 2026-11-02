@@ -109,20 +109,21 @@
         <div class="section-head"><h2>Wartet auf dich</h2></div>
         <div id="approvals"></div>
       </section>
+      <div id="chat-info" class="chat-info" hidden></div>
       <section>
         <div class="section-head"><h2>Agenten</h2></div>
         <div id="agents"></div>
       </section>
-      <section>
+      <section class="hide-in-chat">
         <div class="section-head"><h2>Tägliche Aufgaben</h2><button class="link" id="aside-new-task">+ Neu</button></div>
         <div id="aside-tasks"></div>
       </section>
-      <section id="music-section" hidden>
+      <section id="music-section" class="hide-in-chat" hidden>
         <div class="section-head"><h2>Musik</h2></div>
         <div id="music"></div>
       </section>
       <div class="spacer"></div>
-      <section id="quick-section">
+      <section id="quick-section" class="hide-in-chat">
         <h2>Schnell fragen</h2>
         <form id="quick-form" class="composer small">
           <label for="quick-input" class="sr-only">Nachricht an Claude</label>
@@ -156,6 +157,8 @@
 <script src="kommentare-view.js"></script>
 <script src="bitvideos-view.js"></script>
 <script src="markdown.js"></script>
+<script src="step-summary.js"></script>
+<script src="chat-info.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
