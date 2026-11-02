@@ -583,6 +583,8 @@ function setup() {
     if (!c) return { ok: false, error: 'Der Chat wurde geschlossen, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     if (!c.title) { c.title = shortTitle(t); pushState(); }
     const ok = await c.send(t);
+    // Inzwischen gewechselt: Läuft der Chat im Hintergrund weiter, ist die Nachricht trotzdem angekommen.
+    if (c !== chat && pool.get(c.sessionId) === c) return { ok, parked: true };
     if (c !== chat) return { ok: false, error: 'Der Chat wurde gewechselt, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     return ok ? { ok: true, gen } : { ok: false, error: 'Claude konnte nicht gestartet werden.' };
   });
@@ -727,7 +729,7 @@ function setup() {
         continue;
       }
       if (mine === chat) await detachChat();
-      else if (mine) pool.close(mine);
+      else if (mine) await pool.close(mine);
       try {
         await shell.trashItem(s.file);
         const extra = s.file.replace(/\.jsonl$/, '');
@@ -754,7 +756,7 @@ function setup() {
     }
     const inside = allChats().filter((c) => c.cwd === p || c.cwd.startsWith(p + path.sep));
     if (inside.some((c) => c.status === 'busy')) return { ok: false, error: 'Claude arbeitet gerade in diesem Ordner.' };
-    for (const c of inside) { if (c === chat) await detachChat(); else pool.close(c); }
+    for (const c of inside) { if (c === chat) await detachChat(); else await pool.close(c); }
     try { await shell.trashItem(p); } catch (e) { return { ok: false, error: e.message }; }
     pushState();
     return { ok: true };
@@ -843,20 +845,29 @@ function setup() {
   const chatEnv = createChatEnv();
   ipcMain.handle('chat-env', async (_e, args) => {
     const cwd = args && typeof args.cwd === 'string' ? args.cwd : null;
-    if (!cwd || !isDir(cwd)) return null;
+    // Nur Ordner, in denen gerade ein Chat läuft – git/gh laufen nie in beliebigen Ordnern.
+    if (!cwd || !isDir(cwd) || !allChats().some((c) => c.cwd === cwd)) return null;
     return chatEnv(cwd, { force: args.force === true });
   });
 
   // Kleine Vorschau eines Bildes, das Claude angeschaut hat (Chat-Schritte). Nur echte Bilddateien.
   const THUMB_EXT = /\.(png|jpe?g|gif|webp|heic|tiff?|bmp)$/i;
   const THUMB_MAX_BYTES = 60 * 1024 * 1024;
-  ipcMain.handle('image-thumb', (_e, p) => {
+  // Über die Vorschau-Funktion von macOS (im Hintergrund, blockiert das Fenster nicht) und zwischengespeichert.
+  const THUMB_CACHE_MAX = 100;
+  const thumbCache = new Map(); // "Pfad|Änderungszeit" → Bild als data-URL
+  ipcMain.handle('image-thumb', async (_e, p) => {
     if (typeof p !== 'string' || !THUMB_EXT.test(p) || !files.validPath(p)) return null;
     try {
-      if (fs.statSync(p).size > THUMB_MAX_BYTES) return null;
-      const img = nativeImage.createFromPath(p);
-      if (img.isEmpty()) return null;
-      return img.resize({ width: 160, quality: 'good' }).toDataURL();
+      const st = fs.statSync(p);
+      if (!st.isFile() || st.size > THUMB_MAX_BYTES) return null;
+      const key = `${p}|${st.mtimeMs}`;
+      if (thumbCache.has(key)) return thumbCache.get(key);
+      const img = await nativeImage.createThumbnailFromPath(p, { width: 160, height: 160 });
+      const url = img.isEmpty() ? null : img.toDataURL();
+      thumbCache.set(key, url);
+      if (thumbCache.size > THUMB_CACHE_MAX) thumbCache.delete(thumbCache.keys().next().value);
+      return url;
     } catch { return null; }
   });
 

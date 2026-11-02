@@ -118,6 +118,8 @@ test('Regel mit noch fehlendem Zielordner bleibt erhalten; nie überschreiben', 
 test('Sicherheits-Durchgang: holt neue Dateien nach, lässt Altbestand und Zurückgeholtes liegen', async () => {
   const { src, dst, file } = dirs();
   fs.writeFileSync(path.join(src, 'alt.mp4'), 'schon da');
+  // Altbestand eindeutig vor dem Start: in derselben Millisekunde wäre „alt“ oder „neu“ nicht zu unterscheiden.
+  await new Promise((r) => setTimeout(r, 20));
   const w = new FolderWatcher(file);
   w.saveRule({ folder: src, pattern: '*.mp4', target: dst });
   for (const x of w.watchers.values()) x.close(); // Ereignisse „verlieren“

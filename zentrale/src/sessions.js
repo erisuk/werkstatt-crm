@@ -191,7 +191,7 @@ function readMessages(file, limit = 200, { tools = false } = {}) {
         if (!b) continue;
         if (b.type === 'tool_use') {
           if (!tools) continue;
-          const step = { role: 'tool', ...toolStep(b.name, b.input) };
+          const step = { role: 'tool', ...(b.id ? { id: b.id } : {}), ...toolStep(b.name, b.input) };
           if (b.id) steps.set(b.id, step);
           out.push(step);
           continue;
