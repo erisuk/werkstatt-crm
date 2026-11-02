@@ -6,6 +6,7 @@ const os = require('os');
 const fs = require('fs');
 const { resolveClaude, ClaudeChat, runTask, stopAllTasks, listMcpServers, permissionModeFor } = require('./claude');
 const { ChatPool, chatTitle } = require('./chat-pool');
+const { createChatEnv } = require('./chat-env');
 const { listProjects, readMessages, watchSessions, shortTitle, DEFAULT_ROOT, renameSession } = require('./sessions');
 const { TaskScheduler } = require('./tasks');
 const { Settings } = require('./settings');
@@ -200,7 +201,10 @@ function setup() {
   function chatInfo() {
     if (!chat) return null;
     return { gen: chatGen, cwd: chat.cwd, name: path.basename(chat.cwd) || chat.cwd, sessionId: chat.sessionId, status: chat.status,
-      title: chat.title, careful: chat.permissionMode !== 'acceptEdits' && !allowAll(), allowAll: allowAll() };
+      title: chat.title, careful: chat.permissionMode !== 'acceptEdits' && !allowAll(), allowAll: allowAll(),
+      busySince: chat.status === 'busy' ? chat.busySince || null : null,
+      context: chat.context ? { used: chat.context, window: chat.contextWindow || null, baseline: chat.baseline || null } : null,
+      mcp: chat.mcp || null };
   }
 
   // Einstellung „Ohne Rückfrage arbeiten“: Claude darf alles, ohne zu fragen (Standard, Eris' Wunsch).
@@ -420,6 +424,7 @@ function setup() {
     c.on('status', () => {
       const was = c.lastStatus;
       c.lastStatus = c.status;
+      if (c.status === 'busy' && was !== 'busy') c.busySince = Date.now();
       c.lastActive = Date.now();
       // Ein Hintergrund-Chat ist fertig: Mitteilung, damit niemand ständig nachschauen muss.
       if (was === 'busy' && c.status === 'ready' && c !== chat && pool.get(c.sessionId) === c) {
@@ -833,6 +838,27 @@ function setup() {
   });
 
   ipcMain.handle('fs-reveal', (_e, p) => { if (files.validPath(p)) shell.showItemInFolder(p); });
+
+  // Info-Leiste im Chat: Git-Branch, letzte Commits, offener PR des Arbeitsordners (nur lesen, 60 s zwischengespeichert).
+  const chatEnv = createChatEnv();
+  ipcMain.handle('chat-env', async (_e, args) => {
+    const cwd = args && typeof args.cwd === 'string' ? args.cwd : null;
+    if (!cwd || !isDir(cwd)) return null;
+    return chatEnv(cwd, { force: args.force === true });
+  });
+
+  // Kleine Vorschau eines Bildes, das Claude angeschaut hat (Chat-Schritte). Nur echte Bilddateien.
+  const THUMB_EXT = /\.(png|jpe?g|gif|webp|heic|tiff?|bmp)$/i;
+  const THUMB_MAX_BYTES = 60 * 1024 * 1024;
+  ipcMain.handle('image-thumb', (_e, p) => {
+    if (typeof p !== 'string' || !THUMB_EXT.test(p) || !files.validPath(p)) return null;
+    try {
+      if (fs.statSync(p).size > THUMB_MAX_BYTES) return null;
+      const img = nativeImage.createFromPath(p);
+      if (img.isEmpty()) return null;
+      return img.resize({ width: 160, quality: 'good' }).toDataURL();
+    } catch { return null; }
+  });
 
   ipcMain.handle('fs-trash', async (_e, p) => {
     if (!files.validPath(p) || !fs.existsSync(p)) return { ok: false, error: 'Nicht gefunden.' };

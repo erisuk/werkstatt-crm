@@ -82,24 +82,45 @@ function describeTool(name, input) {
 }
 
 // Wandelt ein rohes stream-json-Ereignis in eine einfache Liste für die Oberfläche um.
+// Wie voll das Gespräch ist: alles, was Claude bei dieser Anfrage gelesen hat (neu + aus dem Zwischenspeicher).
+function contextTokens(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const n = (v) => (Number.isFinite(v) ? v : 0);
+  const sum = n(usage.input_tokens) + n(usage.cache_read_input_tokens) + n(usage.cache_creation_input_tokens);
+  return sum > 0 ? sum : null;
+}
+
 function simplify(ev) {
   if (!ev || typeof ev !== 'object') return [];
   if (ev.type === 'system' && ev.subtype === 'init') {
-    const servers = Array.isArray(ev.mcp_servers)
-      ? ev.mcp_servers.filter((x) => x && x.status === 'connected').map((x) => String(x.name)) : null;
-    return [{ kind: 'init', sessionId: ev.session_id, model: ev.model || null, servers }];
+    const all = Array.isArray(ev.mcp_servers) ? ev.mcp_servers.filter((x) => x && x.name) : null;
+    const servers = all ? all.filter((x) => x.status === 'connected').map((x) => String(x.name)) : null;
+    const mcp = all ? all.map((x) => ({ name: String(x.name), status: String(x.status || 'unknown') })) : null;
+    return [{ kind: 'init', sessionId: ev.session_id, model: ev.model || null, servers, mcp }];
   }
   if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
     const out = [];
     for (const b of ev.message.content) {
       if (b.type === 'text' && b.text && b.text.trim()) out.push({ kind: 'text', text: b.text });
-      else if (b.type === 'tool_use') out.push({ kind: 'tool', text: describeTool(b.name, b.input), ...toolStep(b.name, b.input) });
+      else if (b.type === 'tool_use') out.push({ kind: 'tool', ...(b.id ? { id: b.id } : {}), text: describeTool(b.name, b.input), ...toolStep(b.name, b.input) });
     }
+    // Unteragenten haben ihr eigenes Gedächtnis – nur der Hauptchat zählt für „wie voll“.
+    const context = ev.parent_tool_use_id ? null : contextTokens(ev.message.usage);
+    if (context) out.push({ kind: 'usage', context });
     return out;
+  }
+  // Ergebnis eines Werkzeugs: nur ob es geklappt hat (für „1 fehlgeschlagen“).
+  if (ev.type === 'user' && ev.message && Array.isArray(ev.message.content)) {
+    return ev.message.content.filter((b) => b && b.type === 'tool_result' && b.tool_use_id)
+      .map((b) => ({ kind: 'toolResult', id: b.tool_use_id, error: b.is_error === true }));
   }
   if (ev.type === 'result' && ev.is_error) {
     const details = typeof ev.result === 'string' ? ev.result : (Array.isArray(ev.errors) ? ev.errors.join('\n') : '');
     return [{ kind: 'error', text: 'Claude hat einen Fehler gemeldet.', details: details || null }];
+  }
+  if (ev.type === 'result' && ev.modelUsage && typeof ev.modelUsage === 'object') {
+    const windows = Object.values(ev.modelUsage).map((m) => m && m.contextWindow).filter((w) => Number.isFinite(w) && w > 0);
+    if (windows.length) return [{ kind: 'window', contextWindow: Math.max(...windows) }];
   }
   return [];
 }
@@ -448,6 +469,10 @@ class ClaudeChat extends EventEmitter {
       if (ev.session_id) this.sessionId = ev.session_id;
       for (const item of simplify(ev)) {
         if (item.kind === 'init' && item.servers) this.connectedServers = item.servers;
+        if (item.kind === 'init' && item.mcp) this.mcp = item.mcp;
+        // Grundausstattung (System, Werkzeuge, Gedächtnis) = die erste Anfrage eines frischen Gesprächs.
+        if (item.kind === 'usage') { if (!this.resumed && !this.baseline) this.baseline = item.context; this.context = item.context; }
+        if (item.kind === 'window') this.contextWindow = item.contextWindow;
         this.emit('event', item);
       }
       // Erst "bereit", wenn alle gesendeten Nachrichten beantwortet sind.
@@ -599,6 +624,6 @@ async function listMcpServers({ bin, env, cwd }) {
 
 module.exports = {
   resolveClaude, cleanEnv, ClaudeChat, simplify, describeTool, describeApproval, approvalKey, permissionModeFor,
-  safetySettings, mainMemoryDir, isReadOnlyCommand,
+  safetySettings, mainMemoryDir, isReadOnlyCommand, contextTokens,
   runTask, stopAllTasks, terminate, parseMcpList, listMcpServers,
 };

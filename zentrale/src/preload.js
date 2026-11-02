@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld('zentrale', {
   fsIcon: (p) => ipcRenderer.invoke('fs-icon', p),
   fsOpen: (p) => ipcRenderer.invoke('fs-open', p),
   fsReveal: (p) => ipcRenderer.invoke('fs-reveal', p),
+  chatEnv: (cwd, force) => ipcRenderer.invoke('chat-env', { cwd, force }),
+  imageThumb: (p) => ipcRenderer.invoke('image-thumb', p),
   fsTrash: (p) => ipcRenderer.invoke('fs-trash', p),
   fsSearch: (q) => ipcRenderer.invoke('fs-search', q),
   n8nStatus: () => ipcRenderer.invoke('n8n-status'),

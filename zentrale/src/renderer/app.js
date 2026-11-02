@@ -199,7 +199,7 @@ function setView(view, { focusHeading = true } = {}) {
   ui.sig.main = null;
   renderNav();
   renderMain();
-  if (ui.state) renderApprovals();
+  if (ui.state) { renderApprovals(); renderChatInfo(); }
   const heading = focusHeading && view !== 'chat' && $('#main h1');
   if (heading) { heading.setAttribute('tabindex', '-1'); heading.focus({ preventScroll: true }); }
 }
@@ -559,7 +559,7 @@ async function openSession(session) {
   if (cur && cur.sessionId === session.id && ui.chatGen === cur.gen) { setView('chat'); return; }
   const res = await api.openSession({ sessionId: session.id });
   if (!res || res.error || !res.chat) { alert((res && res.error) || 'Claude Code wurde nicht gefunden.'); return; }
-  resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, text: m.text, tool: m.tool, detail: m.detail })));
+  resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, text: m.text, tool: m.tool, detail: m.detail, path: m.path, error: m.error, at: m.at })));
   setView('chat');
 }
 
@@ -612,7 +612,8 @@ function renderChat() {
   attachDrop(form, input);
 
   const typing = h('div', { class: 'typing', id: 'typing', role: 'status', hidden: true },
-    sparkIcon('spark'), h('span', { class: 'typing-text', text: 'Claude arbeitet …' }));
+    h('span', { class: 'typing-dots', 'aria-hidden': 'true' }, h('i'), h('i'), h('i'), h('i')),
+    h('span', { class: 'typing-text', text: 'Claude denkt nach …' }), h('span', { class: 'typing-time' }));
   fill(main, h('div', { class: 'chat' },
     h('div', { class: 'chat-head', id: 'chat-head' }),
     h('div', { class: 'messages', id: 'messages' }, typing),
@@ -689,7 +690,7 @@ function updateChatHead() {
   if (!head || !ui.state.chat) return;
   const c = ui.state.chat;
   const st = chatStatus();
-  if (!changed('chatHead', [c, st])) return;
+  if (!changed('chatHead', [c, st, chatInfoOpen()])) return;
   keepFocus(() => fill(head,
     h('span', { class: 'avatar', style: { background: colorFor(c.name) }, text: c.name.charAt(0).toUpperCase() }),
     h('div', { class: 'grow' },
@@ -697,7 +698,17 @@ function updateChatHead() {
       h('h1', { text: c.title || 'Neues Gespräch' })),
     h('span', { class: `pill ${st.pill || ''}`, text: st.short || st.text }),
     c.status === 'busy' ? h('button', { class: 'btn ghost', 'data-focus': 'stop', onClick: () => api.stopChat() }, 'Stoppen') : null,
-    h('button', { class: 'btn ghost', 'data-focus': 'chat-new', onClick: () => newSession(c.cwd) }, 'Neues Gespräch')));
+    h('button', { class: 'btn ghost', 'data-focus': 'chat-new', onClick: () => newSession(c.cwd) }, 'Neues Gespräch'),
+    h('button', { class: `icon-btn info-toggle${chatInfoOpen() ? ' on' : ''}`, 'data-focus': 'chat-info-toggle', 'aria-pressed': String(chatInfoOpen()),
+      'aria-label': 'Info-Leiste ein- oder ausblenden', title: chatInfoOpen() ? 'Info-Leiste ausblenden' : 'Info-Leiste einblenden', onClick: toggleChatInfo }, panelIcon())));
+}
+
+function panelIcon() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/>'; // festes Symbol
+  return svg;
 }
 
 // Wie in der Claude-App: deine Nachricht als Blase rechts (angehängte Dateien als Kärtchen),
@@ -710,13 +721,56 @@ function fileChip(f) {
   const ext = dot >= 0 && dot < name.length - 1 ? name.slice(dot + 1).slice(0, 4).toUpperCase() : 'DATEI';
   return h('span', { class: 'file-chip', title: f }, h('span', { class: 'file-ext', text: ext }), h('span', { class: 'file-name', text: name }));
 }
-function userMessageEl(text) {
+function userMessageEl(text, at) {
   const lines = String(text).split('\n');
   const files = lines.map((l) => FILE_LINE.exec(l)).filter(Boolean).map((m) => m[1]);
   const rest = lines.filter((l) => !FILE_LINE.test(l)).join('\n').trim();
-  return h('div', { class: 'msg user' },
-    files.length ? h('div', { class: 'msg-files' }, files.map(fileChip)) : null,
-    rest ? h('div', { class: 'msg-text', text: rest }) : null);
+  return h('div', { class: 'msg-user-wrap' },
+    h('div', { class: 'msg user' },
+      files.length ? h('div', { class: 'msg-files' }, files.map(fileChip)) : null,
+      rest ? h('div', { class: 'msg-text', text: rest }) : null),
+    userMeta(text, at));
+}
+
+// Unter deiner Nachricht wie in der Claude-App: wann, kopieren, noch einmal senden.
+function userMeta(text, at) {
+  const copy = h('button', { class: 'icon-btn meta-btn', 'aria-label': 'Nachricht kopieren', title: 'Kopieren' }, metaIcon('copy'));
+  copy.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(String(text)); copy.title = 'Kopiert'; copy.classList.add('done'); setTimeout(() => copy.classList.remove('done'), 1200); }
+    catch { alert('Kopieren ging nicht.'); }
+  });
+  const again = h('button', { class: 'icon-btn meta-btn', 'aria-label': 'Noch einmal senden', title: 'Noch einmal senden', onClick: () => sendMessage(String(text)) }, metaIcon('again'));
+  return h('div', { class: 'msg-meta' },
+    at ? h('span', { class: 'msg-time', text: relTime(at), title: new Date(at).toLocaleString('de-DE') }) : null, copy, again);
+}
+
+const META_ICONS = {
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
+  again: '<path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.5"/><path d="M4 4v4.5h4.5"/>',
+};
+function metaIcon(kind) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = META_ICONS[kind]; // feste Symbole aus dieser Datei
+  return svg;
+}
+
+function relTime(at) {
+  const min = Math.floor((Date.now() - at) / 60000);
+  if (min < 1) return 'gerade eben';
+  if (min < 60) return min === 1 ? 'vor 1 Minute' : `vor ${min} Minuten`;
+  const d = new Date(at);
+  const time = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })} ${time}`;
+}
+
+// Laufzeit wie in der Claude-App: „12 Sek.“, „7 Min. 59 Sek.“, „1 Std. 3 Min.“
+function elapsedText(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s} Sek.`;
+  if (s < 3600) return `${Math.floor(s / 60)} Min. ${s % 60} Sek.`;
+  return `${Math.floor(s / 3600)} Std. ${Math.floor((s % 3600) / 60)} Min.`;
 }
 
 function messageEl(m) {
@@ -724,7 +778,7 @@ function messageEl(m) {
     return h('div', { class: 'msg error' }, m.text,
       m.details ? h('details', {}, h('summary', { text: 'Details' }), h('pre', { text: m.details })) : null);
   }
-  if (m.kind === 'user') return userMessageEl(m.text);
+  if (m.kind === 'user') return userMessageEl(m.text, m.at);
   if (m.kind === 'assistant') return h('div', { class: 'msg assistant' }, mdRender(m.text));
   return h('div', { class: `msg ${m.kind}`, text: m.text });
 }
@@ -777,24 +831,68 @@ function stepRow(m) {
   const tool = m.tool || String(m.text || '').split(' · ')[0];
   const detail = m.tool ? m.detail : String(m.text || '').split(' · ').slice(1).join(' · ');
   const [icon, label] = stepInfo(tool);
-  return h('li', { class: 'step' }, stepIcon(icon), h('span', { class: 'step-label', text: label }), detail ? h('span', { class: 'step-detail', text: detail, title: detail }) : null);
+  const row = h('li', { class: `step${m.error ? ' failed' : ''}` }, stepIcon(icon), h('span', { class: 'step-label', text: label }),
+    detail ? h('span', { class: 'step-detail', text: detail, title: detail }) : null,
+    h('span', { class: 'step-failed', text: 'fehlgeschlagen' }));
+  if (m.id) row.dataset.id = m.id;
+  return row;
+}
+
+// Satz und Bildvorschau einer Schrittgruppe neu setzen (neuer Schritt oder Ergebnis eines Schritts).
+function refreshStepGroup(group) {
+  group.querySelector('.steps-count').textContent = stepSummary(group._steps);
+  const img = lastImage(group._steps);
+  if (!img || group.dataset.thumb === img) return;
+  group.dataset.thumb = img;
+  api.imageThumb(img).then((url) => {
+    if (!url || group.dataset.thumb !== img) return;
+    const pic = h('button', { class: 'steps-thumb', 'aria-label': 'Bild öffnen', title: img }, h('img', { src: url, alt: '' }));
+    pic.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); api.fsOpen(img); });
+    fill(group.querySelector('.steps-thumb-slot'), pic);
+  });
+}
+
+// Ergebnis eines Werkzeugs: ist es fehlgeschlagen, wird der Schritt rot markiert und der Satz zählt es mit.
+function markStepResult(id, error) {
+  const m = ui.messages.find((x) => x.kind === 'tool' && x.id === id);
+  if (!m || !error) return;
+  m.error = true;
+  const row = document.querySelector(`.step[data-id="${CSS.escape(id)}"]`);
+  if (!row) return;
+  row.classList.add('failed');
+  const group = row.closest('.steps');
+  if (group) refreshStepGroup(group);
 }
 
 // Aufeinanderfolgende Arbeitsschritte landen in einer aufklappbaren Gruppe; zu sieht man den neuesten.
 function addStep(box, typing, m) {
   let group = typing.previousElementSibling;
   if (!group || !group.classList.contains('steps')) {
-    group = h('details', { class: 'steps' }, h('summary', {}, h('span', { class: 'steps-count' }), h('span', { class: 'steps-last' })), h('ol', { class: 'steps-list' }));
-    group.dataset.count = '0';
+    group = h('details', { class: 'steps' }, h('summary', {}, h('span', { class: 'steps-count' }), h('span', { class: 'steps-thumb-slot' })), h('ol', { class: 'steps-list' }));
+    group._steps = [];
     box.insertBefore(group, typing);
   }
-  const count = Number(group.dataset.count) + 1;
-  group.dataset.count = String(count);
-  const row = stepRow(m);
-  group.querySelector('.steps-list').append(row);
-  group.querySelector('.steps-count').textContent = count === 1 ? '1 Schritt' : `${count} Schritte`;
-  fill(group.querySelector('.steps-last'), [...row.cloneNode(true).childNodes]);
+  group._steps.push(m);
+  group.querySelector('.steps-list').append(stepRow(m));
+  refreshStepGroup(group);
 }
+
+// „Arbeitet“-Zeile wie in der Claude-App: was Claude gerade tut und seit wann.
+function updateTyping() {
+  const typing = $('#typing');
+  if (!typing || typing.hidden) return;
+  let current = null;
+  for (let i = ui.messages.length - 1; i >= 0 && ui.messages[i].kind !== 'user'; i -= 1) {
+    if (ui.messages[i].kind === 'tool') { current = ui.messages[i]; break; }
+  }
+  const [, label] = current ? stepInfo(current.tool) : [null, null];
+  const text = current ? `${label}${current.detail ? ` ${current.detail}` : ''}` : 'Claude denkt nach …';
+  const since = ui.state && ui.state.chat && ui.state.chat.busySince;
+  const t = typing.querySelector('.typing-text');
+  if (t.textContent !== text) t.textContent = text;
+  typing.querySelector('.typing-time').textContent = since ? elapsedText(Date.now() - since) : '';
+}
+setInterval(() => { if (ui.view === 'chat' && chatBusy()) updateTyping(); }, 1000);
 
 // Hängt nur neue Nachrichten an; bestehende bleiben unberührt (Markierung bleibt erhalten).
 function renderMessages() {
@@ -817,6 +915,7 @@ function renderMessages() {
     ui.shown = ui.messages.length;
   }
   typing.hidden = !chatBusy() || chatApprovals().length > 0;
+  updateTyping();
   if (nearBottom || ui.forceScroll) box.scrollTop = box.scrollHeight;
   ui.forceScroll = false;
 }
@@ -824,7 +923,7 @@ function renderMessages() {
 // stay: true = in der aktuellen Ansicht bleiben (z. B. der n8n-Assistent zeigt den Chat selbst an).
 async function sendMessage(text, { stay = false } = {}) {
   if (ui.state && ui.state.chat && ui.chatGen !== ui.state.chat.gen) resetChat(ui.state.chat.gen, []);
-  ui.messages.push({ kind: 'user', text });
+  ui.messages.push({ kind: 'user', text, at: Date.now() });
   ui.forceScroll = true;
   if (stay) notifyChatMirror();
   else if (ui.view !== 'chat') setView('chat'); else renderMessages();
@@ -843,10 +942,11 @@ function notifyChatMirror() {
 api.onChatEvent((ev) => {
   if (ev.gen !== ui.chatGen) return; // Ereignis eines früheren Chats
   if (ev.kind === 'text') ui.messages.push({ kind: 'assistant', text: ev.text });
-  else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', text: ev.text, tool: ev.tool, detail: ev.detail });
+  else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', id: ev.id, text: ev.text, tool: ev.tool, detail: ev.detail, path: ev.path });
+  else if (ev.kind === 'toolResult') { markStepResult(ev.id, ev.error); renderChatInfo(); return; }
   else if (ev.kind === 'error') ui.messages.push({ kind: 'error', text: ev.text, details: ev.details });
   else return;
-  if (ui.view === 'chat') renderMessages();
+  if (ui.view === 'chat') { renderMessages(); if (ev.kind === 'tool') renderChatInfo(); }
   else notifyChatMirror();
 });
 
@@ -933,6 +1033,7 @@ function renderAside(force) {
   const s = ui.state;
   const minute = Math.floor(Date.now() / 60000);
   renderApprovals();
+  renderChatInfo();
   // Beim Umbenennen nicht neu zeichnen – sonst wäre der halb getippte Name weg.
   if (!force && ui.chatRename) return;
   if (!force && !changed('aside', [s.chat, s.chats, s.tasks, s.claude.found, minute, (s.approvals || []).length, ui.chatMenu, ui.chatRename])) return;

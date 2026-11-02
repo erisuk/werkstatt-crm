@@ -91,7 +91,7 @@ test('readMessages mit Schritten: Reihenfolge wie live, ohne Skill-Text, Zusamme
   assert.deepStrictEqual(readMessages(file, 200, { tools: true }), [
     { role: 'user', text: 'Mach das' },
     { role: 'assistant', text: 'Ich schaue nach.' },
-    { role: 'tool', tool: 'Read', detail: 'b.js' },
+    { role: 'tool', tool: 'Read', detail: 'b.js', path: '/a/b.js' },
     { role: 'assistant', text: 'Gefunden.' },
   ]);
 });
@@ -207,7 +207,7 @@ test('beim Beenden unterbrochene Aufgabe wird als Fehler angezeigt', () => {
 
 test('simplify übersetzt stream-json Ereignisse', () => {
   assert.deepStrictEqual(simplify({ type: 'system', subtype: 'init', session_id: 's1', model: 'm' }),
-    [{ kind: 'init', sessionId: 's1', model: 'm', servers: null }]);
+    [{ kind: 'init', sessionId: 's1', model: 'm', servers: null, mcp: null }]);
   assert.deepStrictEqual(simplify({ type: 'assistant', message: { content: [
     { type: 'text', text: 'Hi' }, { type: 'tool_use', name: 'Bash', input: { command: 'ls -la\nzweite' } }] } }),
   [{ kind: 'text', text: 'Hi' }, { kind: 'tool', text: 'Bash · ls -la', tool: 'Bash', detail: 'ls -la' }]);
@@ -644,4 +644,33 @@ test('Chat: merkt neu verbundene Konnektoren und startet beim nächsten Senden m
   } finally {
     await chat.stop();
   }
+});
+
+test('simplify: Schritt-Ergebnis, Kontext-Füllstand und Fenstergröße', () => {
+  assert.deepStrictEqual(simplify({ type: 'user', message: { content: [
+    { type: 'tool_result', tool_use_id: 't1', is_error: true }, { type: 'tool_result', tool_use_id: 't2' }, { type: 'text', text: 'x' }] } }),
+  [{ kind: 'toolResult', id: 't1', error: true }, { kind: 'toolResult', id: 't2', error: false }]);
+  const a = simplify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'u1', name: 'Read', input: { file_path: '/x/bild.png' } }],
+    usage: { input_tokens: 2, cache_read_input_tokens: 23134, cache_creation_input_tokens: 57125 } } });
+  assert.deepStrictEqual(a.map((x) => x.kind), ['tool', 'usage']);
+  assert.strictEqual(a[0].id, 'u1');
+  assert.strictEqual(a[0].path, '/x/bild.png');
+  assert.strictEqual(a[1].context, 80261);
+  // Unteragenten zählen nicht zum Füllstand des Hauptchats
+  assert.deepStrictEqual(simplify({ type: 'assistant', parent_tool_use_id: 'p', message: { content: [], usage: { input_tokens: 5 } } }), []);
+  assert.deepStrictEqual(simplify({ type: 'result', modelUsage: { 'claude-opus-5-5': { contextWindow: 1000000 } } }), [{ kind: 'window', contextWindow: 1000000 }]);
+});
+
+test('readMessages: fehlgeschlagene Schritte und Zeitpunkt der eigenen Nachricht', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verlauf-'));
+  const file = path.join(dir, 's.jsonl');
+  fs.writeFileSync(file, [
+    { type: 'user', timestamp: '2026-11-02T10:00:00.000Z', message: { role: 'user', content: 'Mach das' } },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'false' } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'b1', is_error: true }] } },
+  ].map((x) => JSON.stringify(x)).join('\n'));
+  const m = readMessages(file, 50, { tools: true });
+  assert.strictEqual(m[0].at, Date.parse('2026-11-02T10:00:00.000Z'));
+  assert.strictEqual(m[1].error, true);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

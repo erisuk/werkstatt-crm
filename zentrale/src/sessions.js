@@ -173,18 +173,29 @@ function readMessages(file, limit = 200, { tools = false } = {}) {
     text = fs.readFileSync(file, 'utf8');
   }
   const out = [];
+  const steps = new Map(); // tool_use_id → Schritt, um Fehlschläge nachzutragen
   for (const o of parseLines(text)) {
     if (o.isSidechain || !o.message) continue;
     if (o.type === 'user') {
+      if (tools && Array.isArray(o.message.content)) {
+        for (const b of o.message.content) if (b && b.type === 'tool_result' && b.is_error === true && steps.has(b.tool_use_id)) steps.get(b.tool_use_id).error = true;
+      }
       // Von Claude Code eingefügte Texte (Skill-Inhalt, Zusammenfassung nach /compact) zeigt der Live-Chat auch nicht.
       if (o.isMeta || o.isCompactSummary) continue;
       const t = textOf(o.message.content);
-      if (isRealPrompt(t)) out.push({ role: 'user', text: t.trim() });
+      const at = Date.parse(o.timestamp);
+      if (isRealPrompt(t)) out.push(at ? { role: 'user', text: t.trim(), at } : { role: 'user', text: t.trim() });
     } else if (o.type === 'assistant' && Array.isArray(o.message.content)) {
       // Blöcke in ihrer Reihenfolge – wie im laufenden Chat (Text, dann Schritte, dann wieder Text).
       for (const b of o.message.content) {
         if (!b) continue;
-        if (b.type === 'tool_use') { if (tools) out.push({ role: 'tool', ...toolStep(b.name, b.input) }); continue; }
+        if (b.type === 'tool_use') {
+          if (!tools) continue;
+          const step = { role: 'tool', ...toolStep(b.name, b.input) };
+          if (b.id) steps.set(b.id, step);
+          out.push(step);
+          continue;
+        }
         const t = b.type === 'text' && typeof b.text === 'string' ? b.text.trim() : '';
         if (!t) continue;
         const last = out[out.length - 1];

@@ -27,7 +27,10 @@ function stepDetail(name, input) {
 
 function toolStep(name, input) {
   const tool = String(name || 'Werkzeug');
-  return { tool, detail: stepDetail(tool, input) };
+  const i = input && typeof input === 'object' ? input : {};
+  const file = /^(Read|Write|Edit|MultiEdit|NotebookEdit)$/.test(tool) ? String(i.file_path || i.notebook_path || '') : '';
+  // Der volle Pfad nur bei Dateien: für Bildvorschau und die Liste „Ausgaben“.
+  return file ? { tool, detail: stepDetail(tool, input), path: file } : { tool, detail: stepDetail(tool, input) };
 }
 
 module.exports = { toolStep, stepDetail };
