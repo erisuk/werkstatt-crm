@@ -8,6 +8,7 @@ const os = require('os');
 const path = require('path');
 const { toolStep } = require('./tool-steps');
 const { contextTokens } = require('./usage');
+const { cleanQuestions, answersFor } = require('./questions');
 
 function execText(cmd, args, opts) {
   return new Promise((resolve) => {
@@ -270,6 +271,7 @@ function mainMemoryDir(home = os.homedir()) {
 }
 
 const CHAT_QUESTION_TOOLS = new Set(['AskUserQuestion']);
+// Ohne jemanden, der antwortet (tägliche Aufgaben), fragt Claude stattdessen im Text.
 const CHAT_QUESTION_HINT = 'Stell diese Frage stattdessen als normale Chat-Nachricht (kurz, mit den Möglichkeiten als '
   + 'Liste) und beende deine Antwort – Eris antwortet in der nächsten Nachricht. Erwähne nicht, dass das Auswahl-Werkzeug fehlt.';
 
@@ -307,8 +309,9 @@ const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 class ClaudeChat extends EventEmitter {
   constructor({ bin, env, cwd, resume = null, permissionMode = null, title = null,
-    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null, allowAll = () => false }) {
+    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null, allowAll = () => false, askQuestions = false }) {
     super();
+    this.askQuestions = askQuestions; // true = Auswahlfragen als Karte zeigen (nur wo Eris zuschaut)
     this.allowAll = allowAll; // true = jede Anfrage sofort erlauben (Einstellung „Ohne Rückfrage arbeiten“)
     this.bin = bin;
     this.approvalInfo = approvalInfo;
@@ -352,8 +355,8 @@ class ClaudeChat extends EventEmitter {
   }
 
   pendingApprovals() {
-    return [...this.approvals.values()].map(({ id, tool, title, detail, canAlways, truncated, createdAt }) =>
-      ({ id, tool, title, detail, canAlways, truncated, createdAt }));
+    return [...this.approvals.values()].map(({ id, tool, kind, questions, title, detail, canAlways, truncated, createdAt }) =>
+      ({ id, tool, kind, questions, title, detail, canAlways, truncated, createdAt }));
   }
 
   clearApprovals() {
@@ -375,11 +378,19 @@ class ClaudeChat extends EventEmitter {
       this.write({ type: 'control_response', response: { subtype: 'error', request_id: ev.request_id, error: 'Nicht unterstützt' } });
       return;
     }
-    // Auswahlfragen kann die Zentrale nicht als Formular zeigen – „erlauben“ hieße: Claude rät die Antwort.
-    // Stattdessen fragt Claude ganz normal im Chat, und Eris antwortet mit der nächsten Nachricht.
+    // Auswahlfragen nie einfach „erlauben“ – dann hätte Claude keine Antwort und würde raten.
+    // Im Chat zeigt die Zentrale sie als Karte wie die Claude-App; ohne Zuschauer fragt Claude im Text.
     if (CHAT_QUESTION_TOOLS.has(req.tool_name)) {
-      this.write({ type: 'control_response', response: { subtype: 'success', request_id: ev.request_id,
-        response: { behavior: 'deny', message: CHAT_QUESTION_HINT } } });
+      const questions = this.askQuestions ? cleanQuestions(req.input) : [];
+      if (!questions.length) {
+        this.write({ type: 'control_response', response: { subtype: 'success', request_id: ev.request_id,
+          response: { behavior: 'deny', message: CHAT_QUESTION_HINT } } });
+        return;
+      }
+      this.approvals.set(ev.request_id, { id: ev.request_id, tool: req.tool_name, kind: 'question', questions,
+        title: questions.length > 1 ? 'Claude hat Fragen an dich' : 'Claude hat eine Frage an dich', detail: '',
+        canAlways: false, truncated: false, input: req.input || {}, createdAt: Date.now() });
+      this.emit('approvals');
       return;
     }
     const key = approvalKey(req.tool_name, req.input);
@@ -405,7 +416,20 @@ class ClaudeChat extends EventEmitter {
   // Alle offenen Rückfragen auf einmal erlauben (wenn „Ohne Rückfrage arbeiten“ eingeschaltet wird).
   // Auch zu lange: Neue Anfragen erlaubt handleControl dann ebenfalls ungesehen – ein „abgelehnt“ wäre gelogen.
   allowPending() {
-    for (const id of [...this.approvals.keys()]) this.respond(id, 'allow', { unseen: true });
+    for (const a of [...this.approvals.values()]) if (a.kind !== 'question') this.respond(a.id, 'allow', { unseen: true });
+  }
+
+  // Antwort auf eine Auswahlfrage. picks: pro Frage { labels, other }. false, wenn nicht alles beantwortet ist.
+  answer(id, picks) {
+    const a = this.approvals.get(id);
+    if (!a || a.kind !== 'question') return false;
+    const answers = answersFor(a.questions, picks);
+    if (!answers) return false;
+    this.approvals.delete(id);
+    this.write({ type: 'control_response', response: { subtype: 'success', request_id: id,
+      response: { behavior: 'allow', updatedInput: { ...a.input, answers } } } });
+    this.emit('approvals');
+    return true;
   }
 
   // decision: 'allow' | 'always' | 'deny'. Was nicht vollständig angezeigt werden konnte, lässt sich nur ablehnen
@@ -413,6 +437,16 @@ class ClaudeChat extends EventEmitter {
   respond(id, decision, { unseen = false } = {}) {
     const a = this.approvals.get(id);
     if (!a) return false;
+    // Fragen lassen sich nur beantworten (answer) oder überspringen – „erlauben“ ohne Antwort ginge ins Leere.
+    if (a.kind === 'question') {
+      if (decision !== 'deny') return false;
+      this.approvals.delete(id);
+      this.write({ type: 'control_response', response: { subtype: 'success', request_id: id,
+        response: { behavior: 'deny', message: 'Eris hat die Frage übersprungen. Frag nicht noch einmal dasselbe – '
+          + 'mach mit der sinnvollsten Annahme weiter und sag kurz, welche du genommen hast.' } } });
+      this.emit('approvals');
+      return true;
+    }
     this.approvals.delete(id);
     const allow = (decision === 'allow' || decision === 'always') && (!a.truncated || unseen === true);
     if (decision === 'always' && allow && a.canAlways) this.alwaysAllow.add(a.key);

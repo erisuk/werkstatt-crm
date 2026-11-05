@@ -6,6 +6,7 @@ const { parseCommits, parsePr, createChatEnv } = require('../src/chat-env');
 test('Schritte als Satz wie in der Claude-App', () => {
   assert.strictEqual(stepSummary([{ tool: 'Bash' }, { tool: 'Bash', error: true }]), 'Ausgeführt 2 Befehle (1 fehlgeschlagen)');
   assert.strictEqual(stepSummary([{ tool: 'Bash' }, { tool: 'Read', detail: 'v19_ui.png' }]), 'Ausgeführt einen Befehl, las v19_ui.png');
+  assert.strictEqual(stepSummary([{ tool: 'AskUserQuestion', detail: 'Welche Farbe?' }]), 'Fragte dich');
   assert.strictEqual(stepSummary([{ tool: 'Read', detail: 'a.js' }, { tool: 'Read', detail: 'b.js' }, { tool: 'Read', detail: 'c.js' }]), 'Las 3 Dateien');
   assert.strictEqual(stepSummary([{ tool: 'Edit', detail: 'app.js' }, { tool: 'Edit', detail: 'app.js' }]), 'Bearbeitete app.js');
   assert.strictEqual(stepSummary([{ tool: 'Grep', detail: 'TODO' }]), 'Suchte nach „TODO“');

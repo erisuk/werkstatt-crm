@@ -283,7 +283,9 @@ function setup() {
       if (win && win.isVisible() && win.isFocused()) continue;
       if (process.platform === 'darwin' && app.dock) app.dock.bounce('informational');
       if (Notification.isSupported()) {
-        const n = new Notification({ title: 'Claude braucht deine Freigabe', body: `${a.title} · ${a.source}` });
+        const head = a.kind === 'question' ? 'Claude hat eine Frage' : 'Claude braucht deine Freigabe';
+        const what = a.kind === 'question' && a.questions && a.questions[0] ? a.questions[0].question : a.title;
+        const n = new Notification({ title: head, body: `${what} · ${a.source}`.slice(0, 240) });
         liveNotifications.add(n);
         const drop = () => liveNotifications.delete(n);
         n.on('click', () => { drop(); if (!win) createWindow(); win.show(); win.focus(); });
@@ -433,7 +435,7 @@ function setup() {
     // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
     const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
     const args = agent ? () => [...extraArgs(), '--agent', agent] : extraArgs;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll });
+    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true });
     c.gen = gen;
     c.lastActive = Date.now();
     chat = c;
@@ -637,6 +639,15 @@ function setup() {
     const decision = args && ['allow', 'always', 'deny'].includes(args.decision) ? args.decision : null;
     if (!id || !decision) return false;
     for (const c of [...allChats(), ...taskChats.keys()]) if (c.respond(id, decision)) return true;
+    return false;
+  });
+
+  // Antwort auf eine Auswahlfrage (Karte im Chat). picks: pro Frage { labels: [...], other: '…' }.
+  ipcMain.handle('question-answer', (_e, args) => {
+    const id = args && typeof args.id === 'string' ? args.id : null;
+    const picks = args && Array.isArray(args.picks) ? args.picks.slice(0, 4) : null;
+    if (!id || !picks) return false;
+    for (const c of [...allChats(), ...taskChats.keys()]) if (c.answer(id, picks)) return true;
     return false;
   });
 

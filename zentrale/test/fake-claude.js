@@ -27,7 +27,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const msg = JSON.parse(line);
   if (msg.type === 'control_response') {
     if (waiting && msg.response.request_id === waiting.id) {
-      if (waiting.ask) { const r = msg.response.response; const done = waiting.done; waiting = null; done(`${r.behavior}:${r.message || ''}`); return; }
+      if (waiting.ask) { const r = msg.response.response; const done = waiting.done; waiting = null; done(`${r.behavior}:${r.message || JSON.stringify((r.updatedInput || {}).answers || {})}`); return; }
       const allowed = msg.response.response.behavior === 'allow';
       const done = waiting.done;
       waiting = null;
@@ -52,7 +52,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     const id = `req-ask-${process.pid}-${Date.now()}`;
     waiting = { id, done: answer, ask: true };
     out({ type: 'control_request', request_id: id, request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion',
-      input: { questions: [{ question: text.slice('AUSWAHL:'.length), options: [{ label: 'A' }, { label: 'B' }] }] } } });
+      input: { questions: [{ question: text.slice('AUSWAHL:'.length), header: 'Wahl', options: [{ label: 'A', description: 'erste' }, { label: 'B' }] }] } } });
     return;
   }
   if (text.startsWith('FREIGABE:')) {
