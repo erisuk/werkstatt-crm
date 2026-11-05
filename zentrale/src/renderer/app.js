@@ -214,6 +214,7 @@ function trashIcon() {
 // ---------- Freigaben ----------
 
 function approvalCard(a, compact) {
+  if (a.kind === 'question' && Array.isArray(a.questions) && a.questions.length) return questionCard(a, compact);
   const busy = { done: false };
   const decide = async (decision) => {
     if (busy.done) return;

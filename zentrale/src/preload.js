@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   stopChat: () => ipcRenderer.invoke('stop-chat'),
   closeChat: (sessionId) => ipcRenderer.invoke('chat-close', sessionId),
   respondApproval: (id, decision) => ipcRenderer.invoke('approval-respond', { id, decision }),
+  answerQuestion: (id, picks) => ipcRenderer.invoke('question-answer', { id, picks }),
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   saveTask: (task) => ipcRenderer.invoke('tasks-save', task),
   toggleTask: (id) => ipcRenderer.invoke('tasks-toggle', id),

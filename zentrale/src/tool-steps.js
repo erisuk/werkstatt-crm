@@ -22,6 +22,7 @@ function stepDetail(name, input) {
   if (name === 'WebSearch') return firstLine(i.query);
   if (name === 'Task' || name === 'Agent') return firstLine(i.description || i.subagent_type);
   if (name === 'Skill') return firstLine(i.skill || i.command);
+  if (name === 'AskUserQuestion' && Array.isArray(i.questions) && i.questions[0]) return firstLine(i.questions[0].question);
   return firstLine(i.description || i.file_path || i.path || i.url || i.query || i.command || i.title || i.name || '');
 }
 

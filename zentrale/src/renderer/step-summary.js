@@ -37,6 +37,7 @@ function categoryOf(tool) {
   if (t === 'WebSearch') return 'websearch';
   if (t === 'Task' || t === 'Agent') return 'agent';
   if (t === 'TodoWrite') return 'todo';
+  if (t === 'AskUserQuestion') return 'ask';
   if (t.startsWith('mcp__')) return `mcp:${serverName(t)}`;
   return `other:${t || 'Werkzeug'}`;
 }
@@ -53,6 +54,7 @@ function phrase(cat, steps) {
   if (cat === 'websearch') return n === 1 ? 'suchte im Netz' : `suchte ${n}-mal im Netz`;
   if (cat === 'agent') return `beauftragte ${count(n, 'einen Agenten', 'Agenten')}`;
   if (cat === 'todo') return 'aktualisierte die Aufgabenliste';
+  if (cat === 'ask') return n === 1 ? 'fragte dich' : `fragte dich ${n}-mal`;
   const name = cat.slice(cat.indexOf(':') + 1);
   return n === 1 ? `nutzte ${name}` : `nutzte ${name} (${n}×)`;
 }
