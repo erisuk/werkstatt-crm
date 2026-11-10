@@ -953,12 +953,12 @@ api.onChatEvent((ev) => {
 
 // ---------- Seitenleiste rechts ----------
 
-const MAX_PARALLEL_CHATS = 3; // wie im Hauptprozess (Arbeitsspeicher)
-
 function chatPill(c) {
   if (c.waiting) return { pill: 'blue', text: 'wartet auf dich' };
   if (c.status === 'busy') return { pill: 'amber', text: 'arbeitet' };
   if (c.status === 'error') return { pill: 'red', text: 'Fehler' };
+  // Schläft: Prozess aus, Gespräch gespeichert – wacht beim nächsten Senden auf.
+  if (c.asleep) return { pill: 'grey', text: 'schläft', title: 'Spart Arbeitsspeicher. Wacht beim nächsten Schreiben mit dem ganzen Verlauf auf.' };
   return { pill: 'green', text: 'bereit' };
 }
 
@@ -974,7 +974,7 @@ function chatCard(c) {
     h('div', { class: 'top' },
       h('div', { class: 'claude-avatar', text: 'C' }),
       h('div', { class: 'grow' }, nameEl, h('div', { class: 'where', text: c.active ? `${c.name} · offen` : c.name })),
-      h('span', { class: `pill ${st.pill}`, text: st.text })),
+      h('span', { class: `pill ${st.pill}`, text: st.text, title: st.title || null })),
     h('div', { class: 'agent-actions' },
       h('button', { class: 'link start', 'data-focus': `aside-chat:${c.sessionId}`, onClick: open }, c.active ? 'Zum Chat' : 'Öffnen'),
       h('button', { class: 'icon-btn more-btn', 'aria-label': `Funktionen für „${c.title}“`, 'aria-expanded': String(menuOpen),
@@ -1041,8 +1041,8 @@ function renderAside(force) {
   if (!force && ui.chatRename) return;
   if (!force && !changed('aside', [s.chat, s.chats, s.tasks, s.claude.found, minute, (s.approvals || []).length, ui.chatMenu, ui.chatRename])) return;
   const agents = (s.chats || []).map(chatCard);
-  if ((s.chats || []).length >= MAX_PARALLEL_CHATS) {
-    agents.push(h('div', { class: 'sub agents-limit', text: `Mehr als ${MAX_PARALLEL_CHATS} Chats gleichzeitig gehen nicht – für einen neuen schließt sich der am längsten untätige.` }));
+  if ((s.chats || []).some((c) => c.asleep)) {
+    agents.push(h('div', { class: 'sub agents-limit', text: 'Höchstens 5 Chats sind gleichzeitig wach. Untätige schlafen nach 10 Minuten ein und wachen beim Schreiben wieder auf.' }));
   }
   for (const t of s.tasks.filter((x) => x.running)) {
     agents.push(h('div', { class: 'card agent' },

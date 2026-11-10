@@ -197,8 +197,8 @@ function setup() {
     return projectsCache;
   }
 
-  // Bis zu drei Gespräche laufen gleichzeitig: `chat` ist das sichtbare, die anderen parken in `pool`
-  // und arbeiten im Hintergrund weiter (src/chat-pool.js).
+  // Viele Gespräche gleichzeitig: `chat` ist das sichtbare, die anderen parken in `pool` und arbeiten im
+  // Hintergrund weiter. Höchstens 5 sind wach, untätige schlafen ein (src/chat-pool.js).
   const pool = new ChatPool();
   const lastKnown = { window: null, mcp: null }; // aus irgendeinem Chat oder der Konnektoren-Prüfung
   // Die Fenstergröße (z. B. 1M) über Neustarts merken – sonst stimmen die Prozente erst nach der ersten Antwort.
@@ -261,6 +261,7 @@ function setup() {
     if (sentProjectsRev === projectsRev) delete s.projects; // unverändert: die Oberfläche behält ihre Liste
     else sentProjectsRev = projectsRev;
     send('state', s);
+    saveOpenChats();
   }
 
   // Mac-Mitteilung (Klick holt die Zentrale nach vorn). view: welche Ansicht dabei geöffnet werden soll.
@@ -432,13 +433,29 @@ function setup() {
       pushState();
       return chatInfo();
     }
+    const c = createChat({ cwd, sessionId, title });
+    c.gen = gen;
+    chat = c;
+    // Dasselbe Gespräch: den alten Prozess erst fertig beenden, sonst schreiben zwei Prozesse in dieselbe Datei.
+    // Sonst läuft der bisherige Chat im Hintergrund weiter.
+    if (old && old.sessionId === sessionId) await old.dispose().catch(() => {});
+    else pool.park(old);
+    pool.trim();
+    if (gen !== chatGen || chat !== c) return chatInfo();
+    // Sind schon 5 wach und alle beschäftigt, startet der Prozess erst beim Senden.
+    if (pool.wake(chat, c)) c.start();
+    pushState();
+    return chatInfo();
+  }
+
+  // Ein Chat mit allen Verbindungen zur Oberfläche – noch ohne laufenden Prozess.
+  function createChat({ cwd, sessionId = null, title = null }) {
     // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
     const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
     const args = agent ? () => [...extraArgs(), '--agent', agent] : extraArgs;
     const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true });
-    c.gen = gen;
+    c.gen = 0;
     c.lastActive = Date.now();
-    chat = c;
     c.on('event', (ev) => {
       if (ev.kind === 'window') rememberWindow(ev.contextWindow);
       if (ev.kind === 'init' && ev.mcp) lastKnown.mcp = ev.mcp;
@@ -459,19 +476,39 @@ function setup() {
       pushState();
     });
     c.on('approvals', onApprovalsChanged);
-    // Dasselbe Gespräch: den alten Prozess erst fertig beenden, sonst schreiben zwei Prozesse in dieselbe Datei.
-    // Sonst läuft der bisherige Chat im Hintergrund weiter.
-    if (old && old.sessionId === sessionId) await old.dispose().catch(() => {});
-    else pool.park(old);
-    pool.trim();
-    if (gen !== chatGen || chat !== c) return chatInfo();
-    c.start();
-    pushState();
-    return chatInfo();
+    return c;
   }
 
-  // Untätige Hintergrund-Chats nach 30 Minuten schließen – ihr Gespräch bleibt gespeichert.
+  // Untätige Hintergrund-Chats nach 10 Minuten einschläfern – sie bleiben in der Liste und wachen beim Senden auf.
   setInterval(() => { if (pool.sweep()) pushState(); }, 60 * 1000).unref();
+
+  // Offene Chats über einen Neustart der Zentrale retten: Sie kommen schlafend in die Liste zurück.
+  const OPEN_CHATS_FILE = () => path.join(app.getPath('userData'), 'offene-chats.json');
+  let savedChatsJson = null;
+  function saveOpenChats() {
+    if (!chatsRestored) return; // sonst überschriebe der Start die Liste, bevor sie gelesen ist
+    const json = JSON.stringify(pool.saved(chat));
+    if (json === savedChatsJson) return;
+    savedChatsJson = json;
+    try { fs.writeFileSync(OPEN_CHATS_FILE(), json); } catch { /* nur Bequemlichkeit */ }
+  }
+  let chatsRestored = false;
+  function restoreOpenChats() {
+    let list = [];
+    try { list = JSON.parse(fs.readFileSync(OPEN_CHATS_FILE(), 'utf8')); } catch { /* noch keine */ }
+    if (claude.bin && Array.isArray(list)) {
+      for (const e of list.slice(0, pool.max)) {
+        if (!e || typeof e.sessionId !== 'string' || pool.get(e.sessionId) || (chat && chat.sessionId === e.sessionId)) continue;
+        const session = findSession(e.sessionId);
+        if (!session || !isDir(session.cwd)) continue;
+        const c = createChat({ cwd: session.cwd, sessionId: e.sessionId, title: session.title });
+        try { c.context = lastContext(session.file); } catch { /* ohne Füllstand */ }
+        pool.park(c);
+      }
+    }
+    chatsRestored = !!claude.bin; // ohne Claude die gemerkte Liste nicht überschreiben
+    pushState();
+  }
 
   // Löst den offenen Chat (z. B. weil sein Gespräch gelöscht wird) und beendet ihn.
   async function detachChat() {
@@ -583,7 +620,7 @@ function setup() {
     let history = [];
     try { history = readMessages(session.file, 400, { tools: true }); } catch {}
     if (chat && chat.sessionId === sessionId) return { chat: chatInfo(), history };
-    if (!pool.get(sessionId) && !pool.hasRoom(chat)) return { error: pool.fullMessage() };
+    if (!pool.get(sessionId) && !pool.hasRoom(chat)) return { error: pool.listFullMessage() };
     const info = await openChat({ cwd: session.cwd, sessionId, title: session.title });
     // Füllstand gleich aus dem gespeicherten Gespräch – nicht erst nach der nächsten Antwort.
     if (chat && chat.sessionId === sessionId && !chat.context) {
@@ -599,7 +636,7 @@ function setup() {
     if (!isDir(cwd)) return { error: 'Dieser Ordner existiert nicht.' };
     await claudeReady;
     if (!claude.bin) return { error: 'Claude Code wurde nicht gefunden.' };
-    if (!pool.hasRoom(chat)) return { error: pool.fullMessage() };
+    if (!pool.hasRoom(chat)) return { error: pool.listFullMessage() };
     return { chat: await openChat({ cwd }), history: [] };
   });
 
@@ -613,6 +650,8 @@ function setup() {
     const gen = chatGen;
     if (!c) return { ok: false, error: 'Der Chat wurde geschlossen, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     if (!c.title) { c.title = shortTitle(t); pushState(); }
+    // Ein schlafender Chat wacht auf – dafür schläft notfalls ein anderer, untätiger ein.
+    if (!c.alive && !pool.wake(chat, c)) return { ok: false, error: pool.fullMessage() };
     const ok = await c.send(t);
     // Inzwischen gewechselt: Läuft der Chat im Hintergrund weiter, ist die Nachricht trotzdem angekommen.
     if (c !== chat && pool.get(c.sessionId) === c) return { ok, parked: true };
@@ -1998,6 +2037,7 @@ function setup() {
     pushState();
     scheduler.start();
     if (claude.bin) await openChat({ cwd: defaultCwd() });
+    restoreOpenChats();
   });
 
   app.on('activate', () => {
