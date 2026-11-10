@@ -309,8 +309,9 @@ const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 class ClaudeChat extends EventEmitter {
   constructor({ bin, env, cwd, resume = null, permissionMode = null, title = null,
-    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null, allowAll = () => false, askQuestions = false }) {
+    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null, allowAll = () => false, askQuestions = false, addDirs = [] }) {
     super();
+    this.addDirs = addDirs; // weitere Ordner, in denen Claude arbeiten darf (--add-dir)
     this.askQuestions = askQuestions; // true = Auswahlfragen als Karte zeigen (nur wo Eris zuschaut)
     this.allowAll = allowAll; // true = jede Anfrage sofort erlauben (Einstellung „Ohne Rückfrage arbeiten“)
     this.bin = bin;
@@ -464,6 +465,7 @@ class ClaudeChat extends EventEmitter {
       '--permission-mode', this.permissionMode, '--permission-prompt-tool', 'stdio',
       '--settings', safetySettings(this.permissionMode)];
     args.push(this.sessionSaved() ? '--resume' : '--session-id', this.sessionId);
+    for (const d of this.addDirs) args.push('--add-dir', d);
     args.push(...(this.extraArgs() || []));
     this.stderr = '';
     this.pending = 0;
@@ -527,6 +529,12 @@ class ClaudeChat extends EventEmitter {
       this.emit('event', { kind: 'error', text: explainExit(this.stderr), details });
       this.setStatus('error');
     });
+  }
+
+  // Weitere Ordner ändern: gilt ab der nächsten Nachricht (der Prozess startet dafür neu).
+  setAddDirs(dirs) {
+    this.addDirs = [...dirs];
+    if (this.alive) this.needsRestart = true;
   }
 
   // Verbindungen, die jetzt bereitstehen, die dieser Claude-Prozess beim Start aber noch nicht hatte

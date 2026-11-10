@@ -139,7 +139,28 @@ function envSection(c, env) {
     if (env.repo && env.repo !== c.name) rows.push(infoRow('▣', env.repo, { title: 'Git-Projekt' }));
     if (env.branch) rows.push(infoRow('⑂', env.branch, { title: 'Branch' }));
   }
+  for (const d of c.addDirs || []) rows.push(extraDirRow(d));
+  rows.push(h('button', { class: 'link info-add', 'data-focus': 'info-add-dir', title: 'Claude arbeitet dann auch in diesem Ordner',
+    onClick: addChatFolder }, '+ Ordner hinzufügen'));
   return infoSection('Umgebung', ...rows);
+}
+
+// Ein weiterer Ordner: Name, Verknüpfung (🔗 = kommt bei jedem neuen Chat in diesem Projekt mit), entfernen.
+function extraDirRow(d) {
+  return h('div', { class: 'info-row extra-dir' },
+    h('span', { class: 'info-icon', 'aria-hidden': 'true', text: '+' }),
+    h('button', { class: 'info-label link-plain', title: `${d.path}\nIm Finder zeigen`, onClick: () => api.fsReveal(d.path) }, d.name),
+    h('button', { class: `dir-link${d.linked ? ' on' : ''}`, 'data-focus': `dir-link:${d.path}`, 'aria-pressed': String(!!d.linked),
+      title: d.linked ? 'Verknüpft: kommt bei jedem neuen Chat in diesem Projekt mit. Klicken zum Lösen.' : 'Mit diesem Projekt verknüpfen: kommt dann bei jedem neuen Chat hier mit',
+      onClick: () => api.chatFolderLink(d.path, !d.linked) }, d.linked ? 'verknüpft' : 'verknüpfen'),
+    h('button', { class: 'dir-remove', 'aria-label': `${d.name} aus dem Chat nehmen`, 'data-focus': `dir-remove:${d.path}`,
+      onClick: () => api.chatFolderRemove(d.path) }, '×'));
+}
+
+async function addChatFolder() {
+  const link = confirm('Soll dieser Ordner dauerhaft mit dem Projekt verknüpft werden?\n\nOK = auch jeder neue Chat in diesem Projekt sieht ihn.\nAbbrechen = nur in diesem Chat.');
+  const res = await api.chatFolderAdd(link);
+  if (res && res.error) alert(res.error);
 }
 
 function renderChatInfo() {
@@ -154,6 +175,6 @@ function renderChatInfo() {
   loadChatEnv(c.cwd);
   const env = ui.chatEnv && ui.chatEnv.cwd === c.cwd ? ui.chatEnv : null;
   const outs = chatOutputs();
-  if (!changed('chatInfo', [c.cwd, c.context, c.mcp, outs, env, ui.chatInfoMore])) return;
+  if (!changed('chatInfo', [c.cwd, c.context, c.mcp, c.addDirs, outs, env, ui.chatInfoMore])) return;
   keepFocus(() => fill(box, envSection(c, env), contextSection(c), connectorsSection(c), outputsSection(), changesSection(env)));
 }

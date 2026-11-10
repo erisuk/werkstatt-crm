@@ -932,3 +932,14 @@ h2 { font-size: 16px; font-weight: 600; }
   .bv-detail-innen { grid-template-columns: 240px minmax(0, 1fr); }
   .bv-film video, .bv-film-leer { width: 100%; max-height: none; }
 }
+
+/* Weitere Ordner im Chat (Umgebung) */
+.extra-dir { gap: 8px; }
+.link-plain { border: 0; background: none; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.link-plain:hover { text-decoration: underline; }
+.dir-link { flex-shrink: 0; border: 1px solid var(--border-strong); background: none; color: var(--text-2); font-size: 12px; padding: 2px 8px; border-radius: 999px; cursor: pointer; }
+.dir-link:hover { border-color: var(--accent); color: var(--accent-text); }
+.dir-link.on { background: var(--pill-blue-bg); color: var(--pill-blue); border-color: transparent; }
+.dir-remove { flex-shrink: 0; width: 22px; height: 22px; border: 0; border-radius: 6px; background: none; color: var(--text-2); font-size: 15px; cursor: pointer; }
+.dir-remove:hover { background: var(--fill); color: var(--text); }
+.info-add { align-self: flex-start; margin-top: 4px; font-size: 13px; }

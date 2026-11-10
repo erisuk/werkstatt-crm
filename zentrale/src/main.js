@@ -51,6 +51,7 @@ const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
 const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
 const { CHATS_TOOLS } = require('./mcp/chats-server');
 const { createChatLink } = require('./chat-link');
+const folderLinks = require('./folder-links');
 const kommentare = require('./kommentare');
 const bitvideos = require('./bitvideos');
 
@@ -229,8 +230,15 @@ function setup() {
       busySince: chat.status === 'busy' ? chat.busySince || null : null,
       // Bis der Chat selbst geantwortet hat: Fenstergröße und Konnektoren vom letzten Chat bzw. der letzten Prüfung.
       context: chat.context ? { used: chat.context, window: chat.contextWindow || knownWindow(), baseline: chat.baseline || null } : null,
-      mcp: chat.mcp || lastKnown.mcp };
+      mcp: chat.mcp || lastKnown.mcp,
+      addDirs: (chat.addDirs || []).map((d) => ({ path: d, name: path.basename(d), linked: folderLinks.linked(loadLinks(), chatKey(chat.cwd)).includes(d) })) };
   }
+
+  // Verknüpfte Ordner (src/folder-links.js) – Schlüssel ist der volle Pfad des Projektordners.
+  const LINKS_FILE = () => path.join(app.getPath('userData'), 'ordner-verknuepfungen.json');
+  const chatKey = (cwd) => path.resolve(cwd);
+  function loadLinks() { return folderLinks.load(LINKS_FILE()); }
+  function saveLinks(links) { try { folderLinks.save(LINKS_FILE(), links); return true; } catch { return false; } }
 
   // Einstellung „Ohne Rückfrage arbeiten“: Claude darf alles, ohne zu fragen (Standard, Eris' Wunsch).
   function allowAll() {
@@ -493,12 +501,15 @@ function setup() {
   }
 
   // Ein Chat mit allen Verbindungen zur Oberfläche – noch ohne laufenden Prozess.
-  function createChat({ cwd, sessionId = null, title = null }) {
+  function createChat({ cwd, sessionId = null, title = null, addDirs = [] }) {
     // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
     const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
     let c = null;
     const args = () => withChatsServer([...extraArgs(), ...(agent ? ['--agent', agent] : [])], c);
-    c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true });
+    // Verknüpfte Projekte kommen immer mit, dazu die Ordner, die der Chat schon hatte.
+    const dirs = folderLinks.mergeDirs(chatKey(cwd), folderLinks.linked(loadLinks(), chatKey(cwd)), addDirs)
+      .filter((d) => folderLinks.cleanDir(d));
+    c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true, addDirs: dirs });
     c.gen = 0;
     c.lastActive = Date.now();
     c.on('event', (ev) => {
@@ -546,7 +557,7 @@ function setup() {
         if (!e || typeof e.sessionId !== 'string' || pool.get(e.sessionId) || (chat && chat.sessionId === e.sessionId)) continue;
         const session = findSession(e.sessionId);
         if (!session || !isDir(session.cwd)) continue;
-        const c = createChat({ cwd: session.cwd, sessionId: e.sessionId, title: session.title });
+        const c = createChat({ cwd: session.cwd, sessionId: e.sessionId, title: session.title, addDirs: Array.isArray(e.addDirs) ? e.addDirs : [] });
         try { c.context = lastContext(session.file); } catch { /* ohne Füllstand */ }
         pool.park(c);
       }
@@ -715,6 +726,44 @@ function setup() {
     const c = typeof sessionId === 'string' ? pool.get(sessionId) : null;
     if (!c) return false;
     pool.close(c);
+    pushState();
+    return true;
+  });
+
+  // Weiteren Ordner zum offenen Chat holen (Auswahl im Finder). link: dauerhaft mit dem Projekt verknüpfen.
+  ipcMain.handle('chat-folder-add', async (_e, args) => {
+    const c = chat;
+    if (!c) return { error: 'Kein Chat offen.' };
+    const res = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: 'Ordner zum Chat hinzufügen',
+      buttonLabel: 'Hinzufügen', defaultPath: os.homedir() });
+    if (res.canceled || !res.filePaths[0]) return { canceled: true };
+    const dir = folderLinks.cleanDir(res.filePaths[0]);
+    if (!dir) return { error: 'Nur normale Ordner in deinem Benutzerordner – keine versteckten und nicht der ganze Benutzerordner.' };
+    if (dir === chatKey(c.cwd)) return { error: 'Das ist schon der Ordner dieses Chats.' };
+    const dirs = folderLinks.mergeDirs(chatKey(c.cwd), c.addDirs, [dir]);
+    if (!dirs.includes(dir)) return { error: `Höchstens ${folderLinks.MAX_DIRS} weitere Ordner pro Chat.` };
+    c.setAddDirs(dirs);
+    if (args && args.link === true) saveLinks(folderLinks.link(loadLinks(), chatKey(c.cwd), dir));
+    pushState();
+    return { ok: true, chat: chatInfo() };
+  });
+
+  // Ordner aus dem Chat nehmen – und die Verknüpfung lösen, sonst käme er beim nächsten Chat wieder.
+  ipcMain.handle('chat-folder-remove', (_e, dir) => {
+    const c = chat;
+    if (!c || typeof dir !== 'string' || !c.addDirs.includes(dir)) return false;
+    c.setAddDirs(c.addDirs.filter((d) => d !== dir));
+    saveLinks(folderLinks.unlink(loadLinks(), chatKey(c.cwd), dir));
+    pushState();
+    return true;
+  });
+
+  ipcMain.handle('chat-folder-link', (_e, args) => {
+    const c = chat;
+    const dir = args && typeof args.dir === 'string' ? args.dir : null;
+    if (!c || !dir || !c.addDirs.includes(dir)) return false;
+    const links = loadLinks();
+    saveLinks(args.on === true ? folderLinks.link(links, chatKey(c.cwd), dir) : folderLinks.unlink(links, chatKey(c.cwd), dir));
     pushState();
     return true;
   });
