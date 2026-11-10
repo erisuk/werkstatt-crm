@@ -29,6 +29,7 @@
       "src/n8n-proxy.js",
       "src/kommentare.js",
       "src/bitvideos.js",
+      "src/bit-posten.js",
       "src/mcp/**"
     ],
     "mac": {
