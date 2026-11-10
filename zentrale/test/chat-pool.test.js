@@ -107,7 +107,7 @@ test('ChatPool: gemerkt für den Neustart werden nur Chats mit gespeichertem Ges
   pool.park(fakeChat('a', { title: 'Logo' }));
   pool.park(fakeChat('b', { saved: false, status: 'busy' }));
   assert.deepStrictEqual(pool.saved(fakeChat('aktiv')), [
-    { sessionId: 'aktiv', cwd: '/Users/x/aktiv', title: null }, { sessionId: 'a', cwd: '/Users/x/a', title: 'Logo' }]);
+    { sessionId: 'aktiv', cwd: '/Users/x/aktiv', title: null, addDirs: [] }, { sessionId: 'a', cwd: '/Users/x/a', title: 'Logo', addDirs: [] }]);
 });
 
 test('ChatPool: Liste für die Agenten-Leiste – sichtbarer zuerst, mit Status und Freigaben', () => {
