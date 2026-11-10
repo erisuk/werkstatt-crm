@@ -115,8 +115,8 @@ test('ChatPool: Liste für die Agenten-Leiste – sichtbarer zuerst, mit Status 
   const active = fakeChat('a', { title: 'Logo' });
   pool.park(fakeChat('b', { status: 'busy', approvals: 2 }));
   assert.deepStrictEqual(pool.list(active), [
-    { sessionId: 'a', title: 'Logo', name: 'a', status: 'ready', active: true, waiting: 0, asleep: false },
-    { sessionId: 'b', title: 'Neues Gespräch', name: 'b', status: 'busy', active: false, waiting: 2, asleep: false },
+    { sessionId: 'a', title: 'Logo', name: 'a', status: 'ready', active: true, waiting: 0, asleep: false, relayFrom: null },
+    { sessionId: 'b', title: 'Neues Gespräch', name: 'b', status: 'busy', active: false, waiting: 2, asleep: false, relayFrom: null },
   ]);
 });
 

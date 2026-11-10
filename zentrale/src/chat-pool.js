@@ -96,7 +96,8 @@ class ChatPool {
   list(active) {
     return this.all(active).map((c) => ({ sessionId: c.sessionId, title: chatTitle(c), name: path.basename(c.cwd) || c.cwd,
       status: c.status, active: c === active, waiting: c.pendingApprovals().length,
-      asleep: !isAwake(c) && c.status !== 'busy' && c.status !== 'error' }));
+      asleep: !isAwake(c) && c.status !== 'busy' && c.status !== 'error',
+      relayFrom: c.lastRelay ? c.lastRelay.from : null }));
   }
 
   // Was beim Neustart der Zentrale wiederkommen soll: alle Chats mit gespeichertem Gespräch.

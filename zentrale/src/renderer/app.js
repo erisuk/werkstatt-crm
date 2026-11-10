@@ -943,6 +943,7 @@ function notifyChatMirror() {
 api.onChatEvent((ev) => {
   if (ev.gen !== ui.chatGen) return; // Ereignis eines früheren Chats
   if (ev.kind === 'text') ui.messages.push({ kind: 'assistant', text: ev.text });
+  else if (ev.kind === 'relay') ui.messages.push({ kind: 'user', text: ev.text, at: Date.now() });
   else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', id: ev.id, text: ev.text, tool: ev.tool, detail: ev.detail, path: ev.path });
   else if (ev.kind === 'toolResult') { markStepResult(ev.id, ev.error); renderChatInfo(); return; }
   else if (ev.kind === 'error') ui.messages.push({ kind: 'error', text: ev.text, details: ev.details });
@@ -973,7 +974,7 @@ function chatCard(c) {
   return h('div', { class: `card agent${c.active ? ' active' : ''}` },
     h('div', { class: 'top' },
       h('div', { class: 'claude-avatar', text: 'C' }),
-      h('div', { class: 'grow' }, nameEl, h('div', { class: 'where', text: c.active ? `${c.name} · offen` : c.name })),
+      h('div', { class: 'grow' }, nameEl, h('div', { class: 'where', text: [c.name, c.active ? 'offen' : null, c.relayFrom ? `← von „${c.relayFrom}“` : null].filter(Boolean).join(' · ') })),
       h('span', { class: `pill ${st.pill}`, text: st.text, title: st.title || null })),
     h('div', { class: 'agent-actions' },
       h('button', { class: 'link start', 'data-focus': `aside-chat:${c.sessionId}`, onClick: open }, c.active ? 'Zum Chat' : 'Öffnen'),

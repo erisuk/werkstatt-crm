@@ -504,6 +504,7 @@ class ClaudeChat extends EventEmitter {
       }
       // Erst "bereit", wenn alle gesendeten Nachrichten beantwortet sind.
       if (ev.type === 'result') {
+        this.emit('turn');
         this.pending = Math.max(0, this.pending - 1);
         if (this.pending === 0) this.setStatus('ready');
       }

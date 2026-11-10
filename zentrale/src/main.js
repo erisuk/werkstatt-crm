@@ -49,6 +49,8 @@ const { startProxy, makeOps, socketPath: n8nSocketPath } = require('./n8n-proxy'
 const { BrowserControl, makeBrowserOps } = require('./browser-control');
 const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
 const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
+const { CHATS_TOOLS } = require('./mcp/chats-server');
+const { createChatLink } = require('./chat-link');
 const kommentare = require('./kommentare');
 const bitvideos = require('./bitvideos');
 
@@ -153,6 +155,7 @@ function setup() {
   let n8nConfigFile = null;
   let n8nProxy = null;
   let browserProxy = null;
+  let chatsProxy = null; // Chats schreiben einander (src/chat-link.js)
   let browser = null;
   let browserConfigFile = null;
   let kommentareConfigFile = null;
@@ -331,6 +334,45 @@ function setup() {
   }
 
 
+  // Jeder Chat bekommt den Server „chats“ mit seiner eigenen Gesprächs-ID (so weiß die Zentrale, wer schreibt).
+  // Die Werkzeuge bleiben in der Zentrale – darum ohne Rückfrage erlaubt.
+  function withChatsServer(args, c) {
+    if (!c || !chatsProxy) return args;
+    const config = JSON.stringify({ mcpServers: { chats: mcpEntry('chats-server.js',
+      { ZENTRALE_CHATS_SOCKET: chatsProxy.file, ZENTRALE_CHAT_ID: c.sessionId }) } });
+    const tools = CHATS_TOOLS.map((t) => `mcp__chats__${t}`).join(',');
+    const i = args.findIndex((a) => a.startsWith('--allowedTools='));
+    const allowed = i >= 0 ? args.map((a, j) => (j === i ? `${a},${tools}` : a)) : [...args, `--allowedTools=${tools}`];
+    return [`--mcp-config=${config}`, ...allowed];
+  }
+
+  // Wo Claude Code das Gespräch eines Chats gespeichert hat (auch für ganz neue, die die Liste noch nicht kennt).
+  function sessionFile(c) {
+    const known = findSession(c.sessionId);
+    if (known) return known.file;
+    try {
+      for (const d of fs.readdirSync(DEFAULT_ROOT)) {
+        const f = path.join(DEFAULT_ROOT, d, `${c.sessionId}.jsonl`);
+        if (fs.existsSync(f)) return f;
+      }
+    } catch { /* noch nichts gespeichert */ }
+    return null;
+  }
+
+  const chatLink = createChatLink({
+    chats: () => allChats(),
+    history: (c, n) => { const f = sessionFile(c); return f ? readMessages(f, n) : []; },
+    deliver: async (c, text, from, hops) => {
+      if (!c.alive && !pool.wake(chat, c)) return { ok: false, error: pool.fullMessage() };
+      c.relayHops = hops;
+      c.lastRelay = { from: chatTitle(from), at: Date.now() };
+      c.emit('event', { kind: 'relay', text, from: chatTitle(from) });
+      const ok = await c.send(text);
+      pushState();
+      return ok ? { ok: true } : { ok: false, error: 'Der Chat konnte nicht gestartet werden.' };
+    },
+  });
+
   // Freigaben für Browser-Aktionen zeigen, welcher Knopf auf welcher Seite gemeint ist.
   function approvalInfo(toolName, input) {
     return browser ? browser.approvalInfo(toolName, input) : null;
@@ -340,11 +382,13 @@ function setup() {
   // So darf in der installierten App niemand Code mit der Identität der Zentrale ausführen
   // (Fuse RunAsNode ist aus) und damit an ihren Schlüsselbund-Eintrag kommen.
   const NODE_BIN = ['/usr/local/bin/node', '/opt/homebrew/bin/node', path.join(os.homedir(), '.npm-global', 'bin', 'node')].find((x) => fs.existsSync(x)) || null;
-  function writeMcpConfig(name, script, env = {}) {
+  function mcpEntry(script, env = {}) {
     const server = path.join(__dirname, 'mcp', script).replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+    return { type: 'stdio', command: NODE_BIN || process.execPath, args: [server], env: NODE_BIN ? env : { ELECTRON_RUN_AS_NODE: '1', ...env } };
+  }
+  function writeMcpConfig(name, script, env = {}) {
     const file = path.join(app.getPath('userData'), `mcp-${name}.json`);
-    const command = NODE_BIN || process.execPath;
-    const config = { mcpServers: { [name]: { type: 'stdio', command, args: [server], env: NODE_BIN ? env : { ELECTRON_RUN_AS_NODE: '1', ...env } } } };
+    const config = { mcpServers: { [name]: mcpEntry(script, env) } };
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, JSON.stringify(config, null, 2), { mode: 0o600 });
@@ -452,8 +496,9 @@ function setup() {
   function createChat({ cwd, sessionId = null, title = null }) {
     // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
     const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
-    const args = agent ? () => [...extraArgs(), '--agent', agent] : extraArgs;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true });
+    let c = null;
+    const args = () => withChatsServer([...extraArgs(), ...(agent ? ['--agent', agent] : [])], c);
+    c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true });
     c.gen = 0;
     c.lastActive = Date.now();
     c.on('event', (ev) => {
@@ -650,6 +695,7 @@ function setup() {
     const gen = chatGen;
     if (!c) return { ok: false, error: 'Der Chat wurde geschlossen, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     if (!c.title) { c.title = shortTitle(t); pushState(); }
+    c.relayHops = 0; // Eris schreibt selbst – die Kette der Weiterleitungen beginnt neu
     // Ein schlafender Chat wacht auf – dafür schläft notfalls ein anderer, untätiger ein.
     if (!c.alive && !pool.wake(chat, c)) return { ok: false, error: pool.fullMessage() };
     const ok = await c.send(t);
@@ -1993,6 +2039,7 @@ function setup() {
     // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
     browser = new BrowserControl(webTabs);
     browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));
+    chatsProxy = startProxy(chatLink, n8nSocketPath(app.getPath('userData'), 'chats'));
     browserProxy = startProxy(simulation.dryRunOps(makeBrowserOps(browser), simulation.DRY_BROWSER, dryRunActive, 'Web-Tab'), n8nSocketPath(app.getPath('userData'), 'browser'));
     nativeTheme.themeSource = settings.get().theme;
     loadN8n();
@@ -2066,6 +2113,7 @@ function setup() {
     if (webTabs) jobs.push(webTabs.saveLogins());
     if (n8nProxy) n8nProxy.close();
     if (browserProxy) browserProxy.close();
+    if (chatsProxy) chatsProxy.close();
     for (const c of allChats()) jobs.push(c.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });
