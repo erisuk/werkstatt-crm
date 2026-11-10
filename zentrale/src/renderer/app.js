@@ -560,7 +560,7 @@ async function openSession(session) {
   if (cur && cur.sessionId === session.id && ui.chatGen === cur.gen) { setView('chat'); return; }
   const res = await api.openSession({ sessionId: session.id });
   if (!res || res.error || !res.chat) { alert((res && res.error) || 'Claude Code wurde nicht gefunden.'); return; }
-  resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, id: m.id, text: m.text, tool: m.tool, detail: m.detail, path: m.path, error: m.error, at: m.at })));
+  resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, id: m.id, text: m.text, tool: m.tool, detail: m.detail, path: m.path, tab: m.tab, error: m.error, at: m.at })));
   setView('chat');
 }
 
@@ -943,7 +943,8 @@ function notifyChatMirror() {
 api.onChatEvent((ev) => {
   if (ev.gen !== ui.chatGen) return; // Ereignis eines früheren Chats
   if (ev.kind === 'text') ui.messages.push({ kind: 'assistant', text: ev.text });
-  else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', id: ev.id, text: ev.text, tool: ev.tool, detail: ev.detail, path: ev.path });
+  else if (ev.kind === 'relay') ui.messages.push({ kind: 'user', text: ev.text, at: Date.now() });
+  else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', id: ev.id, text: ev.text, tool: ev.tool, detail: ev.detail, path: ev.path, tab: ev.tab });
   else if (ev.kind === 'toolResult') { markStepResult(ev.id, ev.error); renderChatInfo(); return; }
   else if (ev.kind === 'error') ui.messages.push({ kind: 'error', text: ev.text, details: ev.details });
   else return;
@@ -953,12 +954,12 @@ api.onChatEvent((ev) => {
 
 // ---------- Seitenleiste rechts ----------
 
-const MAX_PARALLEL_CHATS = 3; // wie im Hauptprozess (Arbeitsspeicher)
-
 function chatPill(c) {
   if (c.waiting) return { pill: 'blue', text: 'wartet auf dich' };
   if (c.status === 'busy') return { pill: 'amber', text: 'arbeitet' };
   if (c.status === 'error') return { pill: 'red', text: 'Fehler' };
+  // Schläft: Prozess aus, Gespräch gespeichert – wacht beim nächsten Senden auf.
+  if (c.asleep) return { pill: 'grey', text: 'schläft', title: 'Spart Arbeitsspeicher. Wacht beim nächsten Schreiben mit dem ganzen Verlauf auf.' };
   return { pill: 'green', text: 'bereit' };
 }
 
@@ -973,8 +974,8 @@ function chatCard(c) {
   return h('div', { class: `card agent${c.active ? ' active' : ''}` },
     h('div', { class: 'top' },
       h('div', { class: 'claude-avatar', text: 'C' }),
-      h('div', { class: 'grow' }, nameEl, h('div', { class: 'where', text: c.active ? `${c.name} · offen` : c.name })),
-      h('span', { class: `pill ${st.pill}`, text: st.text })),
+      h('div', { class: 'grow' }, nameEl, h('div', { class: 'where', text: [c.name, c.active ? 'offen' : null, c.relayFrom ? `← von „${c.relayFrom}“` : null].filter(Boolean).join(' · ') })),
+      h('span', { class: `pill ${st.pill}`, text: st.text, title: st.title || null })),
     h('div', { class: 'agent-actions' },
       h('button', { class: 'link start', 'data-focus': `aside-chat:${c.sessionId}`, onClick: open }, c.active ? 'Zum Chat' : 'Öffnen'),
       h('button', { class: 'icon-btn more-btn', 'aria-label': `Funktionen für „${c.title}“`, 'aria-expanded': String(menuOpen),
@@ -1041,8 +1042,8 @@ function renderAside(force) {
   if (!force && ui.chatRename) return;
   if (!force && !changed('aside', [s.chat, s.chats, s.tasks, s.claude.found, minute, (s.approvals || []).length, ui.chatMenu, ui.chatRename])) return;
   const agents = (s.chats || []).map(chatCard);
-  if ((s.chats || []).length >= MAX_PARALLEL_CHATS) {
-    agents.push(h('div', { class: 'sub agents-limit', text: `Mehr als ${MAX_PARALLEL_CHATS} Chats gleichzeitig gehen nicht – für einen neuen schließt sich der am längsten untätige.` }));
+  if ((s.chats || []).some((c) => c.asleep)) {
+    agents.push(h('div', { class: 'sub agents-limit', text: 'Höchstens 5 Chats sind gleichzeitig wach. Untätige schlafen nach 10 Minuten ein und wachen beim Schreiben wieder auf.' }));
   }
   for (const t of s.tasks.filter((x) => x.running)) {
     agents.push(h('div', { class: 'card agent' },
@@ -1085,6 +1086,7 @@ function renderMain() {
   else if (ui.view === 'finance') renderFinance();
   else if (ui.view === 'kontrolle') renderKontrolle();
   else if (ui.view === 'lernen') renderLernen();
+  else if (ui.view === 'konten') renderKonten();
   else if (ui.view === 'bitvideos') renderBitVideos();
   else renderTasks();
 }
@@ -1120,7 +1122,7 @@ function applyState(next) {
     renderRunning();
   } else if (ui.view === 'automations') {
     renderAssistant(); // Status, Freigaben und Antworten des Assistenten
-  } else if (['mac', 'web', 'local', 'brain', 'projects', 'planner', 'websites', 'finance', 'bitvideos', 'kontrolle', 'lernen'].includes(ui.view)) {
+  } else if (['mac', 'web', 'local', 'brain', 'projects', 'planner', 'websites', 'finance', 'bitvideos', 'kontrolle', 'lernen', 'konten'].includes(ui.view)) {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');

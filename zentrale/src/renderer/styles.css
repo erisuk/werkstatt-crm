@@ -932,3 +932,27 @@ h2 { font-size: 16px; font-weight: 600; }
   .bv-detail-innen { grid-template-columns: 240px minmax(0, 1fr); }
   .bv-film video, .bv-film-leer { width: 100%; max-height: none; }
 }
+
+/* Weitere Ordner im Chat (Umgebung) */
+.extra-dir { gap: 8px; }
+.link-plain { border: 0; background: none; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.link-plain:hover { text-decoration: underline; }
+.dir-link { flex-shrink: 0; border: 1px solid var(--border-strong); background: none; color: var(--text-2); font-size: 12px; padding: 2px 8px; border-radius: 999px; cursor: pointer; }
+.dir-link:hover { border-color: var(--accent); color: var(--accent-text); }
+.dir-link.on { background: var(--pill-blue-bg); color: var(--pill-blue); border-color: transparent; }
+.dir-remove { flex-shrink: 0; width: 22px; height: 22px; border: 0; border-radius: 6px; background: none; color: var(--text-2); font-size: 15px; cursor: pointer; }
+.dir-remove:hover { background: var(--fill); color: var(--text); }
+.info-add { align-self: flex-start; margin-top: 4px; font-size: 13px; }
+
+/* Konten */
+.konten-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.konten-group { margin-bottom: 18px; }
+.konten-title { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--text-2); letter-spacing: .02em; text-transform: uppercase; }
+.konto-row { gap: 12px; }
+.konto-row .sub { white-space: normal; }
+.konto-wert { flex-shrink: 0; max-width: 40%; font-size: 13px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+.konto-input { width: 260px; max-width: 40%; flex-shrink: 1; height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--card-soft); color: var(--text); font: inherit; font-size: 13px; }
+.konto-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--pill-blue-bg); }
+.konto-neu { padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+.konto-neu-felder { display: flex; gap: 8px; flex-wrap: wrap; }
+.konto-neu-felder .konto-input { flex: 1 1 180px; max-width: none; width: auto; }

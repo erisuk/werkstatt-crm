@@ -2,6 +2,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard, globalShortcut, systemPreferences, powerMonitor, net } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
+const crypto = require('crypto');
 const os = require('os');
 const fs = require('fs');
 const { resolveClaude, ClaudeChat, runTask, stopAllTasks, listMcpServers, permissionModeFor } = require('./claude');
@@ -49,6 +50,10 @@ const { startProxy, makeOps, socketPath: n8nSocketPath } = require('./n8n-proxy'
 const { BrowserControl, makeBrowserOps } = require('./browser-control');
 const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
 const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
+const { CHATS_TOOLS } = require('./mcp/chats-server');
+const { createChatLink } = require('./chat-link');
+const folderLinks = require('./folder-links');
+const konten = require('./konten');
 const kommentare = require('./kommentare');
 const bitvideos = require('./bitvideos');
 
@@ -153,6 +158,7 @@ function setup() {
   let n8nConfigFile = null;
   let n8nProxy = null;
   let browserProxy = null;
+  let chatsProxy = null; // Chats schreiben einander (src/chat-link.js)
   let browser = null;
   let browserConfigFile = null;
   let kommentareConfigFile = null;
@@ -197,8 +203,8 @@ function setup() {
     return projectsCache;
   }
 
-  // Bis zu drei Gespräche laufen gleichzeitig: `chat` ist das sichtbare, die anderen parken in `pool`
-  // und arbeiten im Hintergrund weiter (src/chat-pool.js).
+  // Viele Gespräche gleichzeitig: `chat` ist das sichtbare, die anderen parken in `pool` und arbeiten im
+  // Hintergrund weiter. Höchstens 5 sind wach, untätige schlafen ein (src/chat-pool.js).
   const pool = new ChatPool();
   const lastKnown = { window: null, mcp: null }; // aus irgendeinem Chat oder der Konnektoren-Prüfung
   // Die Fenstergröße (z. B. 1M) über Neustarts merken – sonst stimmen die Prozente erst nach der ersten Antwort.
@@ -226,8 +232,15 @@ function setup() {
       busySince: chat.status === 'busy' ? chat.busySince || null : null,
       // Bis der Chat selbst geantwortet hat: Fenstergröße und Konnektoren vom letzten Chat bzw. der letzten Prüfung.
       context: chat.context ? { used: chat.context, window: chat.contextWindow || knownWindow(), baseline: chat.baseline || null } : null,
-      mcp: chat.mcp || lastKnown.mcp };
+      mcp: chat.mcp || lastKnown.mcp,
+      addDirs: (chat.addDirs || []).map((d) => ({ path: d, name: path.basename(d), linked: folderLinks.linked(loadLinks(), chatKey(chat.cwd)).includes(d) })) };
   }
+
+  // Verknüpfte Ordner (src/folder-links.js) – Schlüssel ist der volle Pfad des Projektordners.
+  const LINKS_FILE = () => path.join(app.getPath('userData'), 'ordner-verknuepfungen.json');
+  const chatKey = (cwd) => path.resolve(cwd);
+  function loadLinks() { return folderLinks.load(LINKS_FILE()); }
+  function saveLinks(links) { try { folderLinks.save(LINKS_FILE(), links); return true; } catch { return false; } }
 
   // Einstellung „Ohne Rückfrage arbeiten“: Claude darf alles, ohne zu fragen (Standard, Eris' Wunsch).
   function allowAll() {
@@ -261,6 +274,7 @@ function setup() {
     if (sentProjectsRev === projectsRev) delete s.projects; // unverändert: die Oberfläche behält ihre Liste
     else sentProjectsRev = projectsRev;
     send('state', s);
+    saveOpenChats();
   }
 
   // Mac-Mitteilung (Klick holt die Zentrale nach vorn). view: welche Ansicht dabei geöffnet werden soll.
@@ -330,6 +344,45 @@ function setup() {
   }
 
 
+  // Jeder Chat bekommt den Server „chats“ mit seiner eigenen Gesprächs-ID (so weiß die Zentrale, wer schreibt).
+  // Die Werkzeuge bleiben in der Zentrale – darum ohne Rückfrage erlaubt.
+  function withChatsServer(args, c) {
+    if (!c || !chatsProxy) return args;
+    const config = JSON.stringify({ mcpServers: { chats: mcpEntry('chats-server.js',
+      { ZENTRALE_CHATS_SOCKET: chatsProxy.file, ZENTRALE_CHAT_ID: c.sessionId }) } });
+    const tools = CHATS_TOOLS.map((t) => `mcp__chats__${t}`).join(',');
+    const i = args.findIndex((a) => a.startsWith('--allowedTools='));
+    const allowed = i >= 0 ? args.map((a, j) => (j === i ? `${a},${tools}` : a)) : [...args, `--allowedTools=${tools}`];
+    return [`--mcp-config=${config}`, ...allowed];
+  }
+
+  // Wo Claude Code das Gespräch eines Chats gespeichert hat (auch für ganz neue, die die Liste noch nicht kennt).
+  function sessionFile(c) {
+    const known = findSession(c.sessionId);
+    if (known) return known.file;
+    try {
+      for (const d of fs.readdirSync(DEFAULT_ROOT)) {
+        const f = path.join(DEFAULT_ROOT, d, `${c.sessionId}.jsonl`);
+        if (fs.existsSync(f)) return f;
+      }
+    } catch { /* noch nichts gespeichert */ }
+    return null;
+  }
+
+  const chatLink = createChatLink({
+    chats: () => allChats(),
+    history: (c, n) => { const f = sessionFile(c); return f ? readMessages(f, n) : []; },
+    deliver: async (c, text, from, hops) => {
+      if (!c.alive && !pool.wake(chat, c)) return { ok: false, error: pool.fullMessage() };
+      c.relayHops = hops;
+      c.lastRelay = { from: chatTitle(from), at: Date.now() };
+      c.emit('event', { kind: 'relay', text, from: chatTitle(from) });
+      const ok = await c.send(text);
+      pushState();
+      return ok ? { ok: true } : { ok: false, error: 'Der Chat konnte nicht gestartet werden.' };
+    },
+  });
+
   // Freigaben für Browser-Aktionen zeigen, welcher Knopf auf welcher Seite gemeint ist.
   function approvalInfo(toolName, input) {
     return browser ? browser.approvalInfo(toolName, input) : null;
@@ -339,11 +392,13 @@ function setup() {
   // So darf in der installierten App niemand Code mit der Identität der Zentrale ausführen
   // (Fuse RunAsNode ist aus) und damit an ihren Schlüsselbund-Eintrag kommen.
   const NODE_BIN = ['/usr/local/bin/node', '/opt/homebrew/bin/node', path.join(os.homedir(), '.npm-global', 'bin', 'node')].find((x) => fs.existsSync(x)) || null;
-  function writeMcpConfig(name, script, env = {}) {
+  function mcpEntry(script, env = {}) {
     const server = path.join(__dirname, 'mcp', script).replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+    return { type: 'stdio', command: NODE_BIN || process.execPath, args: [server], env: NODE_BIN ? env : { ELECTRON_RUN_AS_NODE: '1', ...env } };
+  }
+  function writeMcpConfig(name, script, env = {}) {
     const file = path.join(app.getPath('userData'), `mcp-${name}.json`);
-    const command = NODE_BIN || process.execPath;
-    const config = { mcpServers: { [name]: { type: 'stdio', command, args: [server], env: NODE_BIN ? env : { ELECTRON_RUN_AS_NODE: '1', ...env } } } };
+    const config = { mcpServers: { [name]: mcpEntry(script, env) } };
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, JSON.stringify(config, null, 2), { mode: 0o600 });
@@ -432,13 +487,33 @@ function setup() {
       pushState();
       return chatInfo();
     }
+    const c = createChat({ cwd, sessionId, title });
+    c.gen = gen;
+    chat = c;
+    // Dasselbe Gespräch: den alten Prozess erst fertig beenden, sonst schreiben zwei Prozesse in dieselbe Datei.
+    // Sonst läuft der bisherige Chat im Hintergrund weiter.
+    if (old && old.sessionId === sessionId) await old.dispose().catch(() => {});
+    else pool.park(old);
+    pool.trim();
+    if (gen !== chatGen || chat !== c) return chatInfo();
+    // Sind schon 5 wach und alle beschäftigt, startet der Prozess erst beim Senden.
+    if (pool.wake(chat, c)) c.start();
+    pushState();
+    return chatInfo();
+  }
+
+  // Ein Chat mit allen Verbindungen zur Oberfläche – noch ohne laufenden Prozess.
+  function createChat({ cwd, sessionId = null, title = null, addDirs = [] }) {
     // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
     const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
-    const args = agent ? () => [...extraArgs(), '--agent', agent] : extraArgs;
-    const c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true });
-    c.gen = gen;
+    let c = null;
+    const args = () => withChatsServer([...extraArgs(), ...(agent ? ['--agent', agent] : [])], c);
+    // Verknüpfte Projekte kommen immer mit, dazu die Ordner, die der Chat schon hatte.
+    const dirs = folderLinks.mergeDirs(chatKey(cwd), folderLinks.linked(loadLinks(), chatKey(cwd)), addDirs)
+      .filter((d) => folderLinks.cleanDir(d));
+    c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true, addDirs: dirs });
+    c.gen = 0;
     c.lastActive = Date.now();
-    chat = c;
     c.on('event', (ev) => {
       if (ev.kind === 'window') rememberWindow(ev.contextWindow);
       if (ev.kind === 'init' && ev.mcp) lastKnown.mcp = ev.mcp;
@@ -459,19 +534,39 @@ function setup() {
       pushState();
     });
     c.on('approvals', onApprovalsChanged);
-    // Dasselbe Gespräch: den alten Prozess erst fertig beenden, sonst schreiben zwei Prozesse in dieselbe Datei.
-    // Sonst läuft der bisherige Chat im Hintergrund weiter.
-    if (old && old.sessionId === sessionId) await old.dispose().catch(() => {});
-    else pool.park(old);
-    pool.trim();
-    if (gen !== chatGen || chat !== c) return chatInfo();
-    c.start();
-    pushState();
-    return chatInfo();
+    return c;
   }
 
-  // Untätige Hintergrund-Chats nach 30 Minuten schließen – ihr Gespräch bleibt gespeichert.
+  // Untätige Hintergrund-Chats nach 10 Minuten einschläfern – sie bleiben in der Liste und wachen beim Senden auf.
   setInterval(() => { if (pool.sweep()) pushState(); }, 60 * 1000).unref();
+
+  // Offene Chats über einen Neustart der Zentrale retten: Sie kommen schlafend in die Liste zurück.
+  const OPEN_CHATS_FILE = () => path.join(app.getPath('userData'), 'offene-chats.json');
+  let savedChatsJson = null;
+  function saveOpenChats() {
+    if (!chatsRestored) return; // sonst überschriebe der Start die Liste, bevor sie gelesen ist
+    const json = JSON.stringify(pool.saved(chat));
+    if (json === savedChatsJson) return;
+    savedChatsJson = json;
+    try { fs.writeFileSync(OPEN_CHATS_FILE(), json); } catch { /* nur Bequemlichkeit */ }
+  }
+  let chatsRestored = false;
+  function restoreOpenChats() {
+    let list = [];
+    try { list = JSON.parse(fs.readFileSync(OPEN_CHATS_FILE(), 'utf8')); } catch { /* noch keine */ }
+    if (claude.bin && Array.isArray(list)) {
+      for (const e of list.slice(0, pool.max)) {
+        if (!e || typeof e.sessionId !== 'string' || pool.get(e.sessionId) || (chat && chat.sessionId === e.sessionId)) continue;
+        const session = findSession(e.sessionId);
+        if (!session || !isDir(session.cwd)) continue;
+        const c = createChat({ cwd: session.cwd, sessionId: e.sessionId, title: session.title, addDirs: Array.isArray(e.addDirs) ? e.addDirs : [] });
+        try { c.context = lastContext(session.file); } catch { /* ohne Füllstand */ }
+        pool.park(c);
+      }
+    }
+    chatsRestored = !!claude.bin; // ohne Claude die gemerkte Liste nicht überschreiben
+    pushState();
+  }
 
   // Löst den offenen Chat (z. B. weil sein Gespräch gelöscht wird) und beendet ihn.
   async function detachChat() {
@@ -583,7 +678,7 @@ function setup() {
     let history = [];
     try { history = readMessages(session.file, 400, { tools: true }); } catch {}
     if (chat && chat.sessionId === sessionId) return { chat: chatInfo(), history };
-    if (!pool.get(sessionId) && !pool.hasRoom(chat)) return { error: pool.fullMessage() };
+    if (!pool.get(sessionId) && !pool.hasRoom(chat)) return { error: pool.listFullMessage() };
     const info = await openChat({ cwd: session.cwd, sessionId, title: session.title });
     // Füllstand gleich aus dem gespeicherten Gespräch – nicht erst nach der nächsten Antwort.
     if (chat && chat.sessionId === sessionId && !chat.context) {
@@ -599,7 +694,7 @@ function setup() {
     if (!isDir(cwd)) return { error: 'Dieser Ordner existiert nicht.' };
     await claudeReady;
     if (!claude.bin) return { error: 'Claude Code wurde nicht gefunden.' };
-    if (!pool.hasRoom(chat)) return { error: pool.fullMessage() };
+    if (!pool.hasRoom(chat)) return { error: pool.listFullMessage() };
     return { chat: await openChat({ cwd }), history: [] };
   });
 
@@ -613,6 +708,9 @@ function setup() {
     const gen = chatGen;
     if (!c) return { ok: false, error: 'Der Chat wurde geschlossen, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     if (!c.title) { c.title = shortTitle(t); pushState(); }
+    c.relayHops = 0; // Eris schreibt selbst – die Kette der Weiterleitungen beginnt neu
+    // Ein schlafender Chat wacht auf – dafür schläft notfalls ein anderer, untätiger ein.
+    if (!c.alive && !pool.wake(chat, c)) return { ok: false, error: pool.fullMessage() };
     const ok = await c.send(t);
     // Inzwischen gewechselt: Läuft der Chat im Hintergrund weiter, ist die Nachricht trotzdem angekommen.
     if (c !== chat && pool.get(c.sessionId) === c) return { ok, parked: true };
@@ -632,6 +730,80 @@ function setup() {
     pool.close(c);
     pushState();
     return true;
+  });
+
+  // Weiteren Ordner zum offenen Chat holen (Auswahl im Finder). link: dauerhaft mit dem Projekt verknüpfen.
+  ipcMain.handle('chat-folder-add', async (_e, args) => {
+    const c = chat;
+    if (!c) return { error: 'Kein Chat offen.' };
+    const res = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: 'Ordner zum Chat hinzufügen',
+      buttonLabel: 'Hinzufügen', defaultPath: os.homedir() });
+    if (res.canceled || !res.filePaths[0]) return { canceled: true };
+    const dir = folderLinks.cleanDir(res.filePaths[0]);
+    if (!dir) return { error: 'Nur normale Ordner in deinem Benutzerordner – keine versteckten und nicht der ganze Benutzerordner.' };
+    if (dir === chatKey(c.cwd)) return { error: 'Das ist schon der Ordner dieses Chats.' };
+    const dirs = folderLinks.mergeDirs(chatKey(c.cwd), c.addDirs, [dir]);
+    if (!dirs.includes(dir)) return { error: `Höchstens ${folderLinks.MAX_DIRS} weitere Ordner pro Chat.` };
+    c.setAddDirs(dirs);
+    if (args && args.link === true) saveLinks(folderLinks.link(loadLinks(), chatKey(c.cwd), dir));
+    pushState();
+    return { ok: true, chat: chatInfo() };
+  });
+
+  // Ordner aus dem Chat nehmen – und die Verknüpfung lösen, sonst käme er beim nächsten Chat wieder.
+  ipcMain.handle('chat-folder-remove', (_e, dir) => {
+    const c = chat;
+    if (!c || typeof dir !== 'string' || !c.addDirs.includes(dir)) return false;
+    c.setAddDirs(c.addDirs.filter((d) => d !== dir));
+    saveLinks(folderLinks.unlink(loadLinks(), chatKey(c.cwd), dir));
+    pushState();
+    return true;
+  });
+
+  ipcMain.handle('chat-folder-link', (_e, args) => {
+    const c = chat;
+    const dir = args && typeof args.dir === 'string' ? args.dir : null;
+    if (!c || !dir || !c.addDirs.includes(dir)) return false;
+    const links = loadLinks();
+    saveLinks(args.on === true ? folderLinks.link(links, chatKey(c.cwd), dir) : folderLinks.unlink(links, chatKey(c.cwd), dir));
+    pushState();
+    return true;
+  });
+
+  // ---------- Konten: wo bist du überall angemeldet (nur Namen und E-Mails, nie Passwörter) ----------
+  const KONTEN_FILE = () => path.join(app.getPath('userData'), 'konten.json');
+  let claudeAccountCache = { at: 0, value: null };
+  // Das Claude-Konto aus ~/.claude.json – nur Name, E-Mail und Organisation, nichts anderes daraus.
+  function claudeAccount() {
+    if (Date.now() - claudeAccountCache.at < 5 * 60 * 1000) return claudeAccountCache.value;
+    let value = null;
+    try {
+      const a = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude.json'), 'utf8')).oauthAccount || {};
+      if (a.emailAddress) value = { email: String(a.emailAddress), name: String(a.displayName || ''), org: String(a.organizationName || '') };
+    } catch { /* nicht angemeldet oder Datei fehlt */ }
+    claudeAccountCache = { at: Date.now(), value };
+    return value;
+  }
+  function kontenList() {
+    let yt = null;
+    try { const st = yt().status(); if (st && st.connected && st.channel) yt = st.channel; } catch { /* ohne YouTube */ }
+    return konten.collect({ claude: claudeAccount(), tabs: webTabs ? webTabs.info().portals : [], mcp: lastKnown.mcp || [],
+      youtube: yt, n8n: !!n8nConfig.key, data: konten.load(KONTEN_FILE()) });
+  }
+  ipcMain.handle('konten', () => kontenList());
+  ipcMain.handle('konten-zuordnen', (_e, args) => {
+    const key = args && typeof args.key === 'string' ? args.key : '';
+    if (!/^(mcp|tab):|^n8n$/.test(key)) return { ok: false, error: 'Diesem Eintrag kann man kein Konto zuordnen.' };
+    try { konten.save(KONTEN_FILE(), konten.assign(konten.load(KONTEN_FILE()), key, args.konto)); } catch (e) { return { ok: false, error: e.message }; }
+    return { ok: true, konten: kontenList() };
+  });
+  ipcMain.handle('konten-eigen', (_e, args) => {
+    const data = konten.load(KONTEN_FILE());
+    const next = args && args.remove ? konten.removeOwn(data, String(args.remove))
+      : konten.addOwn(data, args || {}, crypto.randomUUID());
+    if (next === data) return { ok: false, error: 'Bitte mindestens den Dienst angeben.' };
+    try { konten.save(KONTEN_FILE(), next); } catch (e) { return { ok: false, error: e.message }; }
+    return { ok: true, konten: kontenList() };
   });
 
   ipcMain.handle('approval-respond', (_e, args) => {
@@ -1954,6 +2126,7 @@ function setup() {
     // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
     browser = new BrowserControl(webTabs);
     browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));
+    chatsProxy = startProxy(chatLink, n8nSocketPath(app.getPath('userData'), 'chats'));
     browserProxy = startProxy(simulation.dryRunOps(makeBrowserOps(browser), simulation.DRY_BROWSER, dryRunActive, 'Web-Tab'), n8nSocketPath(app.getPath('userData'), 'browser'));
     nativeTheme.themeSource = settings.get().theme;
     loadN8n();
@@ -1998,6 +2171,7 @@ function setup() {
     pushState();
     scheduler.start();
     if (claude.bin) await openChat({ cwd: defaultCwd() });
+    restoreOpenChats();
   });
 
   app.on('activate', () => {
@@ -2026,6 +2200,7 @@ function setup() {
     if (webTabs) jobs.push(webTabs.saveLogins());
     if (n8nProxy) n8nProxy.close();
     if (browserProxy) browserProxy.close();
+    if (chatsProxy) chatsProxy.close();
     for (const c of allChats()) jobs.push(c.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });

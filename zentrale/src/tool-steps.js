@@ -31,7 +31,10 @@ function toolStep(name, input) {
   const i = input && typeof input === 'object' ? input : {};
   const file = /^(Read|Write|Edit|MultiEdit|NotebookEdit)$/.test(tool) ? String(i.file_path || i.notebook_path || '') : '';
   // Der volle Pfad nur bei Dateien: für Bildvorschau und die Liste „Ausgaben“.
-  return file ? { tool, detail: stepDetail(tool, input), path: file } : { tool, detail: stepDetail(tool, input) };
+  // Bei den Web-Tab-Werkzeugen: welcher Tab – für „mit welcher Anmeldung arbeitet dieser Chat“.
+  const tab = /^mcp__web__/.test(tool) && typeof i.tab === 'string' ? i.tab.slice(0, 80) : null;
+  if (file) return { tool, detail: stepDetail(tool, input), path: file };
+  return tab ? { tool, detail: stepDetail(tool, input), tab } : { tool, detail: stepDetail(tool, input) };
 }
 
 module.exports = { toolStep, stepDetail };
