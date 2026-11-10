@@ -175,6 +175,7 @@ function renderChatInfo() {
   loadChatEnv(c.cwd);
   const env = ui.chatEnv && ui.chatEnv.cwd === c.cwd ? ui.chatEnv : null;
   const outs = chatOutputs();
-  if (!changed('chatInfo', [c.cwd, c.context, c.mcp, c.addDirs, outs, env, ui.chatInfoMore])) return;
-  keepFocus(() => fill(box, envSection(c, env), contextSection(c), connectorsSection(c), outputsSection(), changesSection(env)));
+  const usedTools = ui.messages.filter((m) => m.kind === 'tool' && /^mcp__/.test(m.tool || '')).map((m) => `${m.tool}|${m.tab || ''}`);
+  if (!changed('chatInfo', [c.cwd, c.context, c.mcp, c.addDirs, outs, env, ui.chatInfoMore, usedTools, ui.kontenAt])) return;
+  keepFocus(() => fill(box, envSection(c, env), accountsSection(), contextSection(c), connectorsSection(c), outputsSection(), changesSection(env)));
 }

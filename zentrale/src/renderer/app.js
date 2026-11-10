@@ -560,7 +560,7 @@ async function openSession(session) {
   if (cur && cur.sessionId === session.id && ui.chatGen === cur.gen) { setView('chat'); return; }
   const res = await api.openSession({ sessionId: session.id });
   if (!res || res.error || !res.chat) { alert((res && res.error) || 'Claude Code wurde nicht gefunden.'); return; }
-  resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, id: m.id, text: m.text, tool: m.tool, detail: m.detail, path: m.path, error: m.error, at: m.at })));
+  resetChat(res.chat.gen, res.history.map((m) => ({ kind: m.role, id: m.id, text: m.text, tool: m.tool, detail: m.detail, path: m.path, tab: m.tab, error: m.error, at: m.at })));
   setView('chat');
 }
 
@@ -944,7 +944,7 @@ api.onChatEvent((ev) => {
   if (ev.gen !== ui.chatGen) return; // Ereignis eines früheren Chats
   if (ev.kind === 'text') ui.messages.push({ kind: 'assistant', text: ev.text });
   else if (ev.kind === 'relay') ui.messages.push({ kind: 'user', text: ev.text, at: Date.now() });
-  else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', id: ev.id, text: ev.text, tool: ev.tool, detail: ev.detail, path: ev.path });
+  else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', id: ev.id, text: ev.text, tool: ev.tool, detail: ev.detail, path: ev.path, tab: ev.tab });
   else if (ev.kind === 'toolResult') { markStepResult(ev.id, ev.error); renderChatInfo(); return; }
   else if (ev.kind === 'error') ui.messages.push({ kind: 'error', text: ev.text, details: ev.details });
   else return;
@@ -1086,6 +1086,7 @@ function renderMain() {
   else if (ui.view === 'finance') renderFinance();
   else if (ui.view === 'kontrolle') renderKontrolle();
   else if (ui.view === 'lernen') renderLernen();
+  else if (ui.view === 'konten') renderKonten();
   else if (ui.view === 'bitvideos') renderBitVideos();
   else renderTasks();
 }
@@ -1121,7 +1122,7 @@ function applyState(next) {
     renderRunning();
   } else if (ui.view === 'automations') {
     renderAssistant(); // Status, Freigaben und Antworten des Assistenten
-  } else if (['mac', 'web', 'local', 'brain', 'projects', 'planner', 'websites', 'finance', 'bitvideos', 'kontrolle', 'lernen'].includes(ui.view)) {
+  } else if (['mac', 'web', 'local', 'brain', 'projects', 'planner', 'websites', 'finance', 'bitvideos', 'kontrolle', 'lernen', 'konten'].includes(ui.view)) {
     // „Mein Mac“ und „Web“ laden ihre Daten selbst.
   } else {
     const addBtn = $('#add-task');

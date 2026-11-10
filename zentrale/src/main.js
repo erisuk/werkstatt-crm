@@ -2,6 +2,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification, nativeImage, safeStorage, clipboard, globalShortcut, systemPreferences, powerMonitor, net } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
+const crypto = require('crypto');
 const os = require('os');
 const fs = require('fs');
 const { resolveClaude, ClaudeChat, runTask, stopAllTasks, listMcpServers, permissionModeFor } = require('./claude');
@@ -52,6 +53,7 @@ const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
 const { CHATS_TOOLS } = require('./mcp/chats-server');
 const { createChatLink } = require('./chat-link');
 const folderLinks = require('./folder-links');
+const konten = require('./konten');
 const kommentare = require('./kommentare');
 const bitvideos = require('./bitvideos');
 
@@ -766,6 +768,42 @@ function setup() {
     saveLinks(args.on === true ? folderLinks.link(links, chatKey(c.cwd), dir) : folderLinks.unlink(links, chatKey(c.cwd), dir));
     pushState();
     return true;
+  });
+
+  // ---------- Konten: wo bist du überall angemeldet (nur Namen und E-Mails, nie Passwörter) ----------
+  const KONTEN_FILE = () => path.join(app.getPath('userData'), 'konten.json');
+  let claudeAccountCache = { at: 0, value: null };
+  // Das Claude-Konto aus ~/.claude.json – nur Name, E-Mail und Organisation, nichts anderes daraus.
+  function claudeAccount() {
+    if (Date.now() - claudeAccountCache.at < 5 * 60 * 1000) return claudeAccountCache.value;
+    let value = null;
+    try {
+      const a = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude.json'), 'utf8')).oauthAccount || {};
+      if (a.emailAddress) value = { email: String(a.emailAddress), name: String(a.displayName || ''), org: String(a.organizationName || '') };
+    } catch { /* nicht angemeldet oder Datei fehlt */ }
+    claudeAccountCache = { at: Date.now(), value };
+    return value;
+  }
+  function kontenList() {
+    let yt = null;
+    try { const st = yt().status(); if (st && st.connected && st.channel) yt = st.channel; } catch { /* ohne YouTube */ }
+    return konten.collect({ claude: claudeAccount(), tabs: webTabs ? webTabs.info().portals : [], mcp: lastKnown.mcp || [],
+      youtube: yt, n8n: !!n8nConfig.key, data: konten.load(KONTEN_FILE()) });
+  }
+  ipcMain.handle('konten', () => kontenList());
+  ipcMain.handle('konten-zuordnen', (_e, args) => {
+    const key = args && typeof args.key === 'string' ? args.key : '';
+    if (!/^(mcp|tab):|^n8n$/.test(key)) return { ok: false, error: 'Diesem Eintrag kann man kein Konto zuordnen.' };
+    try { konten.save(KONTEN_FILE(), konten.assign(konten.load(KONTEN_FILE()), key, args.konto)); } catch (e) { return { ok: false, error: e.message }; }
+    return { ok: true, konten: kontenList() };
+  });
+  ipcMain.handle('konten-eigen', (_e, args) => {
+    const data = konten.load(KONTEN_FILE());
+    const next = args && args.remove ? konten.removeOwn(data, String(args.remove))
+      : konten.addOwn(data, args || {}, crypto.randomUUID());
+    if (next === data) return { ok: false, error: 'Bitte mindestens den Dienst angeben.' };
+    try { konten.save(KONTEN_FILE(), next); } catch (e) { return { ok: false, error: e.message }; }
+    return { ok: true, konten: kontenList() };
   });
 
   ipcMain.handle('approval-respond', (_e, args) => {
