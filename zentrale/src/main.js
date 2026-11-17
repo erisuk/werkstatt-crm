@@ -230,6 +230,7 @@ function setup() {
     return { gen: chatGen, cwd: chat.cwd, name: path.basename(chat.cwd) || chat.cwd, sessionId: chat.sessionId, status: chat.status,
       title: chat.title, careful: chat.permissionMode !== 'acceptEdits' && !allowAll(), allowAll: allowAll(),
       busySince: chat.status === 'busy' ? chat.busySince || null : null,
+      queued: (chat.queued || []).length,
       // Bis der Chat selbst geantwortet hat: Fenstergröße und Konnektoren vom letzten Chat bzw. der letzten Prüfung.
       context: chat.context ? { used: chat.context, window: chat.contextWindow || knownWindow(), baseline: chat.baseline || null } : null,
       mcp: chat.mcp || lastKnown.mcp,
@@ -527,6 +528,8 @@ function setup() {
       c.lastStatus = c.status;
       if (c.status === 'busy' && was !== 'busy') c.busySince = Date.now();
       c.lastActive = Date.now();
+      // Ein Chat ist frei geworden: wartende Nachrichten anderer Chats können jetzt raus.
+      if (c.status === 'ready' || c.status === 'stopped') setImmediate(flushQueued);
       // Ein Hintergrund-Chat ist fertig: Mitteilung, damit niemand ständig nachschauen muss.
       if (was === 'busy' && c.status === 'ready' && c !== chat && pool.get(c.sessionId) === c) {
         notify(`Fertig: ${chatTitle(c)}`, 'Claude ist mit diesem Chat fertig. Rechts unter „Agenten“ kannst du ihn öffnen.', 'chat');
@@ -535,6 +538,19 @@ function setup() {
     });
     c.on('approvals', onApprovalsChanged);
     return c;
+  }
+
+  // Wartende Nachrichten zustellen – in der Reihenfolge, in der die Chats warten.
+  let flushing = false;
+  async function flushQueued() {
+    if (flushing) return;
+    flushing = true;
+    try {
+      await pool.flushQueued(chat);
+    } finally {
+      flushing = false;
+      pushState();
+    }
   }
 
   // Untätige Hintergrund-Chats nach 10 Minuten einschläfern – sie bleiben in der Liste und wachen beim Senden auf.
@@ -710,7 +726,12 @@ function setup() {
     if (!c.title) { c.title = shortTitle(t); pushState(); }
     c.relayHops = 0; // Eris schreibt selbst – die Kette der Weiterleitungen beginnt neu
     // Ein schlafender Chat wacht auf – dafür schläft notfalls ein anderer, untätiger ein.
-    if (!c.alive && !pool.wake(chat, c)) return { ok: false, error: pool.fullMessage() };
+    // Arbeiten schon alle wachen: Die Nachricht wartet und geht raus, sobald einer fertig ist (nie verloren).
+    if ((c.queued && c.queued.length) || (!c.alive && !pool.wake(chat, c))) {
+      c.queued = [...(c.queued || []), t];
+      pushState();
+      return { ok: true, queued: true, gen };
+    }
     const ok = await c.send(t);
     // Inzwischen gewechselt: Läuft der Chat im Hintergrund weiter, ist die Nachricht trotzdem angekommen.
     if (c !== chat && pool.get(c.sessionId) === c) return { ok, parked: true };

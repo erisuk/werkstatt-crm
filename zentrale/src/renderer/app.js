@@ -143,6 +143,7 @@ function chatStatus() {
   if (!s.claude.found) return { dot: 'red', text: 'Claude Code nicht gefunden' };
   if ((s.approvals || []).length) return { dot: 'blue pulse', text: 'Claude wartet auf dich', pill: 'blue', short: 'wartet auf dich' };
   if (!s.chat) return { dot: '', text: 'Kein Chat offen' };
+  if (s.chat.queued) return { dot: 'amber pulse', text: 'Nachricht wartet – 5 Chats arbeiten schon', pill: 'amber', short: 'wartet auf Platz' };
   if (s.chat.status === 'busy') return { dot: 'amber pulse', text: 'Claude arbeitet …', pill: 'amber', short: 'arbeitet' };
   if (s.chat.status === 'error') return { dot: 'red', text: 'Claude hatte einen Fehler', pill: 'red', short: 'Fehler' };
   return { dot: 'green', text: 'Claude bereit', pill: 'green', short: 'bereit' };
@@ -956,6 +957,7 @@ api.onChatEvent((ev) => {
 
 function chatPill(c) {
   if (c.waiting) return { pill: 'blue', text: 'wartet auf dich' };
+  if (c.queued) return { pill: 'amber', text: 'wartet auf Platz', title: 'Schon 5 Chats arbeiten. Deine Nachricht geht automatisch raus, sobald einer fertig ist.' };
   if (c.status === 'busy') return { pill: 'amber', text: 'arbeitet' };
   if (c.status === 'error') return { pill: 'red', text: 'Fehler' };
   // Schläft: Prozess aus, Gespräch gespeichert – wacht beim nächsten Senden auf.

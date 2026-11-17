@@ -115,8 +115,8 @@ test('ChatPool: Liste für die Agenten-Leiste – sichtbarer zuerst, mit Status 
   const active = fakeChat('a', { title: 'Logo' });
   pool.park(fakeChat('b', { status: 'busy', approvals: 2 }));
   assert.deepStrictEqual(pool.list(active), [
-    { sessionId: 'a', title: 'Logo', name: 'a', status: 'ready', active: true, waiting: 0, asleep: false, relayFrom: null },
-    { sessionId: 'b', title: 'Neues Gespräch', name: 'b', status: 'busy', active: false, waiting: 2, asleep: false, relayFrom: null },
+    { sessionId: 'a', title: 'Logo', name: 'a', status: 'ready', active: true, waiting: 0, asleep: false, relayFrom: null, queued: 0 },
+    { sessionId: 'b', title: 'Neues Gespräch', name: 'b', status: 'busy', active: false, waiting: 2, asleep: false, relayFrom: null, queued: 0 },
   ]);
 });
 
@@ -148,4 +148,23 @@ test('ChatPool: Parken zählt als gerade benutzt, Schließen liefert das Beenden
   await pool.close(c);
   assert.ok(c.disposed);
   assert.strictEqual(pool.get('a'), null);
+});
+
+test('ChatPool: wartende Nachrichten gehen raus, sobald ein Chat frei ist – in Reihenfolge, nichts geht verloren', async () => {
+  const pool = new ChatPool({ awakeMax: 2 });
+  const active = fakeChat('aktiv', { status: 'busy' });
+  const b = fakeChat('b', { status: 'busy' });
+  const wartend = fakeChat('w', { alive: false });
+  wartend.sent = [];
+  wartend.send = async (t) => { wartend.sent.push(t); wartend.alive = true; wartend.status = 'busy'; return true; };
+  for (const c of [b, wartend]) pool.park(c);
+  wartend.queued = ['erste', 'zweite'];
+  assert.strictEqual(await pool.flushQueued(active), 0, 'alle wachen arbeiten → bleibt in der Warteschlange');
+  assert.deepStrictEqual(wartend.queued, ['erste', 'zweite']);
+  b.status = 'ready'; // einer ist fertig
+  assert.strictEqual(await pool.flushQueued(active), 2);
+  assert.deepStrictEqual(wartend.sent, ['erste', 'zweite']);
+  assert.deepStrictEqual(wartend.queued, []);
+  assert.ok(!b.alive, 'der fertige schläft dafür ein');
+  assert.strictEqual(pool.list(active).find((c) => c.sessionId === 'w').queued, 0);
 });
