@@ -439,7 +439,27 @@ function setup() {
     return null;
   }
 
+  // Neuer Chat im Auftrag eines anderen Chats: wie „Neues Gespräch“, aber im Hintergrund (der sichtbare bleibt).
+  async function startChatFor({ cwd, title, text, from, hops }) {
+    if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const dir = path.resolve(String(cwd || ''));
+    if (!isDir(dir)) return { ok: false, error: `Den Ordner „${cwd}“ gibt es nicht.` };
+    if (!pool.hasRoom(chat)) return { ok: false, error: pool.listFullMessage() };
+    const c = createChat({ cwd: dir, title });
+    c.relayHops = hops;
+    c.lastRelay = { from: chatTitle(from), at: Date.now() };
+    if (!c.title) c.title = shortTitle(text.split('\n\n')[1] || text);
+    if (pool.wake(chat, c)) {
+      if (!(await c.send(text))) { c.dispose().catch(() => {}); return { ok: false, error: 'Der neue Chat konnte nicht starten.' }; }
+    } else c.queued = [text]; // alle wachen arbeiten: geht raus, sobald einer frei ist
+    pool.park(c);
+    pool.trim();
+    pushState();
+    return { ok: true, chat: c.sessionId };
+  }
+
   const chatLink = createChatLink({
+    start: startChatFor,
     chats: () => allChats(),
     history: (c, n) => { const f = sessionFile(c); return f ? readMessages(f, n) : []; },
     deliver: async (c, text, from, hops) => {

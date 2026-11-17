@@ -103,3 +103,25 @@ test('Chats verbinden: Aufwachen meldet „bereit“, bevor die Nachricht ankomm
   const r = await link.send({ from: 'a', chat: 'b', text: 'Hallo' });
   assert.strictEqual(r.data.antwort, 'Antwort auf: Hallo');
 });
+
+test('Chats starten: neuer Chat mit Auftrag und Absender, Bremse bei zu vielen, Weiterleitungs-Grenze', async () => {
+  const a = fakeChat('a', 'Affiliate');
+  const gestartet = [];
+  let t = 0;
+  const { link } = setup([a], { now: () => t, start: async (o) => { gestartet.push(o); return { ok: true, chat: `neu${gestartet.length}` }; } });
+  const r = await link.start({ from: 'a', titel: 'Steuer', auftrag: 'Prüf die Rechnung.' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.data.chat, 'neu1');
+  assert.strictEqual(gestartet[0].cwd, '/Users/x/a', 'ohne Ordner derselbe wie der Absender');
+  assert.strictEqual(gestartet[0].title, 'Steuer');
+  assert.strictEqual(gestartet[0].hops, 1);
+  assert.match(gestartet[0].text, /^\[Nachricht vom Chat „Affiliate“/);
+  await link.start({ from: 'a', auftrag: 'zwei' });
+  await link.start({ from: 'a', auftrag: 'drei' });
+  assert.match((await link.start({ from: 'a', auftrag: 'vier' })).error, /schon 3 neue Chats/);
+  t += 11 * 60 * 1000;
+  assert.strictEqual((await link.start({ from: 'a', auftrag: 'später wieder' })).ok, true);
+  assert.strictEqual((await link.start({ from: 'a', auftrag: ' ' })).ok, false, 'ohne Auftrag nicht');
+  a.relayHops = 3;
+  assert.match((await link.start({ from: 'a', auftrag: 'x' })).error, /Weiterleitungen/);
+});

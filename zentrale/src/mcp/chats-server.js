@@ -21,6 +21,13 @@ const TOOLS = [
     inputSchema: { type: 'object', required: ['chat', 'text'], properties: { chat, text: { type: 'string' },
       warten: { type: 'boolean', description: 'auf die Antwort warten (Standard: ja)' } } },
     run: (a) => call('send', { chat: a.chat, text: a.text, wait: a.warten !== false }, 11 * 60 * 1000) },
+  { name: 'chats_starten', readOnly: false,
+    description: 'Startet einen neuen Chat in der Zentrale für eine eigenständige Nebenaufgabe (erscheint bei Eris rechts unter „Agenten“ und arbeitet im Hintergrund). Nur wenn Eris das will oder die Aufgabe wirklich für sich steht – nicht für Teile der aktuellen Aufgabe. Der Auftrag muss ohne diesen Verlauf verständlich sein.',
+    inputSchema: { type: 'object', required: ['auftrag'], properties: {
+      auftrag: { type: 'string', description: 'Vollständiger Auftrag für den neuen Chat' },
+      titel: { type: 'string', description: 'Kurzer Name für die Liste' },
+      ordner: { type: 'string', description: 'Arbeitsordner (absoluter Pfad); ohne Angabe derselbe wie dieser Chat' } } },
+    run: (a) => call('start', { auftrag: a.auftrag, titel: a.titel, ordner: a.ordner }) },
 ];
 
 if (require.main === module) serve(TOOLS, 'zentrale-chats');

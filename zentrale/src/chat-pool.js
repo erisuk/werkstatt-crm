@@ -45,7 +45,8 @@ class ChatPool {
   // Der bisher sichtbare Chat wandert in den Hintergrund – außer er hatte noch keine einzige Nachricht.
   park(c) {
     if (!c || c.disposed) return;
-    if (!c.sessionSaved() && c.status !== 'busy') { c.dispose().catch(() => {}); return; }
+    // Leer und untätig: weg. Wartet aber eine Nachricht auf einen freien Platz, bleibt er.
+    if (!c.sessionSaved() && c.status !== 'busy' && !(c.queued && c.queued.length)) { c.dispose().catch(() => {}); return; }
     const prev = this.parked.get(c.sessionId);
     if (prev && prev !== c) prev.dispose().catch(() => {});
     c.lastActive = Date.now(); // gerade noch angeschaut – nicht sofort als „untätig“ einschläfern
