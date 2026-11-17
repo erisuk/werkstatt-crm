@@ -26,6 +26,14 @@ function stepDetail(name, input) {
   return firstLine(i.description || i.file_path || i.path || i.url || i.query || i.command || i.title || i.name || '');
 }
 
+// Schritte, die Maus oder Tastatur des Macs steuern: Ihre Tastendrücke landen im Fenster, das gerade vorne ist –
+// oft die Zentrale selbst. Solange so etwas läuft, sperrt die Zentrale ihre Eingabefelder.
+const SCREEN_COMMAND = /System Events|\bkeystroke\b|\bkey code\b|\bcliclick\b|CGEventPost|CGEventCreate(Mouse|Keyboard)Event|pyautogui|\bxdotool\b/;
+function controlsScreen(name, i) {
+  if (/^mcp__computer-use__/.test(name)) return true;
+  return name === 'Bash' && SCREEN_COMMAND.test(String(i.command || ''));
+}
+
 function toolStep(name, input) {
   const tool = String(name || 'Werkzeug');
   const i = input && typeof input === 'object' ? input : {};
@@ -33,8 +41,10 @@ function toolStep(name, input) {
   // Der volle Pfad nur bei Dateien: für Bildvorschau und die Liste „Ausgaben“.
   // Bei den Web-Tab-Werkzeugen: welcher Tab – für „mit welcher Anmeldung arbeitet dieser Chat“.
   const tab = /^mcp__web__/.test(tool) && typeof i.tab === 'string' ? i.tab.slice(0, 80) : null;
-  if (file) return { tool, detail: stepDetail(tool, input), path: file };
-  return tab ? { tool, detail: stepDetail(tool, input), tab } : { tool, detail: stepDetail(tool, input) };
+  const step = { tool, detail: stepDetail(tool, input) };
+  if (file) return { ...step, path: file };
+  if (tab) return { ...step, tab };
+  return controlsScreen(tool, i) ? { ...step, screen: true } : step;
 }
 
-module.exports = { toolStep, stepDetail };
+module.exports = { toolStep, stepDetail, controlsScreen };

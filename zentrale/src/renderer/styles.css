@@ -958,3 +958,8 @@ h2 { font-size: 16px; font-weight: 600; }
 .konto-neu-felder .konto-input { flex: 1 1 180px; max-width: none; width: auto; }
 
 .info-right.gone { color: var(--text-2); font-style: italic; }
+
+/* Eingabesperre, solange ein Chat Maus/Tastatur steuert */
+.screen-lock { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 8px; border-radius: 12px; background: var(--notice-bg); color: var(--notice); font-size: 13px; line-height: 1.4; }
+.screen-lock[hidden] { display: none; }
+.screen-lock .link { color: inherit; font-weight: 600; text-decoration: underline; }

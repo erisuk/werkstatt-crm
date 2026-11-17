@@ -621,12 +621,14 @@ function renderChat() {
     h('div', { class: 'messages', id: 'messages' }, typing),
     h('div', { class: 'chat-bottom' },
       h('div', { id: 'chat-approvals', class: 'chat-approvals' }),
+      h('div', { id: 'chat-screen-lock', class: 'screen-lock', role: 'status', hidden: true }),
       form)));
   ui.sig.chatHead = null;
   ui.shown = 0;
   updateChatHead();
   renderMessages();
   renderChatApprovals();
+  renderScreenLock();
   // Aus „Skills & Agenten“: der Skill-Name steht schon im Eingabefeld.
   if (ui.prefill) { input.value = ui.prefill; ui.prefill = null; }
   input.focus();
@@ -1121,6 +1123,7 @@ function applyState(next) {
   renderStatus();
   renderTheme();
   renderAside();
+  renderScreenLock();
   if (firstLoad) { renderMain(); return; }
   if (ui.view === 'overview') renderOverview();
   else if (ui.view === 'chat') {

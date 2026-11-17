@@ -255,6 +255,13 @@ function setup() {
     return list.sort((a, b) => a.createdAt - b.createdAt);
   }
 
+  // Steuert gerade ein arbeitender Chat Maus oder Tastatur? Dann bis `until` keine Eingabe in die Zentrale.
+  const SCREEN_LOCK_MS = 90 * 1000;
+  function screenControl() {
+    const c = allChats().find((x) => x.status === 'busy' && x.screenAt && Date.now() - x.screenAt < SCREEN_LOCK_MS);
+    return c ? { title: chatTitle(c), until: c.screenAt + SCREEN_LOCK_MS } : null;
+  }
+
   function snapshot() {
     return {
       dryRun: dryRunActive() ? dryRunUntil : 0,
@@ -265,6 +272,7 @@ function setup() {
       chats: pool.list(chat),
       tasks: scheduler ? scheduler.list() : [],
       approvals: approvals(),
+      screenControl: screenControl(),
       settings: settings ? settings.get() : null,
       platform: process.platform,
     };
@@ -517,6 +525,8 @@ function setup() {
     c.lastActive = Date.now();
     c.on('event', (ev) => {
       if (ev.kind === 'window') rememberWindow(ev.contextWindow);
+      // Claude steuert Maus/Tastatur: Eingabefelder der Zentrale sperren (sonst landen Tastendrücke im Chat).
+      if (ev.kind === 'tool' && ev.screen) { c.screenAt = Date.now(); pushState(); }
       if (ev.kind === 'init' && ev.mcp) lastKnown.mcp = ev.mcp;
       send('chat-event', { ...ev, gen: c.gen });
       // Abgemeldet? (Fehler mit Login/OAuth) – fällt im Kontrollraum als blinder Fleck auf.

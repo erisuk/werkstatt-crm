@@ -64,3 +64,14 @@ test('Füllstand eines gespeicherten Gesprächs: letzte Antwort des Hauptchats, 
   assert.strictEqual(lastContext(file), null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('Bildschirmsteuerung: Tastendrücke per osascript, cliclick, CGEvent oder Bildschirm-Werkzeug werden erkannt', () => {
+  const { toolStep, controlsScreen } = require('../src/tool-steps');
+  assert.strictEqual(toolStep('Bash', { command: `osascript -e 'tell application "System Events" to keystroke "x"'` }).screen, true);
+  assert.strictEqual(toolStep('Bash', { command: 'uv run python klick.py 1 2 # CGEventPost' }).screen, true);
+  assert.strictEqual(toolStep('Bash', { command: 'cliclick c:10,10' }).screen, true);
+  assert.strictEqual(controlsScreen('mcp__computer-use__app_click', {}), true);
+  assert.strictEqual(toolStep('Bash', { command: 'ls -la' }).screen, undefined);
+  assert.strictEqual(toolStep('Bash', { command: 'osascript -e \'tell application "Labelnize" to activate\'' }).screen, undefined, 'nur App nach vorn holen tippt nichts');
+  assert.strictEqual(toolStep('Read', { file_path: '/x/System Events.txt' }).screen, undefined);
+});
