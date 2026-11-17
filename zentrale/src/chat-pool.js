@@ -117,7 +117,7 @@ class ChatPool {
   // Was beim Neustart der Zentrale wiederkommen soll: alle Chats mit gespeichertem Gespräch.
   saved(active) {
     return this.all(active).filter((c) => !c.disposed && c.sessionSaved())
-      .map((c) => ({ sessionId: c.sessionId, cwd: c.cwd, title: c.title || null, addDirs: c.addDirs || [] }));
+      .map((c) => ({ sessionId: c.sessionId, cwd: c.cwd, title: c.title || null, addDirs: c.addDirs || [], model: c.model || null, effort: c.effort || null }));
   }
 
   fullMessage() {

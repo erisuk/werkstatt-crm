@@ -974,3 +974,9 @@ h2 { font-size: 16px; font-weight: 600; }
 .md-img img { display: block; max-width: 100%; max-height: 420px; height: auto; object-fit: contain; }
 .md-img:hover, .md-img:focus-visible { border-color: var(--accent); }
 .md-img-missing { display: inline-block; margin: 4px 0; padding: 4px 10px; border-radius: 8px; background: var(--fill); color: var(--text-2); font-size: 13px; }
+
+/* Modell und Denktiefe unten im Eingabefeld */
+.model-picker { display: inline-flex; gap: 6px; align-items: center; margin-right: 8px; min-width: 0; }
+.model-select { height: 30px; max-width: 190px; padding: 0 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-2); font: inherit; font-size: 12.5px; cursor: pointer; text-overflow: ellipsis; }
+.model-select:hover, .model-select:focus-visible { background: var(--fill); color: var(--text); }
+@container (max-width: 560px) { .model-select + .model-select { display: none; } }

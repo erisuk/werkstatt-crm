@@ -607,7 +607,7 @@ function renderChat() {
     input.focus(); // nach Klick auf Senden gleich weiterschreiben können
     sendMessage(t);
   } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input,
-    h('div', { class: 'composer-tools' }, fileBtn, shotBtn, h('span', { class: 'spacer' }), sendBtn));
+    h('div', { class: 'composer-tools' }, fileBtn, shotBtn, h('span', { class: 'spacer' }), h('span', { id: 'chat-model', class: 'model-picker' }), sendBtn));
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
   });
@@ -630,6 +630,8 @@ function renderChat() {
   renderMessages();
   renderChatApprovals();
   renderScreenLock();
+  ui.sig.modelPicker = null;
+  renderModelPicker();
   // Aus „Skills & Agenten“: der Skill-Name steht schon im Eingabefeld.
   if (ui.prefill) { input.value = ui.prefill; ui.prefill = null; }
   input.focus();
@@ -706,6 +708,32 @@ function updateChatHead() {
     h('button', { class: 'btn ghost', 'data-focus': 'chat-new', onClick: () => newSession(c.cwd) }, 'Neues Gespräch'),
     h('button', { class: `icon-btn info-toggle${chatInfoOpen() ? ' on' : ''}`, 'data-focus': 'chat-info-toggle', 'aria-pressed': String(chatInfoOpen()),
       'aria-label': 'Info-Leiste ein- oder ausblenden', title: chatInfoOpen() ? 'Info-Leiste ausblenden' : 'Info-Leiste einblenden', onClick: toggleChatInfo }, panelIcon())));
+  renderModelPicker();
+}
+
+// Modell und Denktiefe je Chat, unten im Eingabefeld wie in der Claude-App (Liste wie MODELS im Hauptprozess).
+const MODEL_LABELS = { 'claude-opus-5-5': 'Opus 5.5', 'claude-fable-5-2': 'Fable 5.2', 'claude-sonnet-5-5': 'Sonnet 5.5', 'claude-haiku-5-5': 'Haiku 5.5' };
+const EFFORT_LABELS = { '': 'Denktiefe: Standard', low: 'Denktiefe: niedrig', medium: 'Denktiefe: mittel', high: 'Denktiefe: hoch', xhigh: 'Denktiefe: sehr hoch', max: 'Denktiefe: maximal' };
+const modelName = (id) => MODEL_LABELS[id] || (id ? String(id).replace(/^claude-/, '') : 'Standard');
+
+function renderModelPicker() {
+  const box = $('#chat-model');
+  const c = ui.state && ui.state.chat;
+  if (!box || !c) return;
+  if (!changed('modelPicker', [c.sessionId, c.model, c.effort, c.activeModel, c.defaultModel])) return;
+  const model = h('select', { class: 'model-select', 'aria-label': 'Modell für diesen Chat', 'data-focus': 'chat-model-select',
+    title: c.activeModel ? `Läuft gerade mit ${modelName(c.activeModel)}. Eine Änderung gilt ab der nächsten Nachricht.` : 'Gilt ab der nächsten Nachricht' });
+  model.append(h('option', { value: '' }, `Standard (${modelName(c.defaultModel)})`));
+  for (const [id, label] of Object.entries(MODEL_LABELS)) model.append(h('option', { value: id }, label));
+  model.value = c.model || '';
+  const effort = h('select', { class: 'model-select', 'aria-label': 'Denktiefe für diesen Chat', 'data-focus': 'chat-effort-select',
+    title: 'Wie gründlich Claude nachdenkt – höher ist genauer, aber langsamer. Gilt ab der nächsten Nachricht.' });
+  for (const [id, label] of Object.entries(EFFORT_LABELS)) effort.append(h('option', { value: id }, label));
+  effort.value = c.effort || '';
+  const save = () => api.chatModel(model.value || null, effort.value || null);
+  model.addEventListener('change', save);
+  effort.addEventListener('change', save);
+  keepFocus(() => fill(box, model, effort));
 }
 
 function panelIcon() {

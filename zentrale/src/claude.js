@@ -314,8 +314,10 @@ const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 class ClaudeChat extends EventEmitter {
   constructor({ bin, env, cwd, resume = null, permissionMode = null, title = null,
-    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null, allowAll = () => false, askQuestions = false, addDirs = [] }) {
+    projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null, allowAll = () => false, askQuestions = false, addDirs = [], model = null, effort = null }) {
     super();
+    this.model = model; // null = Standard aus ~/.claude/settings.json
+    this.effort = effort; // null = Standard
     this.addDirs = addDirs; // weitere Ordner, in denen Claude arbeiten darf (--add-dir)
     this.askQuestions = askQuestions; // true = Auswahlfragen als Karte zeigen (nur wo Eris zuschaut)
     this.allowAll = allowAll; // true = jede Anfrage sofort erlauben (Einstellung „Ohne Rückfrage arbeiten“)
@@ -471,6 +473,8 @@ class ClaudeChat extends EventEmitter {
       '--settings', safetySettings(this.permissionMode)];
     args.push(this.sessionSaved() ? '--resume' : '--session-id', this.sessionId);
     for (const d of this.addDirs) args.push('--add-dir', d);
+    if (this.model) args.push('--model', this.model);
+    if (this.effort) args.push('--effort', this.effort);
     args.push(...(this.extraArgs() || []));
     this.stderr = '';
     this.pending = 0;
@@ -504,6 +508,7 @@ class ClaudeChat extends EventEmitter {
       for (const item of simplify(ev)) {
         if (item.kind === 'init' && item.servers) this.connectedServers = item.servers;
         if (item.kind === 'init' && item.mcp) this.mcp = item.mcp;
+        if (item.kind === 'init' && item.model) this.activeModel = item.model;
         // Grundausstattung (System, Werkzeuge, Gedächtnis) = die erste Anfrage eines frischen Gesprächs.
         if (item.kind === 'usage') { if (!this.resumed && !this.baseline) this.baseline = item.context; this.context = item.context; }
         if (item.kind === 'window') this.contextWindow = item.contextWindow;
@@ -534,6 +539,13 @@ class ClaudeChat extends EventEmitter {
       this.emit('event', { kind: 'error', text: explainExit(this.stderr), details });
       this.setStatus('error');
     });
+  }
+
+  // Modell/Denktiefe für diesen Chat: gilt ab der nächsten Nachricht (der Prozess startet dafür neu, mit Verlauf).
+  setModel(model, effort) {
+    this.model = model || null;
+    this.effort = effort || null;
+    if (this.alive) this.needsRestart = true;
   }
 
   // Weitere Ordner ändern: gilt ab der nächsten Nachricht (der Prozess startet dafür neu).

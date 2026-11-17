@@ -251,7 +251,20 @@ function setup() {
       // Bis der Chat selbst geantwortet hat: Fenstergröße und Konnektoren vom letzten Chat bzw. der letzten Prüfung.
       context: chat.context ? { used: chat.context, window: chat.contextWindow || knownWindow(), baseline: chat.baseline || null } : null,
       mcp: chat.mcp || lastKnown.mcp,
+      model: chat.model || null, effort: chat.effort || null, activeModel: chat.activeModel || null, defaultModel: defaultModel(),
       addDirs: (chat.addDirs || []).map((d) => ({ path: d, name: path.basename(d), linked: folderLinks.linked(loadLinks(), chatKey(chat.cwd)).includes(d) })) };
+  }
+
+  // Modelle zur Auswahl je Chat (wie der Modell-Schalter der Claude-App). Standard = ~/.claude/settings.json.
+  const MODELS = { 'claude-opus-5-5': 'Opus 5.5', 'claude-fable-5-2': 'Fable 5.2', 'claude-sonnet-5-5': 'Sonnet 5.5', 'claude-haiku-5-5': 'Haiku 5.5' };
+  const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+  let defaultModelCache = { at: 0, value: null };
+  function defaultModel() {
+    if (Date.now() - defaultModelCache.at < 30000) return defaultModelCache.value;
+    let value = null;
+    try { value = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf8')).model || null; } catch { /* Standard von Claude Code */ }
+    defaultModelCache = { at: Date.now(), value };
+    return value;
   }
 
   // Verknüpfte Ordner (src/folder-links.js) – Schlüssel ist der volle Pfad des Projektordners.
@@ -561,7 +574,7 @@ function setup() {
   }
 
   // Ein Chat mit allen Verbindungen zur Oberfläche – noch ohne laufenden Prozess.
-  function createChat({ cwd, sessionId = null, title = null, addDirs = [] }) {
+  function createChat({ cwd, sessionId = null, title = null, addDirs = [], model = null, effort = null }) {
     // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
     const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
     let c = null;
@@ -569,7 +582,8 @@ function setup() {
     // Verknüpfte Projekte kommen immer mit, dazu die Ordner, die der Chat schon hatte.
     const dirs = folderLinks.mergeDirs(chatKey(cwd), folderLinks.linked(loadLinks(), chatKey(cwd)), addDirs)
       .filter((d) => folderLinks.cleanDir(d));
-    c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true, addDirs: dirs });
+    c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true, addDirs: dirs,
+      model: MODELS[model] ? model : null, effort: EFFORTS.includes(effort) ? effort : null });
     c.gen = 0;
     c.lastActive = Date.now();
     c.on('event', (ev) => {
@@ -634,7 +648,7 @@ function setup() {
         if (!e || typeof e.sessionId !== 'string' || pool.get(e.sessionId) || (chat && chat.sessionId === e.sessionId)) continue;
         const session = findSession(e.sessionId);
         if (!session || !isDir(session.cwd)) continue;
-        const c = createChat({ cwd: session.cwd, sessionId: e.sessionId, title: session.title, addDirs: Array.isArray(e.addDirs) ? e.addDirs : [] });
+        const c = createChat({ cwd: session.cwd, sessionId: e.sessionId, title: session.title, addDirs: Array.isArray(e.addDirs) ? e.addDirs : [], model: e.model, effort: e.effort });
         try { c.context = lastContext(session.file); } catch { /* ohne Füllstand */ }
         pool.park(c);
       }
@@ -811,6 +825,18 @@ function setup() {
     pushState();
     return true;
   });
+
+  // Modell und Denktiefe des offenen Chats (null = Standard). Gilt ab der nächsten Nachricht.
+  ipcMain.handle('chat-model', (_e, args) => {
+    const c = chat;
+    if (!c) return { ok: false, error: 'Kein Chat offen.' };
+    const model = args && MODELS[args.model] ? args.model : null;
+    const effort = args && EFFORTS.includes(args.effort) ? args.effort : null;
+    c.setModel(model, effort);
+    pushState();
+    return { ok: true };
+  });
+  ipcMain.handle('chat-models', () => ({ models: MODELS, efforts: EFFORTS }));
 
   // Weiteren Ordner zum offenen Chat holen (Auswahl im Finder). link: dauerhaft mit dem Projekt verknüpfen.
   ipcMain.handle('chat-folder-add', async (_e, args) => {
