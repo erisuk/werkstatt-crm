@@ -1007,3 +1007,17 @@ h2 { font-size: 16px; font-weight: 600; }
 .plan-body { max-height: 46vh; overflow: auto; padding: 4px 12px; border-radius: 10px; background: var(--fill); }
 .plan-wish { width: 100%; box-sizing: border-box; resize: vertical; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: transparent; color: var(--text); font: inherit; }
 .plan-wish:focus { outline: none; border-color: var(--accent); }
+
+/* Änderungen (Diff) */
+.diff-head { font-size: 12px; color: var(--text-2); margin: 2px 0 2px; }
+.info-right.diff-num { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.diff-overlay { position: fixed; inset: 0; z-index: 1200; background: rgba(0, 0, 0, .55); backdrop-filter: blur(6px); display: flex; justify-content: center; align-items: center; padding: 32px; }
+.diff-panel { width: min(1100px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: 16px; background-color: var(--bg); background-image: linear-gradient(var(--card-strong), var(--card-strong)); border: 1px solid var(--border-strong); box-shadow: 0 20px 60px rgba(0, 0, 0, .35); }
+.diff-top { display: flex; align-items: center; gap: 12px; }
+.diff-title { flex: 1; min-width: 0; font-weight: 600; font-family: ui-monospace, Menlo, monospace; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-code { margin: 0; overflow: auto; padding: 10px 0; border-radius: 10px; background: var(--fill); font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.5; user-select: text; }
+.d-line { display: block; padding: 0 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.d-add { background: rgba(34, 197, 94, .16); }
+.d-del { background: rgba(217, 45, 32, .16); }
+.d-hunk { color: var(--accent-text); background: rgba(59, 130, 246, .08); }
+.d-meta { color: var(--text-2); }

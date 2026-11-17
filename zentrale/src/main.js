@@ -58,6 +58,7 @@ const { Bildschirm, makeOps: makeBildschirmOps } = require('./bildschirm');
 const { createChatLink } = require('./chat-link');
 const folderLinks = require('./folder-links');
 const chatPlan = require('./chat-plan');
+const chatDiff = require('./chat-diff');
 const konten = require('./konten');
 const { loginState, cookieDomain } = require('./login-check');
 const kommentare = require('./kommentare');
@@ -1251,6 +1252,14 @@ function setup() {
     // Nur Ordner, in denen gerade ein Chat läuft – git/gh laufen nie in beliebigen Ordnern.
     if (!cwd || !isDir(cwd) || !allChats().some((c) => c.cwd === cwd)) return null;
     return chatEnv(cwd, { force: args.force === true });
+  });
+
+  // Nicht committete Änderungen und Diff einer Datei – nur in Ordnern, in denen gerade ein Chat läuft (nur lesen).
+  ipcMain.handle('chat-diff', async (_e, args) => {
+    const cwd = args && typeof args.cwd === 'string' ? args.cwd : null;
+    if (!cwd || !isDir(cwd) || !allChats().some((c) => c.cwd === cwd)) return null;
+    if (typeof args.file === 'string') return chatDiff.fileDiff(cwd, args.file);
+    return chatDiff.changes(cwd);
   });
 
   // Kleine Vorschau eines Bildes, das Claude angeschaut hat (Chat-Schritte). Nur echte Bilddateien.

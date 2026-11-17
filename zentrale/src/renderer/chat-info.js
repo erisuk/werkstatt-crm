@@ -141,13 +141,13 @@ function outputsSection() {
   }));
 }
 
-function changesSection(env) {
+function changesSection(env, c) {
   if (!env) return infoSection('Änderungen', h('p', { class: 'info-empty', text: 'Wird geladen …' }));
   if (!env.git) return infoSection('Änderungen', h('p', { class: 'info-empty', text: 'Kein Git-Projekt.' }));
-  const rows = [];
+  const rows = [...diffRows(c)];
   if (env.pr) rows.push(infoRow('⑂', `${env.pr.title} · #${env.pr.number}`, { title: env.pr.url, onClick: () => api.openExternal(env.pr.url) }));
   for (const x of env.commits || []) rows.push(infoRow('•', x.subject || x.hash, { title: x.hash }));
-  return infoSection('Änderungen', ...(rows.length ? rows : [h('p', { class: 'info-empty', text: 'Noch keine Commits.' })]));
+  return infoSection('Änderungen', ...(rows.length ? rows : [h('p', { class: 'info-empty', text: 'Keine Änderungen und noch keine Commits.' })]));
 }
 
 function envSection(c, env) {
@@ -193,6 +193,6 @@ function renderChatInfo() {
   const env = ui.chatEnv && ui.chatEnv.cwd === c.cwd ? ui.chatEnv : null;
   const outs = chatOutputs();
   const usedTools = ui.messages.filter((m) => m.kind === 'tool' && /^mcp__/.test(m.tool || '')).map((m) => `${m.tool}|${m.tab || ''}`);
-  if (!changed('chatInfo', [c.cwd, c.context, c.mcp, c.addDirs, outs, env, ui.chatInfoMore, usedTools, ui.kontenAt, ui.fileExists])) return;
-  keepFocus(() => fill(box, envSection(c, env), accountsSection(), contextSection(c), connectorsSection(c), outputsSection(), changesSection(env)));
+  if (!changed('chatInfo', [c.cwd, c.context, c.mcp, c.addDirs, outs, env, ui.chatInfoMore, usedTools, ui.kontenAt, ui.fileExists, ui.chatDiffAt])) return;
+  keepFocus(() => fill(box, envSection(c, env), accountsSection(), contextSection(c), connectorsSection(c), outputsSection(), changesSection(env, c)));
 }

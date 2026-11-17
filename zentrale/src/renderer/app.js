@@ -1078,7 +1078,7 @@ api.onChatEvent((ev) => {
   if (ev.kind === 'text') ui.messages.push({ kind: 'assistant', text: ev.text });
   else if (ev.kind === 'relay') ui.messages.push({ kind: 'user', text: ev.text, at: Date.now() });
   else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', id: ev.id, text: ev.text, tool: ev.tool, detail: ev.detail, path: ev.path, tab: ev.tab });
-  else if (ev.kind === 'toolResult') { forgetMissingFiles(); markStepResult(ev.id, ev.error); renderChatInfo(); return; }
+  else if (ev.kind === 'toolResult') { forgetMissingFiles(); ui.chatDiffAt = 0; markStepResult(ev.id, ev.error); renderChatInfo(); return; }
   else if (ev.kind === 'error') ui.messages.push({ kind: 'error', text: ev.text, details: ev.details });
   else return;
   if (ui.view === 'chat') { renderMessages(); if (ev.kind === 'tool') renderChatInfo(); }

@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   chatPlanMode: (on) => ipcRenderer.invoke('chat-plan-mode', on === true),
   answerPlan: (id, approve, feedback) => ipcRenderer.invoke('plan-answer', { id, approve: approve === true, feedback }),
   chatModel: (model, effort) => ipcRenderer.invoke('chat-model', { model, effort }),
+  chatDiff: (cwd, file) => ipcRenderer.invoke('chat-diff', { cwd, file }),
   fsExists: (paths) => ipcRenderer.invoke('fs-exists', paths),
   chatFolderAdd: (link) => ipcRenderer.invoke('chat-folder-add', { link: link === true }),
   chatFolderRemove: (dir) => ipcRenderer.invoke('chat-folder-remove', dir),
