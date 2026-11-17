@@ -968,3 +968,9 @@ h2 { font-size: 16px; font-weight: 600; }
 .msg.assistant.streaming > :last-child::after { content: ''; display: inline-block; width: .5em; height: 1.05em; margin-left: 2px; vertical-align: text-bottom; background: var(--claude, var(--accent)); border-radius: 2px; animation: stream-caret 1s steps(2, start) infinite; }
 @keyframes stream-caret { to { visibility: hidden; } }
 @media (prefers-reduced-motion: reduce) { .msg.assistant.streaming > :last-child::after { animation: none; } }
+
+/* Bilder im Chat */
+.md-img { display: block; max-width: min(100%, 560px); margin: 8px 0; padding: 0; border: 1px solid var(--border-strong); border-radius: 12px; overflow: hidden; background: var(--fill); cursor: zoom-in; }
+.md-img img { display: block; max-width: 100%; max-height: 420px; height: auto; object-fit: contain; }
+.md-img:hover, .md-img:focus-visible { border-color: var(--accent); }
+.md-img-missing { display: inline-block; margin: 4px 0; padding: 4px 10px; border-radius: 8px; background: var(--fill); color: var(--text-2); font-size: 13px; }

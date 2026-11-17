@@ -124,7 +124,9 @@ function parseMarkdown(text) {
 const MD_INLINE = [
   ['escape', /^\\([!-/:-@[-`{-~])/],
   ['code', /^(`+)([\s\S]*?[^`])\1(?!`)/],
-  // Adresse darf Klammerpaare enthalten (…/wiki/Ulm_(Stadt)); ![Bild](…) wird ein Link.
+  // Bild: ![Beschreibung](https://… oder /lokaler/pfad.png) – wird direkt im Chat gezeigt.
+  ['img', /^!\[((?:[^\]\\]|\\.)*)\]\(\s*<?((?:[^()\s<>]|\([^()\s<>]*\))+)>?(?:\s+"[^"]*")?\s*\)/],
+  // Adresse darf Klammerpaare enthalten (…/wiki/Ulm_(Stadt)).
   ['link', /^!?\[((?:[^\]\\]|\\.)+)\]\(\s*<?((?:[^()\s<>]|\([^()\s<>]*\))+)>?(?:\s+"[^"]*")?\s*\)/],
   ['autolink', /^<(https?:\/\/[^\s<>]+)>/],
   ['url', /^https?:\/\/[^\s<>]*[^\s<>.,;:!?'"\]]/],
@@ -169,6 +171,7 @@ function parseInline(text) {
     if (kind === 'url') m = [mdTrimUrl(m[0])];
     flush();
     if (kind === 'code') out.push({ t: 'code', v: m[2].replace(/^ (.*) $/, '$1') });
+    else if (kind === 'img') out.push({ t: 'img', src: m[2], alt: m[1] });
     else if (kind === 'link') out.push({ t: 'link', href: m[2], c: parseInline(m[1]) });
     else if (kind === 'autolink') out.push({ t: 'link', href: m[1], c: [{ t: 'text', v: m[1] }] });
     else if (kind === 'url') out.push({ t: 'link', href: m[0], c: [{ t: 'text', v: m[0] }] });
@@ -181,11 +184,33 @@ function parseInline(text) {
 
 const mdSafeHref = (href) => /^(https?:|mailto:)/i.test(href);
 
+// Welche Adresse ein Bild im Chat bekommt: https bleibt, lokale Pfade (/…, ~/…, file://…) über zbild://.
+function mdImageSrc(src) {
+  const s = String(src || '').trim();
+  if (/^https:\/\//i.test(s)) return s;
+  let p = s.replace(/^file:\/\//i, '');
+  try { p = decodeURI(p); } catch { /* schon im Klartext */ }
+  return /^(\/|~\/)/.test(p) ? `zbild://datei?p=${encodeURIComponent(p)}` : null;
+}
+
+// Ein Bild: Klick öffnet es groß (lokal in Vorschau, https im Browser). Lädt es nicht, bleibt ein Hinweis stehen.
+function mdImage(p) {
+  const url = mdImageSrc(p.src);
+  if (!url) return h('span', { class: 'md-ref', title: p.src, text: p.alt || p.src });
+  const local = url.startsWith('zbild:');
+  const img = h('img', { src: url, alt: p.alt || '', loading: 'lazy', decoding: 'async' });
+  const box = h('button', { type: 'button', class: 'md-img', title: `${p.alt ? `${p.alt}\n` : ''}${p.src}\nKlicken zum Öffnen`,
+    onClick: () => { if (local) openFile(p.src.replace(/^file:\/\//i, '')); else window.open(url, '_blank', 'noopener'); } }, img);
+  img.addEventListener('error', () => box.replaceWith(h('span', { class: 'md-img-missing', title: p.src, text: `Bild nicht gefunden: ${p.alt || p.src.split('/').pop()}` })), { once: true });
+  return box;
+}
+
 function mdInlineNodes(text) {
   const build = (parts) => parts.map((p) => {
     if (p.t === 'text') return document.createTextNode(p.v);
     if (p.t === 'br') return document.createElement('br');
     if (p.t === 'code') return h('code', { text: p.v });
+    if (p.t === 'img') return mdImage(p);
     if (p.t === 'link') {
       // Links öffnen im normalen Browser (die Zentrale leitet neue Fenster nach draußen).
       return mdSafeHref(p.href) ? h('a', { href: p.href, target: '_blank', rel: 'noopener noreferrer', title: p.href }, ...build(p.c))
@@ -231,4 +256,4 @@ function mdRender(text) {
   return h('div', { class: 'md' }, ...mdBlockNodes(parseMarkdown(text)));
 }
 
-if (typeof module !== 'undefined') module.exports = { parseMarkdown, parseInline };
+if (typeof module !== 'undefined') module.exports = { parseMarkdown, parseInline, mdImageSrc };

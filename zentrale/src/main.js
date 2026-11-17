@@ -11,7 +11,9 @@ const { createChatEnv } = require('./chat-env');
 const bitPosten = require('./bit-posten');
 const bitMedien = require('./bit-medien');
 // Muss vor „ready“ angemeldet sein: Videos abspielen (Stream, Vorspulen) über bitvideo://
-require('electron').protocol.registerSchemesAsPrivileged([{ scheme: bitMedien.SCHEME, privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }]);
+const bildMedien = require('./bild-medien');
+require('electron').protocol.registerSchemesAsPrivileged([{ scheme: bitMedien.SCHEME, privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
+  { scheme: bildMedien.SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const { listProjects, readMessages, watchSessions, shortTitle, DEFAULT_ROOT, renameSession, lastContext } = require('./sessions');
 const { TaskScheduler } = require('./tasks');
 const { Settings } = require('./settings');
@@ -105,6 +107,10 @@ const vaultHint = (dir) => `Das Gedächtnis („Gehirn“) des Nutzers ist sein 
   + 'Neue wichtige Erkenntnisse legst du mit /merk-dir ab; Notizen im Vault nie löschen, nur ergänzen.';
 
 // Hinweis an Claude, wenn „Web-Tabs für Claude“ eingeschaltet ist.
+// Bilder zeigt der Chat der Zentrale direkt an – Claude soll sie zeigen statt nur den Pfad zu nennen.
+const IMAGE_HINT = 'Der Chat der Zentrale zeigt Bilder direkt an: Schreib ![kurze Beschreibung](/absoluter/pfad.png) für Bilder auf dem Mac '
+  + '(auch Bildschirmfotos und Bilder, die du erstellt hast) oder ![Beschreibung](https://…) für Bilder aus dem Netz. '
+  + 'Zeig so jedes Bild, über das du sprichst oder das du erzeugt hast, statt nur den Pfad zu nennen.';
 const WEB_HINT = 'Du läufst in der Zentrale des Nutzers. Webseiten (z. B. Meta Business, Shopify, Gmail, Instagram) bedienst du '
   + 'mit den Werkzeugen zentrale_web_* in den Web-Tabs der Zentrale, wo der Nutzer angemeldet ist und live zusieht – nicht mit '
   + 'Playwright und nicht mit einem separaten Chrome. Lies die Seite (zentrale_web_read) vor und nach jeder Aktion. '
@@ -346,6 +352,7 @@ function setup() {
     const v = currentVault();
     if (v) hints.push(vaultHint(v.path));
     if (c.web && browserConfigFile) hints.push(WEB_HINT);
+    hints.push(IMAGE_HINT);
     hints.push(learning.systemHint(learnStore().activeLesson()));
     if (hints.length) args.push('--append-system-prompt', hints.join('\n\n'));
     if (allowed.length) args.push(`--allowedTools=${allowed.join(',')}`);
@@ -1083,7 +1090,8 @@ function setup() {
 
   ipcMain.handle('fs-icon', (_e, p) => (files.validPath(p) ? iconFor(p) : null));
 
-  ipcMain.handle('fs-open', async (_e, p) => {
+  ipcMain.handle('fs-open', async (_e, raw) => {
+    const p = typeof raw === 'string' && raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(2)) : raw;
     if (!files.validPath(p) || !fs.existsSync(p)) return { ok: false, error: 'Nicht gefunden.' };
     // Skripte und fremde Programme starten etwas – erst fragen.
     if (files.needsRunConfirm(p)) {
@@ -2159,6 +2167,7 @@ function setup() {
 
   app.whenReady().then(async () => {
     require('electron').protocol.handle(bitMedien.SCHEME, (req) => bitMedien.antwort(req, bitvideos.studioPfad()));
+    require('electron').protocol.handle(bildMedien.SCHEME, (req) => bildMedien.antwort(req));
     settings = new Settings(path.join(app.getPath('userData'), 'settings.json'));
     // Beim Start gesperrt – außer die Zentrale war bis eben entsperrt und der Mac seitdem in Benutzung (siehe sessionStillOpen).
     const lockCfg = settings.get().appLock;
