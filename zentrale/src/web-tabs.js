@@ -89,11 +89,17 @@ class WebTabs extends EventEmitter {
       entry.error = 'Die Seite ist abgestürzt – „Neu laden“ (↻) holt sie zurück.';
       changed();
     });
+    // „Mit Google anmelden“ geht in eingebauten Browsern nicht (Google sperrt das). Früher öffnete die Zentrale
+    // die Anmeldung dann heimlich im normalen Browser – angemeldet war danach aber nur Chrome, nicht der Tab.
+    // Jetzt: zurück zur Seite und klar erklären, wie es geht (E-Mail-Anmeldung im Tab oder die Seite in Chrome).
+    const googleBlocked = () => {
+      entry.googleBlocked = Date.now();
+      if (wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
+      changed();
+    };
     const remember = (_e, url) => {
+      if (isGoogleSignIn(url)) { googleBlocked(); return; }
       this.store.remember(id, url);
-      // Google-Anmeldung: einmal pro Tab und Start an den normalen Browser übergeben (sonst bei jedem Neuladen).
-      entry.googleSignIn = isGoogleSignIn(url);
-      if (entry.googleSignIn && !entry.handedOff) { entry.handedOff = true; this.emit('google-signin', { id, url }); }
       changed();
     };
     wc.on('did-navigate', remember);
@@ -117,6 +123,13 @@ class WebTabs extends EventEmitter {
     wc.on('did-create-window', (child) => {
       child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       child.webContents.on('will-navigate', (e, url) => { if (!isWeb(url)) e.preventDefault(); });
+      // Anmelde-Fenster, das bei Google landet: schließen und im Tab erklären, statt eine Sackgasse zu zeigen.
+      child.webContents.on('did-navigate', (_e, url) => {
+        if (!isGoogleSignIn(url)) return;
+        entry.googleBlocked = Date.now();
+        if (!child.isDestroyed()) child.close();
+        changed();
+      });
     });
 
     view.setVisible(false);
@@ -232,6 +245,12 @@ class WebTabs extends EventEmitter {
     for (const { view } of this.views.values()) view.webContents.reload();
   }
 
+  // Hinweis „Mit Google anmelden geht hier nicht“ ausblenden.
+  dismissGoogle(id) {
+    const e = this.views.get(id);
+    if (e) { e.googleBlocked = 0; this.emit('change'); }
+  }
+
   info() {
     const { portals, active } = this.store.get();
     return {
@@ -240,7 +259,7 @@ class WebTabs extends EventEmitter {
         const e = this.views.get(p.id);
         const wc = e && e.view.webContents;
         return { id: p.id, name: p.name, url: p.url, profile: p.profile, open: !!e, googleApp: isGoogleApp(p.url), title: e ? e.title : '', unread: e ? e.unread : 0,
-          loading: e ? e.loading : false, error: e ? e.error : null, googleSignIn: !!(e && e.googleSignIn), current: wc ? wc.getURL() : (p.lastUrl || p.url),
+          loading: e ? e.loading : false, error: e ? e.error : null, googleBlocked: !!(e && e.googleBlocked), current: wc ? wc.getURL() : (p.lastUrl || p.url),
           canGoBack: wc ? wc.navigationHistory.canGoBack() : false, canGoForward: wc ? wc.navigationHistory.canGoForward() : false };
       }),
     };

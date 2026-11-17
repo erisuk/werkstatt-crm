@@ -54,6 +54,7 @@ const { CHATS_TOOLS } = require('./mcp/chats-server');
 const { createChatLink } = require('./chat-link');
 const folderLinks = require('./folder-links');
 const konten = require('./konten');
+const { loginState, cookieDomain } = require('./login-check');
 const kommentare = require('./kommentare');
 const bitvideos = require('./bitvideos');
 
@@ -815,26 +816,35 @@ function setup() {
     claudeAccountCache = { at: Date.now(), value };
     return value;
   }
-  function kontenList() {
-    let yt = null;
-    try { const st = yt().status(); if (st && st.connected && st.channel) yt = st.channel; } catch { /* ohne YouTube */ }
-    return konten.collect({ claude: claudeAccount(), tabs: webTabs ? webTabs.info().portals : [], mcp: lastKnown.mcp || [],
-      youtube: yt, n8n: !!n8nConfig.key, data: konten.load(KONTEN_FILE()) });
+  // Login-Stand jedes Web-Tabs aus seinen Cookies (nur ob das Login-Cookie da ist, nie der Inhalt).
+  async function tabsWithLogin() {
+    const tabs = webTabs ? webTabs.info().portals : [];
+    return Promise.all(tabs.map(async (t) => {
+      const domain = cookieDomain(t.url);
+      const cookies = domain ? await portalSession(partitionFor(t.profile)).cookies.get({ domain }).catch(() => []) : [];
+      return { ...t, login: loginState(t.url, cookies) };
+    }));
+  }
+  async function kontenList() {
+    let channel = null;
+    try { const st = yt().status(); if (st && st.connected && st.channel) channel = st.channel; } catch { /* ohne YouTube */ }
+    return konten.collect({ claude: claudeAccount(), tabs: await tabsWithLogin(), mcp: lastKnown.mcp || [],
+      youtube: channel, n8n: !!n8nConfig.key, data: konten.load(KONTEN_FILE()) });
   }
   ipcMain.handle('konten', () => kontenList());
-  ipcMain.handle('konten-zuordnen', (_e, args) => {
+  ipcMain.handle('konten-zuordnen', async (_e, args) => {
     const key = args && typeof args.key === 'string' ? args.key : '';
     if (!/^(mcp|tab):|^n8n$/.test(key)) return { ok: false, error: 'Diesem Eintrag kann man kein Konto zuordnen.' };
     try { konten.save(KONTEN_FILE(), konten.assign(konten.load(KONTEN_FILE()), key, args.konto)); } catch (e) { return { ok: false, error: e.message }; }
-    return { ok: true, konten: kontenList() };
+    return { ok: true, konten: await kontenList() };
   });
-  ipcMain.handle('konten-eigen', (_e, args) => {
+  ipcMain.handle('konten-eigen', async (_e, args) => {
     const data = konten.load(KONTEN_FILE());
     const next = args && args.remove ? konten.removeOwn(data, String(args.remove))
       : konten.addOwn(data, args || {}, crypto.randomUUID());
     if (next === data) return { ok: false, error: 'Bitte mindestens den Dienst angeben.' };
     try { konten.save(KONTEN_FILE(), next); } catch (e) { return { ok: false, error: e.message }; }
-    return { ok: true, konten: kontenList() };
+    return { ok: true, konten: await kontenList() };
   });
 
   ipcMain.handle('approval-respond', (_e, args) => {
@@ -1833,6 +1843,7 @@ function setup() {
     const url = typeof id === 'string' && webTabs.currentUrl(id);
     if (url && /^https?:\/\//.test(url)) shell.openExternal(browserTarget(url)).catch(() => {});
   });
+  ipcMain.handle('web-dismiss-google', (_e, id) => { if (typeof id === 'string') webTabs.dismissGoogle(id); });
   ipcMain.handle('web-clear-logins', async () => {
     const { response } = await dialog.showMessageBox(win, {
       type: 'warning', buttons: ['Abbrechen', 'Überall abmelden'], defaultId: 0, cancelId: 0,
@@ -2157,7 +2168,6 @@ function setup() {
     webTabs.on('change', () => send('web-state', webState()));
     webTabs.on('shortcut', (name) => { if (name === 'switcher') send('switcher-toggle'); });
     // Google sperrt die Anmeldung in eingebauten Browsern – im normalen Browser geht sie ganz normal.
-    webTabs.on('google-signin', ({ url }) => shell.openExternal(browserTarget(url)).catch(() => {}));
     // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
     browser = new BrowserControl(webTabs);
     browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));

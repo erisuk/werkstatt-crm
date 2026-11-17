@@ -99,8 +99,10 @@ function collect({ claude = null, tabs = [], mcp = [], youtube = null, n8n = fal
   for (const t of tabs) {
     const key = `tab:${t.id}`;
     const seen = emailIn(t.title);
+    // Login-Cookie (t.login aus login-check.js) oder eine E-Mail im Seitentitel zeigen den echten Stand.
+    const stand = seen || t.login === 'angemeldet' ? 'angemeldet' : t.login === 'abgemeldet' ? 'anmelden' : 'unbekannt';
     out.push({ key, gruppe: 'Web-Tabs', dienst: `${serviceOf(t.url) || t.name}`, tab: t.id, tabName: t.name,
-      konto: seen || own(key), stand: seen ? 'angemeldet' : 'unbekannt', auto: !!seen,
+      konto: seen || own(key), stand, auto: !!seen,
       wo: `Web-Tab „${t.name}“${t.profile && t.profile !== 'standard' ? ` · eigener Anmelde-Speicher „${t.profile}“` : ''}` });
   }
   for (const e of data.eigene) {
