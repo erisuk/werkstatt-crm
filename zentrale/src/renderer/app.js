@@ -908,6 +908,42 @@ function markStepResult(id, error) {
 }
 
 // Aufeinanderfolgende Arbeitsschritte landen in einer aufklappbaren Gruppe; zu sieht man den neuesten.
+// Aufgabenliste und Box „Nächster Schritt“ unter der letzten Antwort – wie in der Claude-App.
+const PLAN_TOOLS = /^mcp__chats__(aufgaben|abschluss)$/;
+const PLAN_ICON = { offen: '○', 'läuft': '◐', erledigt: '✓' };
+
+function renderChatPlan() {
+  const box = $('#messages');
+  const c = ui.state && ui.state.chat;
+  if (!box) return;
+  const plan = c && c.plan;
+  const next = c && c.nextStep;
+  if (!changed('chatPlan', [c && c.sessionId, plan, next, chatBusy()])) {
+    // Schon gezeichnet: nur sicherstellen, dass beides ganz unten steht.
+    for (const id of ['chat-plan', 'chat-next']) { const el = $(`#${id}`); if (el && el.parentNode === box && el !== box.lastElementChild) box.append(el); }
+    return;
+  }
+  for (const id of ['chat-plan', 'chat-next']) { const el = $(`#${id}`); if (el) el.remove(); }
+  if (plan && plan.schritte && plan.schritte.length) {
+    const done = plan.schritte.filter((s) => s.status === 'erledigt').length;
+    box.append(h('section', { id: 'chat-plan', class: 'chat-plan', 'aria-label': 'Aufgabenliste' },
+      h('div', { class: 'chat-plan-head', text: `Aufgaben · ${done} von ${plan.schritte.length} erledigt` }),
+      h('ol', {}, plan.schritte.map((s) => h('li', { class: `plan-${s.status === 'läuft' ? 'laeuft' : s.status}` },
+        h('span', { class: 'plan-icon', 'aria-hidden': 'true', text: PLAN_ICON[s.status] || '○' }),
+        h('span', { class: 'plan-text', text: s.text }),
+        h('span', { class: 'sr-only', text: ` (${s.status})` }))))));
+  }
+  if (next && !chatBusy()) {
+    box.append(h('section', { id: 'chat-next', class: 'chat-next', 'aria-label': 'Nächster Schritt' },
+      h('p', { class: 'chat-next-recap', text: next.zusammenfassung }),
+      next.frage ? h('div', { class: 'chat-next-ask' },
+        h('span', { class: 'chat-next-q', text: next.frage }),
+        h('div', { class: 'chat-next-btns' }, next.knoepfe.map((k, i) => h('button', { class: i === 0 ? 'btn' : 'btn ghost', 'data-focus': `next-btn:${i}`,
+          onClick: () => sendMessage(k.nachricht || k.text) }, k.text)))) : null));
+  }
+  if (ui.forceScroll || box.scrollHeight - box.scrollTop - box.clientHeight < 160) box.scrollTop = box.scrollHeight;
+}
+
 function addStep(box, typing, m) {
   let group = typing.previousElementSibling;
   if (!group || !group.classList.contains('steps')) {
@@ -926,7 +962,7 @@ function updateTyping() {
   if (!typing || typing.hidden) return;
   let current = null;
   for (let i = ui.messages.length - 1; i >= 0 && ui.messages[i].kind !== 'user'; i -= 1) {
-    if (ui.messages[i].kind === 'tool') { current = ui.messages[i]; break; }
+    if (ui.messages[i].kind === 'tool' && !PLAN_TOOLS.test(ui.messages[i].tool || '')) { current = ui.messages[i]; break; }
   }
   const [, label] = current ? stepInfo(current.tool) : [null, null];
   const text = current ? `${label}${current.detail ? ` ${current.detail}` : ''}` : 'Claude denkt nach …';
@@ -946,12 +982,14 @@ function renderMessages() {
   if (ui.shown > ui.messages.length) ui.shown = 0;
   if (ui.shown === 0) {
     for (const el of [...box.children]) if (el !== typing) el.remove();
+    ui.sig.chatPlan = null; // Liste und Box sind mit weg – neu zeichnen
     if (!ui.messages.length) box.insertBefore(h('div', { class: 'chat-hint', id: 'chat-hint' }, sparkIcon('spark big'), h('p', { text: 'Was soll Claude für dich tun?' })), typing);
   }
   if (ui.messages.length > ui.shown) {
     const hint = $('#chat-hint');
     if (hint) hint.remove();
     for (const m of ui.messages.slice(ui.shown)) {
+      if (m.kind === 'tool' && PLAN_TOOLS.test(m.tool || '')) continue; // Aufgabenliste/Abschluss zeigen sich selbst
       if (m.kind === 'tool') addStep(box, typing, m);
       else { const el = messageEl(m); if (m.streaming) ui.streamEl = el; box.insertBefore(el, typing); }
     }
@@ -959,6 +997,7 @@ function renderMessages() {
   }
   typing.hidden = !chatBusy() || chatApprovals().length > 0;
   updateTyping();
+  renderChatPlan();
   if (nearBottom || ui.forceScroll) box.scrollTop = box.scrollHeight;
   ui.forceScroll = false;
 }

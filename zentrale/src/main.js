@@ -57,6 +57,7 @@ const { BILDSCHIRM_TOOLS } = require('./mcp/bildschirm-server');
 const { Bildschirm, makeOps: makeBildschirmOps } = require('./bildschirm');
 const { createChatLink } = require('./chat-link');
 const folderLinks = require('./folder-links');
+const chatPlan = require('./chat-plan');
 const konten = require('./konten');
 const { loginState, cookieDomain } = require('./login-check');
 const kommentare = require('./kommentare');
@@ -115,6 +116,12 @@ const SCREEN_HINT = 'Mac-Apps ohne eigene Schnittstelle (z. B. Labelnize, Finder
   + 'Nicht für Webseiten (Chrome-Erweiterung oder Web-Tabs) und nicht für Befehle (Bash). Benutze dafür nie osascript keystroke, '
   + 'cliclick oder selbstgebaute Klick-Skripte – deren Tastendrücke landen im Fenster, das gerade vorne ist. '
   + 'Lehnt Eris die Freigabe einer App ab, frag im Chat nach, statt es erneut zu versuchen.';
+// Aufgabenliste und Abschluss-Box wie in der Claude-App.
+const PLAN_HINT = 'Bei jeder Aufgabe mit mehreren Schritten oder Befehlen: Setz gleich zu Beginn mit dem Werkzeug aufgaben die ganze '
+  + 'Schrittliste (kurze Schritte, genau einer „läuft“) und schick sie bei jedem neuen Schritt mit neuem Stand erneut – Eris sieht '
+  + 'sie mit Häkchen unter deiner Antwort. Ruf am Ende abschluss auf: 2–3 Sätze, was jetzt fertig und was offen ist; muss Eris etwas '
+  + 'entscheiden (z. B. installieren, pushen, eine Wahl), dazu eine kurze Frage und 1–2 Knöpfe. Danach normal antworten. '
+  + 'Bei einer kurzen Frage oder einem einzelnen Befehl beides weglassen.';
 // Bilder zeigt der Chat der Zentrale direkt an – Claude soll sie zeigen statt nur den Pfad zu nennen.
 const IMAGE_HINT = 'Der Chat der Zentrale zeigt Bilder direkt an: Schreib ![kurze Beschreibung](/absoluter/pfad.png) für Bilder auf dem Mac '
   + '(auch Bildschirmfotos und Bilder, die du erstellt hast) oder ![Beschreibung](https://…) für Bilder aus dem Netz. '
@@ -252,6 +259,7 @@ function setup() {
       context: chat.context ? { used: chat.context, window: chat.contextWindow || knownWindow(), baseline: chat.baseline || null } : null,
       mcp: chat.mcp || lastKnown.mcp,
       model: chat.model || null, effort: chat.effort || null, activeModel: chat.activeModel || null, defaultModel: defaultModel(),
+      plan: chat.plan || null, nextStep: chat.nextStep || null,
       addDirs: (chat.addDirs || []).map((d) => ({ path: d, name: path.basename(d), linked: folderLinks.linked(loadLinks(), chatKey(chat.cwd)).includes(d) })) };
   }
 
@@ -380,7 +388,7 @@ function setup() {
     const v = currentVault();
     if (v) hints.push(vaultHint(v.path));
     if (c.web && browserConfigFile) hints.push(WEB_HINT);
-    hints.push(IMAGE_HINT);
+    hints.push(IMAGE_HINT, PLAN_HINT);
     if (bildschirmConfigFile) hints.push(SCREEN_HINT);
     hints.push(learning.systemHint(learnStore().activeLesson()));
     if (hints.length) args.push('--append-system-prompt', hints.join('\n\n'));
@@ -420,7 +428,7 @@ function setup() {
     if (!c || !chatsProxy) return args;
     const config = JSON.stringify({ mcpServers: { chats: mcpEntry('chats-server.js',
       { ZENTRALE_CHATS_SOCKET: chatsProxy.file, ZENTRALE_CHAT_ID: c.sessionId }) } });
-    const tools = CHATS_TOOLS.map((t) => `mcp__chats__${t}`).join(',');
+    const tools = CHATS_TOOLS.map((t) => `mcp__chats__${t}`).join(','); // inkl. aufgaben und abschluss
     const i = args.findIndex((a) => a.startsWith('--allowedTools='));
     const allowed = i >= 0 ? args.map((a, j) => (j === i ? `${a},${tools}` : a)) : [...args, `--allowedTools=${tools}`];
     return [`--mcp-config=${config}`, ...allowed];
@@ -457,6 +465,31 @@ function setup() {
     pushState();
     return { ok: true, chat: c.sessionId };
   }
+
+  // Aufgabenliste und „Nächster Schritt“ je Chat (src/chat-plan.js) – die Oberfläche zeigt sie unter der Antwort.
+  const findChat = (id) => (typeof id === 'string' && allChats().find((c) => c.sessionId === id)) || null;
+  const planOps = {
+    plan: (a) => {
+      const c = findChat(a && a.from);
+      if (!c) return { ok: false, error: 'Dieser Chat ist der Zentrale nicht bekannt.' };
+      const r = chatPlan.cleanPlan(a);
+      if (!r.ok) return r;
+      c.plan = r.plan;
+      pushState();
+      return { ok: true, data: 'Aufgabenliste angezeigt.' };
+    },
+    abschluss: (a) => {
+      const c = findChat(a && a.from);
+      if (!c) return { ok: false, error: 'Dieser Chat ist der Zentrale nicht bekannt.' };
+      const r = chatPlan.cleanAbschluss(a);
+      if (!r.ok) return r;
+      c.nextStep = r.abschluss;
+      // Am Ende ist nichts mehr „läuft“ – wie beim Abhaken in der Claude-App.
+      if (c.plan) c.plan = { schritte: c.plan.schritte.map((s) => (s.status === 'läuft' ? { ...s, status: 'erledigt' } : s)) };
+      pushState();
+      return { ok: true, data: 'Box „Nächster Schritt“ angezeigt. Schreib jetzt deine normale Antwort.' };
+    },
+  };
 
   const chatLink = createChatLink({
     start: startChatFor,
@@ -818,6 +851,8 @@ function setup() {
     if (!c) return { ok: false, error: 'Der Chat wurde geschlossen, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     if (!c.title) { c.title = shortTitle(t); pushState(); }
     c.relayHops = 0; // Eris schreibt selbst – die Kette der Weiterleitungen beginnt neu
+    // Neue Nachricht von Eris: die alte Box „Nächster Schritt“ ist beantwortet, die alte Liste erledigt.
+    if (c.nextStep || c.plan) { c.nextStep = null; c.plan = null; pushState(); }
     // Ein schlafender Chat wacht auf – dafür schläft notfalls ein anderer, untätiger ein.
     // Arbeiten schon alle wachen: Die Nachricht wartet und geht raus, sobald einer fertig ist (nie verloren).
     if ((c.queued && c.queued.length) || (!c.alive && !pool.wake(chat, c))) {
@@ -2267,7 +2302,7 @@ function setup() {
     // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
     browser = new BrowserControl(webTabs);
     browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));
-    chatsProxy = startProxy(chatLink, n8nSocketPath(app.getPath('userData'), 'chats'));
+    chatsProxy = startProxy({ ...chatLink, ...planOps }, n8nSocketPath(app.getPath('userData'), 'chats'));
     if (process.platform === 'darwin') bildschirmProxy = startProxy(makeBildschirmOps(bildschirm), n8nSocketPath(app.getPath('userData'), 'bildschirm'));
     browserProxy = startProxy(simulation.dryRunOps(makeBrowserOps(browser), simulation.DRY_BROWSER, dryRunActive, 'Web-Tab'), n8nSocketPath(app.getPath('userData'), 'browser'));
     nativeTheme.themeSource = settings.get().theme;
