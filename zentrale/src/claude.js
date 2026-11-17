@@ -317,6 +317,7 @@ class ClaudeChat extends EventEmitter {
     projectsRoot = PROJECTS_ROOT, extraArgs = () => [], approvalInfo = () => null, allowAll = () => false, askQuestions = false, addDirs = [], model = null, effort = null }) {
     super();
     this.model = model; // null = Standard aus ~/.claude/settings.json
+    this.planMode = false; // true = erst planen, Eris gibt den Plan frei (wie der Plan-Modus der Claude-App)
     this.effort = effort; // null = Standard
     this.addDirs = addDirs; // weitere Ordner, in denen Claude arbeiten darf (--add-dir)
     this.askQuestions = askQuestions; // true = Auswahlfragen als Karte zeigen (nur wo Eris zuschaut)
@@ -363,8 +364,8 @@ class ClaudeChat extends EventEmitter {
   }
 
   pendingApprovals() {
-    return [...this.approvals.values()].map(({ id, tool, kind, questions, title, detail, canAlways, truncated, createdAt }) =>
-      ({ id, tool, kind, questions, title, detail, canAlways, truncated, createdAt }));
+    return [...this.approvals.values()].map(({ id, tool, kind, questions, plan, title, detail, canAlways, truncated, createdAt }) =>
+      ({ id, tool, kind, questions, plan, title, detail, canAlways, truncated, createdAt }));
   }
 
   clearApprovals() {
@@ -388,6 +389,14 @@ class ClaudeChat extends EventEmitter {
     }
     // Auswahlfragen nie einfach „erlauben“ – dann hätte Claude keine Antwort und würde raten.
     // Im Chat zeigt die Zentrale sie als Karte wie die Claude-App; ohne Zuschauer fragt Claude im Text.
+    // Ein fertiger Plan (Plan-Modus) wird nie blind angenommen – Eris gibt ihn frei, auch bei „Ohne Rückfrage arbeiten“.
+    if (req.tool_name === 'ExitPlanMode') {
+      const plan = String((req.input && req.input.plan) || '').slice(0, 50000);
+      this.approvals.set(ev.request_id, { id: ev.request_id, tool: req.tool_name, kind: 'plan', plan,
+        title: 'Claude hat einen Plan für dich', detail: '', canAlways: false, truncated: false, input: req.input || {}, createdAt: Date.now() });
+      this.emit('approvals');
+      return;
+    }
     if (CHAT_QUESTION_TOOLS.has(req.tool_name)) {
       const questions = this.askQuestions ? cleanQuestions(req.input) : [];
       if (!questions.length) {
@@ -424,7 +433,7 @@ class ClaudeChat extends EventEmitter {
   // Alle offenen Rückfragen auf einmal erlauben (wenn „Ohne Rückfrage arbeiten“ eingeschaltet wird).
   // Auch zu lange: Neue Anfragen erlaubt handleControl dann ebenfalls ungesehen – ein „abgelehnt“ wäre gelogen.
   allowPending() {
-    for (const a of [...this.approvals.values()]) if (a.kind !== 'question') this.respond(a.id, 'allow', { unseen: true });
+    for (const a of [...this.approvals.values()]) if (a.kind !== 'question' && a.kind !== 'plan') this.respond(a.id, 'allow', { unseen: true });
   }
 
   // Antwort auf eine Auswahlfrage. picks: pro Frage { labels, other }. false, wenn nicht alles beantwortet ist.
@@ -445,6 +454,7 @@ class ClaudeChat extends EventEmitter {
   respond(id, decision, { unseen = false } = {}) {
     const a = this.approvals.get(id);
     if (!a) return false;
+    if (a.kind === 'plan') return decision === 'deny' ? this.answerPlan(id, false) : decision === 'allow' ? this.answerPlan(id, true) : false;
     // Fragen lassen sich nur beantworten (answer) oder überspringen – „erlauben“ ohne Antwort ginge ins Leere.
     if (a.kind === 'question') {
       if (decision !== 'deny') return false;
@@ -469,7 +479,7 @@ class ClaudeChat extends EventEmitter {
     if (this.alive || this.disposed) return;
     this.needsRestart = false; // startet ohnehin mit den aktuellen Einstellungen
     const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
-      '--permission-mode', this.permissionMode, '--permission-prompt-tool', 'stdio',
+      '--permission-mode', this.planMode ? 'plan' : this.permissionMode, '--permission-prompt-tool', 'stdio',
       '--settings', safetySettings(this.permissionMode)];
     args.push(this.sessionSaved() ? '--resume' : '--session-id', this.sessionId);
     for (const d of this.addDirs) args.push('--add-dir', d);
@@ -539,6 +549,28 @@ class ClaudeChat extends EventEmitter {
       this.emit('event', { kind: 'error', text: explainExit(this.stderr), details });
       this.setStatus('error');
     });
+  }
+
+  // Plan-Modus an/aus: gilt ab der nächsten Nachricht (Neustart mit Verlauf).
+  setPlanMode(on) {
+    if (this.planMode === !!on) return;
+    this.planMode = !!on;
+    if (this.alive) this.needsRestart = true;
+  }
+
+  // Antwort auf einen Plan (ExitPlanMode): annehmen → Claude legt los; sonst mit Eris' Änderungswunsch weiterplanen.
+  answerPlan(id, approve, feedback = '') {
+    const a = this.approvals.get(id);
+    if (!a || a.kind !== 'plan') return false;
+    this.approvals.delete(id);
+    const wish = String(feedback || '').trim().slice(0, 4000);
+    if (approve) this.planMode = false; // Claude verlässt den Plan-Modus mit der Freigabe selbst
+    this.write({ type: 'control_response', response: { subtype: 'success', request_id: id,
+      response: approve ? { behavior: 'allow', updatedInput: a.input }
+        : { behavior: 'deny', message: wish ? `Eris möchte den Plan ändern: ${wish}\nÜberarbeite den Plan und leg ihn erneut vor.`
+          : 'Eris hat den Plan noch nicht angenommen. Frag im Chat, was geändert werden soll, und leg ihn dann erneut vor.' } } });
+    this.emit('approvals');
+    return true;
   }
 
   // Modell/Denktiefe für diesen Chat: gilt ab der nächsten Nachricht (der Prozess startet dafür neu, mit Verlauf).

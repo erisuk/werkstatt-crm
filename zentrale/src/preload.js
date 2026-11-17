@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('zentrale', {
   kontenZuordnen: (key, konto) => ipcRenderer.invoke('konten-zuordnen', { key, konto }),
   kontenEigen: (args) => ipcRenderer.invoke('konten-eigen', args),
   webDismissGoogle: (id) => ipcRenderer.invoke('web-dismiss-google', id),
+  chatPlanMode: (on) => ipcRenderer.invoke('chat-plan-mode', on === true),
+  answerPlan: (id, approve, feedback) => ipcRenderer.invoke('plan-answer', { id, approve: approve === true, feedback }),
   chatModel: (model, effort) => ipcRenderer.invoke('chat-model', { model, effort }),
   fsExists: (paths) => ipcRenderer.invoke('fs-exists', paths),
   chatFolderAdd: (link) => ipcRenderer.invoke('chat-folder-add', { link: link === true }),

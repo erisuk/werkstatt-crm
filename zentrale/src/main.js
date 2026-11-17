@@ -259,7 +259,7 @@ function setup() {
       context: chat.context ? { used: chat.context, window: chat.contextWindow || knownWindow(), baseline: chat.baseline || null } : null,
       mcp: chat.mcp || lastKnown.mcp,
       model: chat.model || null, effort: chat.effort || null, activeModel: chat.activeModel || null, defaultModel: defaultModel(),
-      plan: chat.plan || null, nextStep: chat.nextStep || null,
+      plan: chat.plan || null, nextStep: chat.nextStep || null, planMode: !!chat.planMode,
       addDirs: (chat.addDirs || []).map((d) => ({ path: d, name: path.basename(d), linked: folderLinks.linked(loadLinks(), chatKey(chat.cwd)).includes(d) })) };
   }
 
@@ -344,7 +344,7 @@ function setup() {
       if (win && win.isVisible() && win.isFocused()) continue;
       if (process.platform === 'darwin' && app.dock) app.dock.bounce('informational');
       if (Notification.isSupported()) {
-        const head = a.kind === 'question' ? 'Claude hat eine Frage' : 'Claude braucht deine Freigabe';
+        const head = a.kind === 'question' ? 'Claude hat eine Frage' : a.kind === 'plan' ? 'Claude hat einen Plan für dich' : 'Claude braucht deine Freigabe';
         const what = a.kind === 'question' && a.questions && a.questions[0] ? a.questions[0].question : a.title;
         const n = new Notification({ title: head, body: `${what} · ${a.source}`.slice(0, 240) });
         liveNotifications.add(n);
@@ -892,6 +892,19 @@ function setup() {
     return { ok: true };
   });
   ipcMain.handle('chat-models', () => ({ models: MODELS, efforts: EFFORTS }));
+  // Plan-Modus des offenen Chats an/aus und Antwort auf einen vorgelegten Plan.
+  ipcMain.handle('chat-plan-mode', (_e, on) => {
+    if (!chat) return false;
+    chat.setPlanMode(on === true);
+    pushState();
+    return true;
+  });
+  ipcMain.handle('plan-answer', (_e, args) => {
+    const id = args && typeof args.id === 'string' ? args.id : null;
+    if (!id) return false;
+    for (const c of allChats()) if (c.answerPlan(id, args.approve === true, typeof args.feedback === 'string' ? args.feedback : '')) { pushState(); return true; }
+    return false;
+  });
 
   // Weiteren Ordner zum offenen Chat holen (Auswahl im Finder). link: dauerhaft mit dem Projekt verknüpfen.
   ipcMain.handle('chat-folder-add', async (_e, args) => {

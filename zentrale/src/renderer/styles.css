@@ -998,3 +998,12 @@ h2 { font-size: 16px; font-weight: 600; }
 .chat-next-ask { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .chat-next-q { font-weight: 600; flex: 1 1 200px; }
 .chat-next-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Plan-Modus */
+.plan-toggle { height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border-strong); background: transparent; color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.plan-toggle:hover { border-color: var(--accent); color: var(--text); }
+.plan-toggle.on { background: var(--pill-blue-bg); color: var(--pill-blue); border-color: transparent; }
+.plan-card { padding: 16px 18px 14px; display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--accent); background: var(--card-strong); box-shadow: 0 6px 24px rgba(30, 40, 80, 0.08); }
+.plan-body { max-height: 46vh; overflow: auto; padding: 4px 12px; border-radius: 10px; background: var(--fill); }
+.plan-wish { width: 100%; box-sizing: border-box; resize: vertical; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: transparent; color: var(--text); font: inherit; }
+.plan-wish:focus { outline: none; border-color: var(--accent); }

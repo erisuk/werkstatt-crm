@@ -216,6 +216,7 @@ function trashIcon() {
 
 function approvalCard(a, compact) {
   if (a.kind === 'question' && Array.isArray(a.questions) && a.questions.length) return questionCard(a, compact);
+  if (a.kind === 'plan') return planCard(a, compact);
   const busy = { done: false };
   const decide = async (decision) => {
     if (busy.done) return;
@@ -720,7 +721,11 @@ function renderModelPicker() {
   const box = $('#chat-model');
   const c = ui.state && ui.state.chat;
   if (!box || !c) return;
-  if (!changed('modelPicker', [c.sessionId, c.model, c.effort, c.activeModel, c.defaultModel])) return;
+  if (!changed('modelPicker', [c.sessionId, c.model, c.effort, c.activeModel, c.defaultModel, c.planMode])) return;
+  const plan = h('button', { type: 'button', class: `plan-toggle${c.planMode ? ' on' : ''}`, 'aria-pressed': String(!!c.planMode), 'data-focus': 'chat-plan-mode',
+    title: c.planMode ? 'Plan-Modus an: Claude plant erst und legt dir den Plan zur Freigabe vor. Klicken zum Ausschalten.'
+      : 'Plan-Modus: Claude plant erst und baut erst, wenn du den Plan annimmst (gilt ab der nächsten Nachricht)',
+    onClick: () => api.chatPlanMode(!c.planMode) }, 'Plan');
   const model = h('select', { class: 'model-select', 'aria-label': 'Modell für diesen Chat', 'data-focus': 'chat-model-select',
     title: c.activeModel ? `Läuft gerade mit ${modelName(c.activeModel)}. Eine Änderung gilt ab der nächsten Nachricht.` : 'Gilt ab der nächsten Nachricht' });
   model.append(h('option', { value: '' }, `Standard (${modelName(c.defaultModel)})`));
@@ -733,7 +738,7 @@ function renderModelPicker() {
   const save = () => api.chatModel(model.value || null, effort.value || null);
   model.addEventListener('change', save);
   effort.addEventListener('change', save);
-  keepFocus(() => fill(box, model, effort));
+  keepFocus(() => fill(box, plan, model, effort));
 }
 
 function panelIcon() {
@@ -869,6 +874,13 @@ function stepRow(m) {
     h('span', { class: 'step-failed', text: 'fehlgeschlagen' }));
   if (m.id) row.dataset.id = m.id;
   return row;
+}
+
+// „Fehlt“ gilt nur vorläufig: Der Schritt kommt an, bevor Claude die Datei geschrieben hat. Nach jedem fertigen
+// Schritt wird darum neu nachgesehen; nur „ist da“ bleibt gemerkt.
+function forgetMissingFiles() {
+  const known = ui.fileExists || {};
+  if (Object.values(known).includes(false)) ui.fileExists = Object.fromEntries(Object.entries(known).filter(([, v]) => v));
 }
 
 // Datei öffnen – mit verständlicher Meldung, wenn es sie nicht mehr gibt (statt still nichts zu tun).
@@ -1066,7 +1078,7 @@ api.onChatEvent((ev) => {
   if (ev.kind === 'text') ui.messages.push({ kind: 'assistant', text: ev.text });
   else if (ev.kind === 'relay') ui.messages.push({ kind: 'user', text: ev.text, at: Date.now() });
   else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', id: ev.id, text: ev.text, tool: ev.tool, detail: ev.detail, path: ev.path, tab: ev.tab });
-  else if (ev.kind === 'toolResult') { markStepResult(ev.id, ev.error); renderChatInfo(); return; }
+  else if (ev.kind === 'toolResult') { forgetMissingFiles(); markStepResult(ev.id, ev.error); renderChatInfo(); return; }
   else if (ev.kind === 'error') ui.messages.push({ kind: 'error', text: ev.text, details: ev.details });
   else return;
   if (ui.view === 'chat') { renderMessages(); if (ev.kind === 'tool') renderChatInfo(); }
