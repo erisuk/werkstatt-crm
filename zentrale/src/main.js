@@ -11,7 +11,9 @@ const { createChatEnv } = require('./chat-env');
 const bitPosten = require('./bit-posten');
 const bitMedien = require('./bit-medien');
 // Muss vor „ready“ angemeldet sein: Videos abspielen (Stream, Vorspulen) über bitvideo://
-require('electron').protocol.registerSchemesAsPrivileged([{ scheme: bitMedien.SCHEME, privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }]);
+const bildMedien = require('./bild-medien');
+require('electron').protocol.registerSchemesAsPrivileged([{ scheme: bitMedien.SCHEME, privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
+  { scheme: bildMedien.SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const { listProjects, readMessages, watchSessions, shortTitle, DEFAULT_ROOT, renameSession, lastContext } = require('./sessions');
 const { TaskScheduler } = require('./tasks');
 const { Settings } = require('./settings');
@@ -51,9 +53,14 @@ const { BrowserControl, makeBrowserOps } = require('./browser-control');
 const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
 const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
 const { CHATS_TOOLS } = require('./mcp/chats-server');
+const { BILDSCHIRM_TOOLS } = require('./mcp/bildschirm-server');
+const { Bildschirm, makeOps: makeBildschirmOps } = require('./bildschirm');
 const { createChatLink } = require('./chat-link');
 const folderLinks = require('./folder-links');
+const chatPlan = require('./chat-plan');
+const chatDiff = require('./chat-diff');
 const konten = require('./konten');
+const { loginState, cookieDomain } = require('./login-check');
 const kommentare = require('./kommentare');
 const bitvideos = require('./bitvideos');
 
@@ -104,6 +111,22 @@ const vaultHint = (dir) => `Das Gedächtnis („Gehirn“) des Nutzers ist sein 
   + 'Neue wichtige Erkenntnisse legst du mit /merk-dir ab; Notizen im Vault nie löschen, nur ergänzen.';
 
 // Hinweis an Claude, wenn „Web-Tabs für Claude“ eingeschaltet ist.
+// Bildschirmsteuerung: wann sie dran ist und wie man sie sauber benutzt (wie Computer use in der Claude-App).
+const SCREEN_HINT = 'Mac-Apps ohne eigene Schnittstelle (z. B. Labelnize, Finder, Vorschau, Notizen) bedienst du mit den Werkzeugen '
+  + 'bildschirm_*: erst bildschirm_foto, dann klicken/tippen mit den Bildpunkten aus dem Foto, nach jeder Aktion wieder ein Foto. '
+  + 'Nicht für Webseiten (Chrome-Erweiterung oder Web-Tabs) und nicht für Befehle (Bash). Benutze dafür nie osascript keystroke, '
+  + 'cliclick oder selbstgebaute Klick-Skripte – deren Tastendrücke landen im Fenster, das gerade vorne ist. '
+  + 'Lehnt Eris die Freigabe einer App ab, frag im Chat nach, statt es erneut zu versuchen.';
+// Aufgabenliste und Abschluss-Box wie in der Claude-App.
+const PLAN_HINT = 'Bei jeder Aufgabe mit mehreren Schritten oder Befehlen: Setz gleich zu Beginn mit dem Werkzeug aufgaben die ganze '
+  + 'Schrittliste (kurze Schritte, genau einer „läuft“) und schick sie bei jedem neuen Schritt mit neuem Stand erneut – Eris sieht '
+  + 'sie mit Häkchen unter deiner Antwort. Ruf am Ende abschluss auf: 2–3 Sätze, was jetzt fertig und was offen ist; muss Eris etwas '
+  + 'entscheiden (z. B. installieren, pushen, eine Wahl), dazu eine kurze Frage und 1–2 Knöpfe. Danach normal antworten. '
+  + 'Bei einer kurzen Frage oder einem einzelnen Befehl beides weglassen.';
+// Bilder zeigt der Chat der Zentrale direkt an – Claude soll sie zeigen statt nur den Pfad zu nennen.
+const IMAGE_HINT = 'Der Chat der Zentrale zeigt Bilder direkt an: Schreib ![kurze Beschreibung](/absoluter/pfad.png) für Bilder auf dem Mac '
+  + '(auch Bildschirmfotos und Bilder, die du erstellt hast) oder ![Beschreibung](https://…) für Bilder aus dem Netz. '
+  + 'Zeig so jedes Bild, über das du sprichst oder das du erzeugt hast, statt nur den Pfad zu nennen.';
 const WEB_HINT = 'Du läufst in der Zentrale des Nutzers. Webseiten (z. B. Meta Business, Shopify, Gmail, Instagram) bedienst du '
   + 'mit den Werkzeugen zentrale_web_* in den Web-Tabs der Zentrale, wo der Nutzer angemeldet ist und live zusieht – nicht mit '
   + 'Playwright und nicht mit einem separaten Chrome. Lies die Seite (zentrale_web_read) vor und nach jeder Aktion. '
@@ -162,6 +185,8 @@ function setup() {
   let browser = null;
   let browserConfigFile = null;
   let kommentareConfigFile = null;
+  let bildschirmConfigFile = null;
+  let bildschirmProxy = null; // Bildschirmsteuerung für Mac-Apps (src/bildschirm.js)
   const kommentareFile = () => path.join(app.getPath('userData'), 'kommentare.json');
   let n8nConfig = { url: 'http://localhost:5678', key: null };
   const taskChats = new Map(); // laufende Aufgaben-Chats → Name der Aufgabe
@@ -230,10 +255,25 @@ function setup() {
     return { gen: chatGen, cwd: chat.cwd, name: path.basename(chat.cwd) || chat.cwd, sessionId: chat.sessionId, status: chat.status,
       title: chat.title, careful: chat.permissionMode !== 'acceptEdits' && !allowAll(), allowAll: allowAll(),
       busySince: chat.status === 'busy' ? chat.busySince || null : null,
+      queued: (chat.queued || []).length,
       // Bis der Chat selbst geantwortet hat: Fenstergröße und Konnektoren vom letzten Chat bzw. der letzten Prüfung.
       context: chat.context ? { used: chat.context, window: chat.contextWindow || knownWindow(), baseline: chat.baseline || null } : null,
       mcp: chat.mcp || lastKnown.mcp,
+      model: chat.model || null, effort: chat.effort || null, activeModel: chat.activeModel || null, defaultModel: defaultModel(),
+      plan: chat.plan || null, nextStep: chat.nextStep || null, planMode: !!chat.planMode,
       addDirs: (chat.addDirs || []).map((d) => ({ path: d, name: path.basename(d), linked: folderLinks.linked(loadLinks(), chatKey(chat.cwd)).includes(d) })) };
+  }
+
+  // Modelle zur Auswahl je Chat (wie der Modell-Schalter der Claude-App). Standard = ~/.claude/settings.json.
+  const MODELS = { 'claude-opus-5-5': 'Opus 5.5', 'claude-fable-5-2': 'Fable 5.2', 'claude-sonnet-5-5': 'Sonnet 5.5', 'claude-haiku-5-5': 'Haiku 5.5' };
+  const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+  let defaultModelCache = { at: 0, value: null };
+  function defaultModel() {
+    if (Date.now() - defaultModelCache.at < 30000) return defaultModelCache.value;
+    let value = null;
+    try { value = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf8')).model || null; } catch { /* Standard von Claude Code */ }
+    defaultModelCache = { at: Date.now(), value };
+    return value;
   }
 
   // Verknüpfte Ordner (src/folder-links.js) – Schlüssel ist der volle Pfad des Projektordners.
@@ -254,6 +294,13 @@ function setup() {
     return list.sort((a, b) => a.createdAt - b.createdAt);
   }
 
+  // Steuert gerade ein arbeitender Chat Maus oder Tastatur? Dann bis `until` keine Eingabe in die Zentrale.
+  const SCREEN_LOCK_MS = 90 * 1000;
+  function screenControl() {
+    const c = allChats().find((x) => x.status === 'busy' && x.screenAt && Date.now() - x.screenAt < SCREEN_LOCK_MS);
+    return c ? { title: chatTitle(c), until: c.screenAt + SCREEN_LOCK_MS } : null;
+  }
+
   function snapshot() {
     return {
       dryRun: dryRunActive() ? dryRunUntil : 0,
@@ -264,6 +311,7 @@ function setup() {
       chats: pool.list(chat),
       tasks: scheduler ? scheduler.list() : [],
       approvals: approvals(),
+      screenControl: screenControl(),
       settings: settings ? settings.get() : null,
       platform: process.platform,
     };
@@ -297,7 +345,7 @@ function setup() {
       if (win && win.isVisible() && win.isFocused()) continue;
       if (process.platform === 'darwin' && app.dock) app.dock.bounce('informational');
       if (Notification.isSupported()) {
-        const head = a.kind === 'question' ? 'Claude hat eine Frage' : 'Claude braucht deine Freigabe';
+        const head = a.kind === 'question' ? 'Claude hat eine Frage' : a.kind === 'plan' ? 'Claude hat einen Plan für dich' : 'Claude braucht deine Freigabe';
         const what = a.kind === 'question' && a.questions && a.questions[0] ? a.questions[0].question : a.title;
         const n = new Notification({ title: head, body: `${what} · ${a.source}`.slice(0, 240) });
         liveNotifications.add(n);
@@ -331,11 +379,18 @@ function setup() {
       args.push(`--mcp-config=${kommentareConfigFile}`);
       allowed.push(...KOMMENTARE_TOOLS.map((t) => `mcp__kommentare__${t}`));
     }
+    // Mac-Apps bedienen (Bildschirmfoto, Klick, Tippen) – die Zentrale fragt je App einmal nach und prüft jede Aktion.
+    if (bildschirmConfigFile) {
+      args.push(`--mcp-config=${bildschirmConfigFile}`);
+      allowed.push(...BILDSCHIRM_TOOLS.map((t) => `mcp__bildschirm__${t}`));
+    }
     // Ein gemeinsamer Hinweis: wo das Gehirn (Obsidian) liegt und – falls an – wie Webseiten bedient werden.
     const hints = [];
     const v = currentVault();
     if (v) hints.push(vaultHint(v.path));
     if (c.web && browserConfigFile) hints.push(WEB_HINT);
+    hints.push(IMAGE_HINT, PLAN_HINT);
+    if (bildschirmConfigFile) hints.push(SCREEN_HINT);
     hints.push(learning.systemHint(learnStore().activeLesson()));
     if (hints.length) args.push('--append-system-prompt', hints.join('\n\n'));
     if (allowed.length) args.push(`--allowedTools=${allowed.join(',')}`);
@@ -344,13 +399,37 @@ function setup() {
   }
 
 
+  // Bildschirmsteuerung: Freigabe je App per Rückfrage, Fotos vom Hauptbildschirm in Bildschirmpunkten.
+  const bildschirm = new Bildschirm({
+    fragen: async (a) => {
+      if (win && !win.isDestroyed()) { win.show(); }
+      const { response } = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+        type: 'question', buttons: ['Nicht erlauben', 'Erlauben'], defaultId: 1, cancelId: 0,
+        message: `Darf Claude „${a.name}“ bedienen?`,
+        detail: 'Claude macht Bildschirmfotos, klickt und tippt in dieser App – nur solange sie vorne ist, nie in Passwortfelder. Gilt, bis die Zentrale neu startet.' });
+      return response === 1;
+    },
+    foto: async () => {
+      finLock(); // der private Bereich kommt nie aufs Bild
+      const file = path.join(os.tmpdir(), `zentrale-bildschirm-${process.pid}-${Date.now()}.png`);
+      try {
+        await new Promise((resolve) => execFile('/usr/sbin/screencapture', ['-x', '-m', '-t', 'png', file], { timeout: 20000 }, () => resolve()));
+        if (!fs.existsSync(file)) return null;
+        const { width, height } = require('electron').screen.getPrimaryDisplay().size;
+        const img = nativeImage.createFromPath(file);
+        if (img.isEmpty()) return null;
+        return { png: img.resize({ width, height, quality: 'good' }).toPNG(), breite: width, hoehe: height };
+      } finally { fs.rm(file, { force: true }, () => {}); }
+    },
+  });
+
   // Jeder Chat bekommt den Server „chats“ mit seiner eigenen Gesprächs-ID (so weiß die Zentrale, wer schreibt).
   // Die Werkzeuge bleiben in der Zentrale – darum ohne Rückfrage erlaubt.
   function withChatsServer(args, c) {
     if (!c || !chatsProxy) return args;
     const config = JSON.stringify({ mcpServers: { chats: mcpEntry('chats-server.js',
       { ZENTRALE_CHATS_SOCKET: chatsProxy.file, ZENTRALE_CHAT_ID: c.sessionId }) } });
-    const tools = CHATS_TOOLS.map((t) => `mcp__chats__${t}`).join(',');
+    const tools = CHATS_TOOLS.map((t) => `mcp__chats__${t}`).join(','); // inkl. aufgaben und abschluss
     const i = args.findIndex((a) => a.startsWith('--allowedTools='));
     const allowed = i >= 0 ? args.map((a, j) => (j === i ? `${a},${tools}` : a)) : [...args, `--allowedTools=${tools}`];
     return [`--mcp-config=${config}`, ...allowed];
@@ -369,7 +448,52 @@ function setup() {
     return null;
   }
 
+  // Neuer Chat im Auftrag eines anderen Chats: wie „Neues Gespräch“, aber im Hintergrund (der sichtbare bleibt).
+  async function startChatFor({ cwd, title, text, from, hops }) {
+    if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const dir = path.resolve(String(cwd || ''));
+    if (!isDir(dir)) return { ok: false, error: `Den Ordner „${cwd}“ gibt es nicht.` };
+    if (!pool.hasRoom(chat)) return { ok: false, error: pool.listFullMessage() };
+    const c = createChat({ cwd: dir, title });
+    c.relayHops = hops;
+    c.lastRelay = { from: chatTitle(from), at: Date.now() };
+    if (!c.title) c.title = shortTitle(text.split('\n\n')[1] || text);
+    if (pool.wake(chat, c)) {
+      if (!(await c.send(text))) { c.dispose().catch(() => {}); return { ok: false, error: 'Der neue Chat konnte nicht starten.' }; }
+    } else c.queued = [text]; // alle wachen arbeiten: geht raus, sobald einer frei ist
+    pool.park(c);
+    pool.trim();
+    pushState();
+    return { ok: true, chat: c.sessionId };
+  }
+
+  // Aufgabenliste und „Nächster Schritt“ je Chat (src/chat-plan.js) – die Oberfläche zeigt sie unter der Antwort.
+  const findChat = (id) => (typeof id === 'string' && allChats().find((c) => c.sessionId === id)) || null;
+  const planOps = {
+    plan: (a) => {
+      const c = findChat(a && a.from);
+      if (!c) return { ok: false, error: 'Dieser Chat ist der Zentrale nicht bekannt.' };
+      const r = chatPlan.cleanPlan(a);
+      if (!r.ok) return r;
+      c.plan = r.plan;
+      pushState();
+      return { ok: true, data: 'Aufgabenliste angezeigt.' };
+    },
+    abschluss: (a) => {
+      const c = findChat(a && a.from);
+      if (!c) return { ok: false, error: 'Dieser Chat ist der Zentrale nicht bekannt.' };
+      const r = chatPlan.cleanAbschluss(a);
+      if (!r.ok) return r;
+      c.nextStep = r.abschluss;
+      // Am Ende ist nichts mehr „läuft“ – wie beim Abhaken in der Claude-App.
+      if (c.plan) c.plan = { schritte: c.plan.schritte.map((s) => (s.status === 'läuft' ? { ...s, status: 'erledigt' } : s)) };
+      pushState();
+      return { ok: true, data: 'Box „Nächster Schritt“ angezeigt. Schreib jetzt deine normale Antwort.' };
+    },
+  };
+
   const chatLink = createChatLink({
+    start: startChatFor,
     chats: () => allChats(),
     history: (c, n) => { const f = sessionFile(c); return f ? readMessages(f, n) : []; },
     deliver: async (c, text, from, hops) => {
@@ -415,6 +539,7 @@ function setup() {
     n8nConfigFile = writeMcpConfig('n8n', 'n8n-server.js', { ZENTRALE_N8N_SOCKET: n8nSocketPath(app.getPath('userData')) });
     browserConfigFile = writeMcpConfig('web', 'browser-server.js', { ZENTRALE_BROWSER_SOCKET: n8nSocketPath(app.getPath('userData'), 'browser') });
     kommentareConfigFile = writeMcpConfig('kommentare', 'kommentare-server.js', { ZENTRALE_KOMMENTARE_FILE: kommentareFile() });
+    if (process.platform === 'darwin') bildschirmConfigFile = writeMcpConfig('bildschirm', 'bildschirm-server.js', { ZENTRALE_BILDSCHIRM_SOCKET: n8nSocketPath(app.getPath('userData'), 'bildschirm') });
   }
 
   // ---------- n8n: Adresse und verschlüsselter Schlüssel (macOS-Schlüsselbund) ----------
@@ -503,7 +628,7 @@ function setup() {
   }
 
   // Ein Chat mit allen Verbindungen zur Oberfläche – noch ohne laufenden Prozess.
-  function createChat({ cwd, sessionId = null, title = null, addDirs = [] }) {
+  function createChat({ cwd, sessionId = null, title = null, addDirs = [], model = null, effort = null }) {
     // In Website-Ordnern arbeitet Claude als Webdesigner (Agent aus ~/.claude/agents).
     const agent = studio().isSite(cwd) && fs.existsSync(path.join(os.homedir(), '.claude', 'agents', `${WEB_AGENT}.md`)) ? WEB_AGENT : null;
     let c = null;
@@ -511,11 +636,14 @@ function setup() {
     // Verknüpfte Projekte kommen immer mit, dazu die Ordner, die der Chat schon hatte.
     const dirs = folderLinks.mergeDirs(chatKey(cwd), folderLinks.linked(loadLinks(), chatKey(cwd)), addDirs)
       .filter((d) => folderLinks.cleanDir(d));
-    c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true, addDirs: dirs });
+    c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true, addDirs: dirs,
+      model: MODELS[model] ? model : null, effort: EFFORTS.includes(effort) ? effort : null });
     c.gen = 0;
     c.lastActive = Date.now();
     c.on('event', (ev) => {
       if (ev.kind === 'window') rememberWindow(ev.contextWindow);
+      // Claude steuert Maus/Tastatur: Eingabefelder der Zentrale sperren (sonst landen Tastendrücke im Chat).
+      if (ev.kind === 'tool' && ev.screen) { c.screenAt = Date.now(); pushState(); }
       if (ev.kind === 'init' && ev.mcp) lastKnown.mcp = ev.mcp;
       send('chat-event', { ...ev, gen: c.gen });
       // Abgemeldet? (Fehler mit Login/OAuth) – fällt im Kontrollraum als blinder Fleck auf.
@@ -527,6 +655,8 @@ function setup() {
       c.lastStatus = c.status;
       if (c.status === 'busy' && was !== 'busy') c.busySince = Date.now();
       c.lastActive = Date.now();
+      // Ein Chat ist frei geworden: wartende Nachrichten anderer Chats können jetzt raus.
+      if (c.status === 'ready' || c.status === 'stopped') setImmediate(flushQueued);
       // Ein Hintergrund-Chat ist fertig: Mitteilung, damit niemand ständig nachschauen muss.
       if (was === 'busy' && c.status === 'ready' && c !== chat && pool.get(c.sessionId) === c) {
         notify(`Fertig: ${chatTitle(c)}`, 'Claude ist mit diesem Chat fertig. Rechts unter „Agenten“ kannst du ihn öffnen.', 'chat');
@@ -535,6 +665,19 @@ function setup() {
     });
     c.on('approvals', onApprovalsChanged);
     return c;
+  }
+
+  // Wartende Nachrichten zustellen – in der Reihenfolge, in der die Chats warten.
+  let flushing = false;
+  async function flushQueued() {
+    if (flushing) return;
+    flushing = true;
+    try {
+      await pool.flushQueued(chat);
+    } finally {
+      flushing = false;
+      pushState();
+    }
   }
 
   // Untätige Hintergrund-Chats nach 10 Minuten einschläfern – sie bleiben in der Liste und wachen beim Senden auf.
@@ -559,7 +702,7 @@ function setup() {
         if (!e || typeof e.sessionId !== 'string' || pool.get(e.sessionId) || (chat && chat.sessionId === e.sessionId)) continue;
         const session = findSession(e.sessionId);
         if (!session || !isDir(session.cwd)) continue;
-        const c = createChat({ cwd: session.cwd, sessionId: e.sessionId, title: session.title, addDirs: Array.isArray(e.addDirs) ? e.addDirs : [] });
+        const c = createChat({ cwd: session.cwd, sessionId: e.sessionId, title: session.title, addDirs: Array.isArray(e.addDirs) ? e.addDirs : [], model: e.model, effort: e.effort });
         try { c.context = lastContext(session.file); } catch { /* ohne Füllstand */ }
         pool.park(c);
       }
@@ -709,8 +852,15 @@ function setup() {
     if (!c) return { ok: false, error: 'Der Chat wurde geschlossen, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     if (!c.title) { c.title = shortTitle(t); pushState(); }
     c.relayHops = 0; // Eris schreibt selbst – die Kette der Weiterleitungen beginnt neu
+    // Neue Nachricht von Eris: die alte Box „Nächster Schritt“ ist beantwortet, die alte Liste erledigt.
+    if (c.nextStep || c.plan) { c.nextStep = null; c.plan = null; pushState(); }
     // Ein schlafender Chat wacht auf – dafür schläft notfalls ein anderer, untätiger ein.
-    if (!c.alive && !pool.wake(chat, c)) return { ok: false, error: pool.fullMessage() };
+    // Arbeiten schon alle wachen: Die Nachricht wartet und geht raus, sobald einer fertig ist (nie verloren).
+    if ((c.queued && c.queued.length) || (!c.alive && !pool.wake(chat, c))) {
+      c.queued = [...(c.queued || []), t];
+      pushState();
+      return { ok: true, queued: true, gen };
+    }
     const ok = await c.send(t);
     // Inzwischen gewechselt: Läuft der Chat im Hintergrund weiter, ist die Nachricht trotzdem angekommen.
     if (c !== chat && pool.get(c.sessionId) === c) return { ok, parked: true };
@@ -730,6 +880,31 @@ function setup() {
     pool.close(c);
     pushState();
     return true;
+  });
+
+  // Modell und Denktiefe des offenen Chats (null = Standard). Gilt ab der nächsten Nachricht.
+  ipcMain.handle('chat-model', (_e, args) => {
+    const c = chat;
+    if (!c) return { ok: false, error: 'Kein Chat offen.' };
+    const model = args && MODELS[args.model] ? args.model : null;
+    const effort = args && EFFORTS.includes(args.effort) ? args.effort : null;
+    c.setModel(model, effort);
+    pushState();
+    return { ok: true };
+  });
+  ipcMain.handle('chat-models', () => ({ models: MODELS, efforts: EFFORTS }));
+  // Plan-Modus des offenen Chats an/aus und Antwort auf einen vorgelegten Plan.
+  ipcMain.handle('chat-plan-mode', (_e, on) => {
+    if (!chat) return false;
+    chat.setPlanMode(on === true);
+    pushState();
+    return true;
+  });
+  ipcMain.handle('plan-answer', (_e, args) => {
+    const id = args && typeof args.id === 'string' ? args.id : null;
+    if (!id) return false;
+    for (const c of allChats()) if (c.answerPlan(id, args.approve === true, typeof args.feedback === 'string' ? args.feedback : '')) { pushState(); return true; }
+    return false;
   });
 
   // Weiteren Ordner zum offenen Chat holen (Auswahl im Finder). link: dauerhaft mit dem Projekt verknüpfen.
@@ -784,26 +959,35 @@ function setup() {
     claudeAccountCache = { at: Date.now(), value };
     return value;
   }
-  function kontenList() {
-    let yt = null;
-    try { const st = yt().status(); if (st && st.connected && st.channel) yt = st.channel; } catch { /* ohne YouTube */ }
-    return konten.collect({ claude: claudeAccount(), tabs: webTabs ? webTabs.info().portals : [], mcp: lastKnown.mcp || [],
-      youtube: yt, n8n: !!n8nConfig.key, data: konten.load(KONTEN_FILE()) });
+  // Login-Stand jedes Web-Tabs aus seinen Cookies (nur ob das Login-Cookie da ist, nie der Inhalt).
+  async function tabsWithLogin() {
+    const tabs = webTabs ? webTabs.info().portals : [];
+    return Promise.all(tabs.map(async (t) => {
+      const domain = cookieDomain(t.url);
+      const cookies = domain ? await portalSession(partitionFor(t.profile)).cookies.get({ domain }).catch(() => []) : [];
+      return { ...t, login: loginState(t.url, cookies) };
+    }));
+  }
+  async function kontenList() {
+    let channel = null;
+    try { const st = yt().status(); if (st && st.connected && st.channel) channel = st.channel; } catch { /* ohne YouTube */ }
+    return konten.collect({ claude: claudeAccount(), tabs: await tabsWithLogin(), mcp: lastKnown.mcp || [],
+      youtube: channel, n8n: !!n8nConfig.key, data: konten.load(KONTEN_FILE()) });
   }
   ipcMain.handle('konten', () => kontenList());
-  ipcMain.handle('konten-zuordnen', (_e, args) => {
+  ipcMain.handle('konten-zuordnen', async (_e, args) => {
     const key = args && typeof args.key === 'string' ? args.key : '';
     if (!/^(mcp|tab):|^n8n$/.test(key)) return { ok: false, error: 'Diesem Eintrag kann man kein Konto zuordnen.' };
     try { konten.save(KONTEN_FILE(), konten.assign(konten.load(KONTEN_FILE()), key, args.konto)); } catch (e) { return { ok: false, error: e.message }; }
-    return { ok: true, konten: kontenList() };
+    return { ok: true, konten: await kontenList() };
   });
-  ipcMain.handle('konten-eigen', (_e, args) => {
+  ipcMain.handle('konten-eigen', async (_e, args) => {
     const data = konten.load(KONTEN_FILE());
     const next = args && args.remove ? konten.removeOwn(data, String(args.remove))
       : konten.addOwn(data, args || {}, crypto.randomUUID());
     if (next === data) return { ok: false, error: 'Bitte mindestens den Dienst angeben.' };
     try { konten.save(KONTEN_FILE(), next); } catch (e) { return { ok: false, error: e.message }; }
-    return { ok: true, konten: kontenList() };
+    return { ok: true, konten: await kontenList() };
   });
 
   ipcMain.handle('approval-respond', (_e, args) => {
@@ -1042,7 +1226,8 @@ function setup() {
 
   ipcMain.handle('fs-icon', (_e, p) => (files.validPath(p) ? iconFor(p) : null));
 
-  ipcMain.handle('fs-open', async (_e, p) => {
+  ipcMain.handle('fs-open', async (_e, raw) => {
+    const p = typeof raw === 'string' && raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(2)) : raw;
     if (!files.validPath(p) || !fs.existsSync(p)) return { ok: false, error: 'Nicht gefunden.' };
     // Skripte und fremde Programme starten etwas – erst fragen.
     if (files.needsRunConfirm(p)) {
@@ -1054,6 +1239,10 @@ function setup() {
     return err ? { ok: false, error: err } : { ok: true };
   });
 
+  // Gibt es diese Dateien noch? (Liste „Ausgaben“: Gelöschtes vorher grau zeigen statt still nichts tun.)
+  ipcMain.handle('fs-exists', (_e, list) => (Array.isArray(list) ? list.slice(0, 50) : [])
+    .map((p) => files.validPath(p) && fs.existsSync(p)));
+
   ipcMain.handle('fs-reveal', (_e, p) => { if (files.validPath(p)) shell.showItemInFolder(p); });
 
   // Info-Leiste im Chat: Git-Branch, letzte Commits, offener PR des Arbeitsordners (nur lesen, 60 s zwischengespeichert).
@@ -1063,6 +1252,14 @@ function setup() {
     // Nur Ordner, in denen gerade ein Chat läuft – git/gh laufen nie in beliebigen Ordnern.
     if (!cwd || !isDir(cwd) || !allChats().some((c) => c.cwd === cwd)) return null;
     return chatEnv(cwd, { force: args.force === true });
+  });
+
+  // Nicht committete Änderungen und Diff einer Datei – nur in Ordnern, in denen gerade ein Chat läuft (nur lesen).
+  ipcMain.handle('chat-diff', async (_e, args) => {
+    const cwd = args && typeof args.cwd === 'string' ? args.cwd : null;
+    if (!cwd || !isDir(cwd) || !allChats().some((c) => c.cwd === cwd)) return null;
+    if (typeof args.file === 'string') return chatDiff.fileDiff(cwd, args.file);
+    return chatDiff.changes(cwd);
   });
 
   // Kleine Vorschau eines Bildes, das Claude angeschaut hat (Chat-Schritte). Nur echte Bilddateien.
@@ -1798,6 +1995,7 @@ function setup() {
     const url = typeof id === 'string' && webTabs.currentUrl(id);
     if (url && /^https?:\/\//.test(url)) shell.openExternal(browserTarget(url)).catch(() => {});
   });
+  ipcMain.handle('web-dismiss-google', (_e, id) => { if (typeof id === 'string') webTabs.dismissGoogle(id); });
   ipcMain.handle('web-clear-logins', async () => {
     const { response } = await dialog.showMessageBox(win, {
       type: 'warning', buttons: ['Abbrechen', 'Überall abmelden'], defaultId: 0, cancelId: 0,
@@ -2113,6 +2311,7 @@ function setup() {
 
   app.whenReady().then(async () => {
     require('electron').protocol.handle(bitMedien.SCHEME, (req) => bitMedien.antwort(req, bitvideos.studioPfad()));
+    require('electron').protocol.handle(bildMedien.SCHEME, (req) => bildMedien.antwort(req));
     settings = new Settings(path.join(app.getPath('userData'), 'settings.json'));
     // Beim Start gesperrt – außer die Zentrale war bis eben entsperrt und der Mac seitdem in Benutzung (siehe sessionStillOpen).
     const lockCfg = settings.get().appLock;
@@ -2122,11 +2321,11 @@ function setup() {
     webTabs.on('change', () => send('web-state', webState()));
     webTabs.on('shortcut', (name) => { if (name === 'switcher') send('switcher-toggle'); });
     // Google sperrt die Anmeldung in eingebauten Browsern – im normalen Browser geht sie ganz normal.
-    webTabs.on('google-signin', ({ url }) => shell.openExternal(browserTarget(url)).catch(() => {}));
     // Claude bedient Web-Tabs nur über diese Vermittlung; was er gerade tut, sieht die Oberfläche live.
     browser = new BrowserControl(webTabs);
     browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));
-    chatsProxy = startProxy(chatLink, n8nSocketPath(app.getPath('userData'), 'chats'));
+    chatsProxy = startProxy({ ...chatLink, ...planOps }, n8nSocketPath(app.getPath('userData'), 'chats'));
+    if (process.platform === 'darwin') bildschirmProxy = startProxy(makeBildschirmOps(bildschirm), n8nSocketPath(app.getPath('userData'), 'bildschirm'));
     browserProxy = startProxy(simulation.dryRunOps(makeBrowserOps(browser), simulation.DRY_BROWSER, dryRunActive, 'Web-Tab'), n8nSocketPath(app.getPath('userData'), 'browser'));
     nativeTheme.themeSource = settings.get().theme;
     loadN8n();
@@ -2201,6 +2400,7 @@ function setup() {
     if (n8nProxy) n8nProxy.close();
     if (browserProxy) browserProxy.close();
     if (chatsProxy) chatsProxy.close();
+    if (bildschirmProxy) bildschirmProxy.close();
     for (const c of allChats()) jobs.push(c.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });

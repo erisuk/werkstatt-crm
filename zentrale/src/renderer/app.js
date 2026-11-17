@@ -143,6 +143,7 @@ function chatStatus() {
   if (!s.claude.found) return { dot: 'red', text: 'Claude Code nicht gefunden' };
   if ((s.approvals || []).length) return { dot: 'blue pulse', text: 'Claude wartet auf dich', pill: 'blue', short: 'wartet auf dich' };
   if (!s.chat) return { dot: '', text: 'Kein Chat offen' };
+  if (s.chat.queued) return { dot: 'amber pulse', text: 'Nachricht wartet – 5 Chats arbeiten schon', pill: 'amber', short: 'wartet auf Platz' };
   if (s.chat.status === 'busy') return { dot: 'amber pulse', text: 'Claude arbeitet …', pill: 'amber', short: 'arbeitet' };
   if (s.chat.status === 'error') return { dot: 'red', text: 'Claude hatte einen Fehler', pill: 'red', short: 'Fehler' };
   return { dot: 'green', text: 'Claude bereit', pill: 'green', short: 'bereit' };
@@ -215,6 +216,7 @@ function trashIcon() {
 
 function approvalCard(a, compact) {
   if (a.kind === 'question' && Array.isArray(a.questions) && a.questions.length) return questionCard(a, compact);
+  if (a.kind === 'plan') return planCard(a, compact);
   const busy = { done: false };
   const decide = async (decision) => {
     if (busy.done) return;
@@ -567,6 +569,7 @@ async function openSession(session) {
 // ---------- Chat ----------
 
 function resetChat(gen, messages) {
+  ui.stream = null;
   ui.chatGen = gen;
   ui.messages = messages;
   ui.shown = 0;
@@ -605,7 +608,7 @@ function renderChat() {
     input.focus(); // nach Klick auf Senden gleich weiterschreiben können
     sendMessage(t);
   } }, h('label', { for: 'chat-input', class: 'sr-only', text: 'Nachricht an Claude' }), input,
-    h('div', { class: 'composer-tools' }, fileBtn, shotBtn, h('span', { class: 'spacer' }), sendBtn));
+    h('div', { class: 'composer-tools' }, fileBtn, shotBtn, h('span', { class: 'spacer' }), h('span', { id: 'chat-model', class: 'model-picker' }), sendBtn));
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
   });
@@ -620,12 +623,16 @@ function renderChat() {
     h('div', { class: 'messages', id: 'messages' }, typing),
     h('div', { class: 'chat-bottom' },
       h('div', { id: 'chat-approvals', class: 'chat-approvals' }),
+      h('div', { id: 'chat-screen-lock', class: 'screen-lock', role: 'status', hidden: true }),
       form)));
   ui.sig.chatHead = null;
   ui.shown = 0;
   updateChatHead();
   renderMessages();
   renderChatApprovals();
+  renderScreenLock();
+  ui.sig.modelPicker = null;
+  renderModelPicker();
   // Aus „Skills & Agenten“: der Skill-Name steht schon im Eingabefeld.
   if (ui.prefill) { input.value = ui.prefill; ui.prefill = null; }
   input.focus();
@@ -702,6 +709,36 @@ function updateChatHead() {
     h('button', { class: 'btn ghost', 'data-focus': 'chat-new', onClick: () => newSession(c.cwd) }, 'Neues Gespräch'),
     h('button', { class: `icon-btn info-toggle${chatInfoOpen() ? ' on' : ''}`, 'data-focus': 'chat-info-toggle', 'aria-pressed': String(chatInfoOpen()),
       'aria-label': 'Info-Leiste ein- oder ausblenden', title: chatInfoOpen() ? 'Info-Leiste ausblenden' : 'Info-Leiste einblenden', onClick: toggleChatInfo }, panelIcon())));
+  renderModelPicker();
+}
+
+// Modell und Denktiefe je Chat, unten im Eingabefeld wie in der Claude-App (Liste wie MODELS im Hauptprozess).
+const MODEL_LABELS = { 'claude-opus-5-5': 'Opus 5.5', 'claude-fable-5-2': 'Fable 5.2', 'claude-sonnet-5-5': 'Sonnet 5.5', 'claude-haiku-5-5': 'Haiku 5.5' };
+const EFFORT_LABELS = { '': 'Denktiefe: Standard', low: 'Denktiefe: niedrig', medium: 'Denktiefe: mittel', high: 'Denktiefe: hoch', xhigh: 'Denktiefe: sehr hoch', max: 'Denktiefe: maximal' };
+const modelName = (id) => MODEL_LABELS[id] || (id ? String(id).replace(/^claude-/, '') : 'Standard');
+
+function renderModelPicker() {
+  const box = $('#chat-model');
+  const c = ui.state && ui.state.chat;
+  if (!box || !c) return;
+  if (!changed('modelPicker', [c.sessionId, c.model, c.effort, c.activeModel, c.defaultModel, c.planMode])) return;
+  const plan = h('button', { type: 'button', class: `plan-toggle${c.planMode ? ' on' : ''}`, 'aria-pressed': String(!!c.planMode), 'data-focus': 'chat-plan-mode',
+    title: c.planMode ? 'Plan-Modus an: Claude plant erst und legt dir den Plan zur Freigabe vor. Klicken zum Ausschalten.'
+      : 'Plan-Modus: Claude plant erst und baut erst, wenn du den Plan annimmst (gilt ab der nächsten Nachricht)',
+    onClick: () => api.chatPlanMode(!c.planMode) }, 'Plan');
+  const model = h('select', { class: 'model-select', 'aria-label': 'Modell für diesen Chat', 'data-focus': 'chat-model-select',
+    title: c.activeModel ? `Läuft gerade mit ${modelName(c.activeModel)}. Eine Änderung gilt ab der nächsten Nachricht.` : 'Gilt ab der nächsten Nachricht' });
+  model.append(h('option', { value: '' }, `Standard (${modelName(c.defaultModel)})`));
+  for (const [id, label] of Object.entries(MODEL_LABELS)) model.append(h('option', { value: id }, label));
+  model.value = c.model || '';
+  const effort = h('select', { class: 'model-select', 'aria-label': 'Denktiefe für diesen Chat', 'data-focus': 'chat-effort-select',
+    title: 'Wie gründlich Claude nachdenkt – höher ist genauer, aber langsamer. Gilt ab der nächsten Nachricht.' });
+  for (const [id, label] of Object.entries(EFFORT_LABELS)) effort.append(h('option', { value: id }, label));
+  effort.value = c.effort || '';
+  const save = () => api.chatModel(model.value || null, effort.value || null);
+  model.addEventListener('change', save);
+  effort.addEventListener('change', save);
+  keepFocus(() => fill(box, plan, model, effort));
 }
 
 function panelIcon() {
@@ -780,7 +817,7 @@ function messageEl(m) {
       m.details ? h('details', {}, h('summary', { text: 'Details' }), h('pre', { text: m.details })) : null);
   }
   if (m.kind === 'user') return userMessageEl(m.text, m.at);
-  if (m.kind === 'assistant') return h('div', { class: 'msg assistant' }, mdRender(m.text));
+  if (m.kind === 'assistant') return h('div', { class: `msg assistant${m.streaming ? ' streaming' : ''}` }, mdRender(m.text));
   return h('div', { class: `msg ${m.kind}`, text: m.text });
 }
 
@@ -839,6 +876,23 @@ function stepRow(m) {
   return row;
 }
 
+// „Fehlt“ gilt nur vorläufig: Der Schritt kommt an, bevor Claude die Datei geschrieben hat. Nach jedem fertigen
+// Schritt wird darum neu nachgesehen; nur „ist da“ bleibt gemerkt.
+function forgetMissingFiles() {
+  const known = ui.fileExists || {};
+  if (Object.values(known).includes(false)) ui.fileExists = Object.fromEntries(Object.entries(known).filter(([, v]) => v));
+}
+
+// Datei öffnen – mit verständlicher Meldung, wenn es sie nicht mehr gibt (statt still nichts zu tun).
+async function openFile(p) {
+  const res = await api.fsOpen(p);
+  if (!res || res.ok || res.cancelled) return;
+  ui.fileExists = { ...(ui.fileExists || {}), [p]: false };
+  const name = String(p).split('/').pop();
+  alert(res.error === 'Nicht gefunden.' ? `„${name}“ gibt es nicht mehr – sie wurde gelöscht oder verschoben.\n\n${p}` : res.error);
+  renderChatInfo();
+}
+
 // Satz und Bildvorschau einer Schrittgruppe neu setzen (neuer Schritt oder Ergebnis eines Schritts).
 function refreshStepGroup(group) {
   group.querySelector('.steps-count').textContent = stepSummary(group._steps);
@@ -848,7 +902,7 @@ function refreshStepGroup(group) {
   api.imageThumb(img).then((url) => {
     if (!url || group.dataset.thumb !== img) return;
     const pic = h('button', { class: 'steps-thumb', 'aria-label': 'Bild öffnen', title: img }, h('img', { src: url, alt: '' }));
-    pic.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); api.fsOpen(img); });
+    pic.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openFile(img); });
     fill(group.querySelector('.steps-thumb-slot'), pic);
   });
 }
@@ -866,6 +920,42 @@ function markStepResult(id, error) {
 }
 
 // Aufeinanderfolgende Arbeitsschritte landen in einer aufklappbaren Gruppe; zu sieht man den neuesten.
+// Aufgabenliste und Box „Nächster Schritt“ unter der letzten Antwort – wie in der Claude-App.
+const PLAN_TOOLS = /^mcp__chats__(aufgaben|abschluss)$/;
+const PLAN_ICON = { offen: '○', 'läuft': '◐', erledigt: '✓' };
+
+function renderChatPlan() {
+  const box = $('#messages');
+  const c = ui.state && ui.state.chat;
+  if (!box) return;
+  const plan = c && c.plan;
+  const next = c && c.nextStep;
+  if (!changed('chatPlan', [c && c.sessionId, plan, next, chatBusy()])) {
+    // Schon gezeichnet: nur sicherstellen, dass beides ganz unten steht.
+    for (const id of ['chat-plan', 'chat-next']) { const el = $(`#${id}`); if (el && el.parentNode === box && el !== box.lastElementChild) box.append(el); }
+    return;
+  }
+  for (const id of ['chat-plan', 'chat-next']) { const el = $(`#${id}`); if (el) el.remove(); }
+  if (plan && plan.schritte && plan.schritte.length) {
+    const done = plan.schritte.filter((s) => s.status === 'erledigt').length;
+    box.append(h('section', { id: 'chat-plan', class: 'chat-plan', 'aria-label': 'Aufgabenliste' },
+      h('div', { class: 'chat-plan-head', text: `Aufgaben · ${done} von ${plan.schritte.length} erledigt` }),
+      h('ol', {}, plan.schritte.map((s) => h('li', { class: `plan-${s.status === 'läuft' ? 'laeuft' : s.status}` },
+        h('span', { class: 'plan-icon', 'aria-hidden': 'true', text: PLAN_ICON[s.status] || '○' }),
+        h('span', { class: 'plan-text', text: s.text }),
+        h('span', { class: 'sr-only', text: ` (${s.status})` }))))));
+  }
+  if (next && !chatBusy()) {
+    box.append(h('section', { id: 'chat-next', class: 'chat-next', 'aria-label': 'Nächster Schritt' },
+      h('p', { class: 'chat-next-recap', text: next.zusammenfassung }),
+      next.frage ? h('div', { class: 'chat-next-ask' },
+        h('span', { class: 'chat-next-q', text: next.frage }),
+        h('div', { class: 'chat-next-btns' }, next.knoepfe.map((k, i) => h('button', { class: i === 0 ? 'btn' : 'btn ghost', 'data-focus': `next-btn:${i}`,
+          onClick: () => sendMessage(k.nachricht || k.text) }, k.text)))) : null));
+  }
+  if (ui.forceScroll || box.scrollHeight - box.scrollTop - box.clientHeight < 160) box.scrollTop = box.scrollHeight;
+}
+
 function addStep(box, typing, m) {
   let group = typing.previousElementSibling;
   if (!group || !group.classList.contains('steps')) {
@@ -884,7 +974,7 @@ function updateTyping() {
   if (!typing || typing.hidden) return;
   let current = null;
   for (let i = ui.messages.length - 1; i >= 0 && ui.messages[i].kind !== 'user'; i -= 1) {
-    if (ui.messages[i].kind === 'tool') { current = ui.messages[i]; break; }
+    if (ui.messages[i].kind === 'tool' && !PLAN_TOOLS.test(ui.messages[i].tool || '')) { current = ui.messages[i]; break; }
   }
   const [, label] = current ? stepInfo(current.tool) : [null, null];
   const text = current ? `${label}${current.detail ? ` ${current.detail}` : ''}` : 'Claude denkt nach …';
@@ -904,19 +994,22 @@ function renderMessages() {
   if (ui.shown > ui.messages.length) ui.shown = 0;
   if (ui.shown === 0) {
     for (const el of [...box.children]) if (el !== typing) el.remove();
+    ui.sig.chatPlan = null; // Liste und Box sind mit weg – neu zeichnen
     if (!ui.messages.length) box.insertBefore(h('div', { class: 'chat-hint', id: 'chat-hint' }, sparkIcon('spark big'), h('p', { text: 'Was soll Claude für dich tun?' })), typing);
   }
   if (ui.messages.length > ui.shown) {
     const hint = $('#chat-hint');
     if (hint) hint.remove();
     for (const m of ui.messages.slice(ui.shown)) {
+      if (m.kind === 'tool' && PLAN_TOOLS.test(m.tool || '')) continue; // Aufgabenliste/Abschluss zeigen sich selbst
       if (m.kind === 'tool') addStep(box, typing, m);
-      else box.insertBefore(messageEl(m), typing);
+      else { const el = messageEl(m); if (m.streaming) ui.streamEl = el; box.insertBefore(el, typing); }
     }
     ui.shown = ui.messages.length;
   }
   typing.hidden = !chatBusy() || chatApprovals().length > 0;
   updateTyping();
+  renderChatPlan();
   if (nearBottom || ui.forceScroll) box.scrollTop = box.scrollHeight;
   ui.forceScroll = false;
 }
@@ -940,12 +1033,52 @@ function notifyChatMirror() {
   if (ui.view === 'automations' && typeof renderAssistant === 'function') renderAssistant();
 }
 
+// Live-Text: Bruchstücke an die laufende Antwort hängen; höchstens einmal pro Bild neu zeichnen.
+function streamDelta(ev) {
+  if (!ui.stream || ui.stream.key !== ev.key) {
+    endStream();
+    const m = { kind: 'assistant', text: '', streaming: true };
+    ui.messages.push(m);
+    ui.stream = { key: ev.key, msg: m };
+  }
+  ui.stream.msg.text += ev.text;
+  if (ui.view !== 'chat') { notifyChatMirror(); return; }
+  if (!ui.streamEl || !ui.streamEl.isConnected) { renderMessages(); return; }
+  if (ui.streamFrame) return;
+  ui.streamFrame = requestAnimationFrame(() => {
+    ui.streamFrame = null;
+    if (!ui.stream || !ui.streamEl || !ui.streamEl.isConnected) return;
+    const box = $('#messages');
+    const nearBottom = box && box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    fill(ui.streamEl, mdRender(ui.stream.msg.text));
+    if (nearBottom) box.scrollTop = box.scrollHeight;
+  });
+}
+
+// Die laufende Antwort abschließen; final: der fertige Text von Claude (ersetzt die Bruchstücke).
+function endStream(final) {
+  const s = ui.stream;
+  if (!s) return false;
+  ui.stream = null;
+  s.msg.streaming = false;
+  if (typeof final === 'string') s.msg.text = final;
+  if (ui.streamEl && ui.streamEl.isConnected) {
+    ui.streamEl.classList.remove('streaming');
+    fill(ui.streamEl, mdRender(s.msg.text));
+  }
+  ui.streamEl = null;
+  return true;
+}
+
 api.onChatEvent((ev) => {
   if (ev.gen !== ui.chatGen) return; // Ereignis eines früheren Chats
+  if (ev.kind === 'delta') { streamDelta(ev); return; }
+  if (ev.kind === 'text' && endStream(ev.text)) { if (ui.view === 'chat') renderMessages(); else notifyChatMirror(); return; }
+  if (ev.kind !== 'usage' && ev.kind !== 'toolResult' && ev.kind !== 'window' && ev.kind !== 'init') endStream();
   if (ev.kind === 'text') ui.messages.push({ kind: 'assistant', text: ev.text });
   else if (ev.kind === 'relay') ui.messages.push({ kind: 'user', text: ev.text, at: Date.now() });
   else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', id: ev.id, text: ev.text, tool: ev.tool, detail: ev.detail, path: ev.path, tab: ev.tab });
-  else if (ev.kind === 'toolResult') { markStepResult(ev.id, ev.error); renderChatInfo(); return; }
+  else if (ev.kind === 'toolResult') { forgetMissingFiles(); ui.chatDiffAt = 0; markStepResult(ev.id, ev.error); renderChatInfo(); return; }
   else if (ev.kind === 'error') ui.messages.push({ kind: 'error', text: ev.text, details: ev.details });
   else return;
   if (ui.view === 'chat') { renderMessages(); if (ev.kind === 'tool') renderChatInfo(); }
@@ -956,6 +1089,7 @@ api.onChatEvent((ev) => {
 
 function chatPill(c) {
   if (c.waiting) return { pill: 'blue', text: 'wartet auf dich' };
+  if (c.queued) return { pill: 'amber', text: 'wartet auf Platz', title: 'Schon 5 Chats arbeiten. Deine Nachricht geht automatisch raus, sobald einer fertig ist.' };
   if (c.status === 'busy') return { pill: 'amber', text: 'arbeitet' };
   if (c.status === 'error') return { pill: 'red', text: 'Fehler' };
   // Schläft: Prozess aus, Gespräch gespeichert – wacht beim nächsten Senden auf.
@@ -1109,6 +1243,7 @@ function applyState(next) {
   renderStatus();
   renderTheme();
   renderAside();
+  renderScreenLock();
   if (firstLoad) { renderMain(); return; }
   if (ui.view === 'overview') renderOverview();
   else if (ui.view === 'chat') {

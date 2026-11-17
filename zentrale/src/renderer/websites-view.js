@@ -65,7 +65,7 @@ function siteRow(s) {
       h('div', { class: 'sub', text: `${s.dir.replace(/^\/Users\/[^/]+/, '~')} · ${formatWhen(s.createdAt)}` })),
     h('button', { class: 'link', 'aria-label': `Weiterarbeiten: ${s.name}`, disabled: !ui.state.claude.found, onClick: () => newSession(s.dir) }, 'Weiterarbeiten'),
     h('button', { class: 'link', 'aria-label': `Vorschau starten: ${s.name}`, onClick: () => { setView('projects'); openStartForm(s.dir); } }, 'Vorschau starten'),
-    h('button', { class: 'link', 'aria-label': `Im Finder: ${s.name}`, onClick: () => api.fsOpen(s.dir) }, 'Im Finder'),
+    h('button', { class: 'link', 'aria-label': `Im Finder: ${s.name}`, onClick: () => openFile(s.dir) }, 'Im Finder'),
     h('button', { class: 'icon-btn', 'aria-label': `${s.name} aus der Liste entfernen`, title: 'Aus der Liste entfernen (der Ordner bleibt)', onClick: async () => {
       if (confirm(`„${s.name}“ aus der Liste entfernen? Der Ordner bleibt.`)) { sites.data = await api.studioForget(s.id); renderWebsitesBody(); }
     } }, '×'));

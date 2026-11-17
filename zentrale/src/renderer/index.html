@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: bitvideo:; media-src 'self' bitvideo:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: bitvideo: zbild: https:; media-src 'self' bitvideo:; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Zentrale</title>
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -129,6 +129,7 @@
       <div class="spacer"></div>
       <section id="quick-section" class="hide-in-chat">
         <h2>Schnell fragen</h2>
+        <div id="quick-screen-lock" class="screen-lock" role="status" hidden></div>
         <form id="quick-form" class="composer small">
           <label for="quick-input" class="sr-only">Nachricht an Claude</label>
           <input id="quick-input" type="text" placeholder="Frag Claude …" autocomplete="off">
@@ -165,7 +166,10 @@
 <script src="step-summary.js"></script>
 <script src="chat-info.js"></script>
 <script src="question-card.js"></script>
+<script src="plan-card.js"></script>
+<script src="diff-view.js"></script>
 <script src="konten-view.js"></script>
+<script src="screen-lock.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

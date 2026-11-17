@@ -956,3 +956,68 @@ h2 { font-size: 16px; font-weight: 600; }
 .konto-neu { padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 .konto-neu-felder { display: flex; gap: 8px; flex-wrap: wrap; }
 .konto-neu-felder .konto-input { flex: 1 1 180px; max-width: none; width: auto; }
+
+.info-right.gone { color: var(--text-2); font-style: italic; }
+
+/* Eingabesperre, solange ein Chat Maus/Tastatur steuert */
+.screen-lock { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 8px; border-radius: 12px; background: var(--notice-bg); color: var(--notice); font-size: 13px; line-height: 1.4; }
+.screen-lock[hidden] { display: none; }
+.screen-lock .link { color: inherit; font-weight: 600; text-decoration: underline; }
+
+/* Live-Text: blinkender Strich am Ende, solange Claude schreibt */
+.msg.assistant.streaming > :last-child::after { content: ''; display: inline-block; width: .5em; height: 1.05em; margin-left: 2px; vertical-align: text-bottom; background: var(--claude, var(--accent)); border-radius: 2px; animation: stream-caret 1s steps(2, start) infinite; }
+@keyframes stream-caret { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .msg.assistant.streaming > :last-child::after { animation: none; } }
+
+/* Bilder im Chat */
+.md-img { display: block; max-width: min(100%, 560px); margin: 8px 0; padding: 0; border: 1px solid var(--border-strong); border-radius: 12px; overflow: hidden; background: var(--fill); cursor: zoom-in; }
+.md-img img { display: block; max-width: 100%; max-height: 420px; height: auto; object-fit: contain; }
+.md-img:hover, .md-img:focus-visible { border-color: var(--accent); }
+.md-img-missing { display: inline-block; margin: 4px 0; padding: 4px 10px; border-radius: 8px; background: var(--fill); color: var(--text-2); font-size: 13px; }
+
+/* Modell und Denktiefe unten im Eingabefeld */
+.model-picker { display: inline-flex; gap: 6px; align-items: center; margin-right: 8px; min-width: 0; }
+.model-select { height: 30px; max-width: 190px; padding: 0 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-2); font: inherit; font-size: 12.5px; cursor: pointer; text-overflow: ellipsis; }
+.model-select:hover, .model-select:focus-visible { background: var(--fill); color: var(--text); }
+@container (max-width: 560px) { .model-select + .model-select { display: none; } }
+
+/* Aufgabenliste und „Nächster Schritt“ unter der Antwort */
+.chat-plan { margin: 10px 0 4px; padding: 12px 16px; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--card-soft); }
+.chat-plan-head { font-size: 12px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
+.chat-plan ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.chat-plan li { display: flex; align-items: baseline; gap: 10px; font-size: 14px; line-height: 1.4; }
+.plan-icon { width: 16px; flex-shrink: 0; text-align: center; color: var(--text-2); }
+.plan-erledigt .plan-text { color: var(--text-2); text-decoration: line-through; text-decoration-color: var(--border-strong); }
+.plan-erledigt .plan-icon { color: var(--pill-green); }
+.plan-laeuft .plan-text { font-weight: 600; }
+.plan-laeuft .plan-icon { color: var(--accent); animation: plan-spin 1.6s linear infinite; display: inline-block; }
+@keyframes plan-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .plan-laeuft .plan-icon { animation: none; } }
+.chat-next { margin: 10px 0 6px; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--accent); background: var(--pill-blue-bg); color: var(--text); display: flex; flex-direction: column; gap: 10px; }
+.chat-next-recap { margin: 0; line-height: 1.5; }
+.chat-next-ask { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.chat-next-q { font-weight: 600; flex: 1 1 200px; }
+.chat-next-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Plan-Modus */
+.plan-toggle { height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border-strong); background: transparent; color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.plan-toggle:hover { border-color: var(--accent); color: var(--text); }
+.plan-toggle.on { background: var(--pill-blue-bg); color: var(--pill-blue); border-color: transparent; }
+.plan-card { padding: 16px 18px 14px; display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--accent); background: var(--card-strong); box-shadow: 0 6px 24px rgba(30, 40, 80, 0.08); }
+.plan-body { max-height: 46vh; overflow: auto; padding: 4px 12px; border-radius: 10px; background: var(--fill); }
+.plan-wish { width: 100%; box-sizing: border-box; resize: vertical; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: transparent; color: var(--text); font: inherit; }
+.plan-wish:focus { outline: none; border-color: var(--accent); }
+
+/* Änderungen (Diff) */
+.diff-head { font-size: 12px; color: var(--text-2); margin: 2px 0 2px; }
+.info-right.diff-num { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.diff-overlay { position: fixed; inset: 0; z-index: 1200; background: rgba(0, 0, 0, .55); backdrop-filter: blur(6px); display: flex; justify-content: center; align-items: center; padding: 32px; }
+.diff-panel { width: min(1100px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: 16px; background-color: var(--bg); background-image: linear-gradient(var(--card-strong), var(--card-strong)); border: 1px solid var(--border-strong); box-shadow: 0 20px 60px rgba(0, 0, 0, .35); }
+.diff-top { display: flex; align-items: center; gap: 12px; }
+.diff-title { flex: 1; min-width: 0; font-weight: 600; font-family: ui-monospace, Menlo, monospace; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-code { margin: 0; overflow: auto; padding: 10px 0; border-radius: 10px; background: var(--fill); font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.5; user-select: text; }
+.d-line { display: block; padding: 0 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.d-add { background: rgba(34, 197, 94, .16); }
+.d-del { background: rgba(217, 45, 32, .16); }
+.d-hunk { color: var(--accent-text); background: rgba(59, 130, 246, .08); }
+.d-meta { color: var(--text-2); }

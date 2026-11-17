@@ -7,6 +7,8 @@ const MAX_HOPS = 3;
 const WAIT_MS = 10 * 60 * 1000;
 const MAX_TEXT = 20000;
 const MAX_READ = 40;
+const MAX_STARTS = 3; // neue Chats je Chat …
+const START_WINDOW_MS = 10 * 60 * 1000; // … in diesem Zeitraum (Bremse gegen Kettenreaktionen)
 
 function stand(c) {
   if (c.pendingApprovals().length) return 'wartet auf Eris';
@@ -24,7 +26,9 @@ function relayText(from, text) {
 
 // chats(): alle offenen Chats (sichtbar + Hintergrund). history(c, n): [{ role, text }].
 // deliver(c, text, from): Nachricht zustellen (aufwecken, senden, anzeigen) → { ok, error }.
-function createChatLink({ chats, history, deliver, waitMs = WAIT_MS }) {
+// start({ cwd, title, text, from, hops }): neuen Chat anlegen und den Auftrag schicken → { ok, chat, error }.
+function createChatLink({ chats, history, deliver, start = null, waitMs = WAIT_MS, now = Date.now }) {
+  const starts = new Map(); // sessionId → Zeitpunkte der zuletzt gestarteten Chats
   const waits = new Map(); // sessionId des Wartenden → sessionId des Chats, auf dessen Antwort er wartet
   const find = (id) => (typeof id === 'string' && chats().find((c) => c.sessionId === id)) || null;
 
@@ -79,6 +83,24 @@ function createChatLink({ chats, history, deliver, waitMs = WAIT_MS }) {
       return { ok: true, data: { titel: chatTitle(c), stand: stand(c), nachrichten: msgs } };
     },
 
+    // Neuen Chat für eine Nebenaufgabe starten (wie „neue Sitzung“ in der Claude-App). Er arbeitet im Hintergrund.
+    start: async ({ from, ordner, titel, auftrag } = {}) => {
+      const sender = find(from);
+      const t = String(auftrag || '').trim().slice(0, MAX_TEXT);
+      if (!start) return { ok: false, error: 'Neue Chats gehen hier nicht.' };
+      if (!sender) return { ok: false, error: 'Der eigene Chat ist der Zentrale nicht bekannt.' };
+      if (!t) return { ok: false, error: 'Der Auftrag fehlt – schreib ihn so, dass er ohne diesen Verlauf verständlich ist.' };
+      const hops = (sender.relayHops || 0) + 1;
+      if (hops > MAX_HOPS) return { ok: false, error: `Schon ${MAX_HOPS} Weiterleitungen hintereinander – hier ist Schluss. Frag Eris.` };
+      const recent = (starts.get(sender.sessionId) || []).filter((at) => now() - at < START_WINDOW_MS);
+      if (recent.length >= MAX_STARTS) return { ok: false, error: `Dieser Chat hat schon ${MAX_STARTS} neue Chats in den letzten 10 Minuten gestartet. Mach selbst weiter oder frag Eris.` };
+      const res = await start({ cwd: ordner ? String(ordner) : sender.cwd, title: String(titel || '').trim().slice(0, 80) || null,
+        text: relayText(sender, t), from: sender, hops });
+      if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'Der neue Chat ließ sich nicht starten.' };
+      starts.set(sender.sessionId, [...recent, now()]);
+      return { ok: true, data: { chat: res.chat, hinweis: 'Gestartet – er arbeitet im Hintergrund. Später mit chats_lesen nachsehen oder mit chats_senden nachfragen.' } };
+    },
+
     send: async ({ from, chat, text, wait = true } = {}) => {
       const sender = find(from);
       const c = find(chat);
@@ -106,4 +128,4 @@ function createChatLink({ chats, history, deliver, waitMs = WAIT_MS }) {
   };
 }
 
-module.exports = { createChatLink, relayText, MAX_HOPS };
+module.exports = { createChatLink, relayText, MAX_HOPS, MAX_STARTS };

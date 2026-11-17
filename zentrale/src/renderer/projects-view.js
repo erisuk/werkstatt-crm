@@ -90,7 +90,7 @@ function projectRow(p) {
       h('div', { class: 'title' }, p.name, p.added ? h('span', { class: 'pill blue', text: 'hinzugefügt' }) : null,
         ...p.servers.map((s) => h('span', { class: 'pill green', title: s.title || s.url, text: `:${s.port}` }))),
       h('div', { class: 'sub', title: p.path, text: [p.path.replace(/^\/Users\/[^/]+/, '~'), p.sessions ? plural(p.sessions, 'Gespräch', 'Gespräche') : null].filter(Boolean).join(' · ') })),
-    h('button', { class: 'link', 'aria-label': `${p.name} im Finder zeigen`, onClick: () => api.fsOpen(p.path) }, 'Im Finder'),
+    h('button', { class: 'link', 'aria-label': `${p.name} im Finder zeigen`, onClick: () => openFile(p.path) }, 'Im Finder'),
     h('button', { class: 'link', 'aria-label': `Claude in ${p.name} starten`, disabled: !ui.state.claude.found, onClick: () => newSession(p.path) }, 'Claude hier'),
     h('button', { class: 'link', 'aria-label': `Server in ${p.name} starten`, onClick: () => openStartForm(p.path) }, 'Server starten'),
     h('button', { class: 'icon-btn', 'aria-label': `${p.name} aus der Liste entfernen`, title: 'Aus der Liste entfernen (der Ordner bleibt)', onClick: async () => {

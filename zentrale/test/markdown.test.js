@@ -78,6 +78,7 @@ test('Inline: Adressen mit Klammern, <Adresse> und Bild-Link', () => {
   assert.strictEqual(p[2].href, 'https://de.wikipedia.org/wiki/Ulm_(Stadt)');
   assert.strictEqual(p[3].v, '.');
   const q = parseInline('(siehe https://a.de/x) und <https://b.de> ![Bild](https://c.de/a.png)');
-  assert.deepStrictEqual(q.map((x) => x.href || x.v), ['(siehe ', 'https://a.de/x', ') und ', 'https://b.de', ' ', 'https://c.de/a.png']);
+  assert.deepStrictEqual(q.map((x) => x.href || x.src || x.v), ['(siehe ', 'https://a.de/x', ') und ', 'https://b.de', ' ', 'https://c.de/a.png']);
+  assert.strictEqual(q[5].t, 'img');
   assert.deepStrictEqual(parseInline('Maß_a_b'), [{ t: 'text', v: 'Maß_a_b' }]);
 });

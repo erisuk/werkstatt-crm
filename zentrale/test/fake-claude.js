@@ -48,6 +48,13 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     setTimeout(() => { out({ type: 'control_cancel_request', request_id: id }); answer('zurückgezogen'); }, 200);
     return;
   }
+  if (text.startsWith('PLAN:')) {
+    const id = `req-plan-${process.pid}-${Date.now()}`;
+    waiting = { id, done: answer, ask: true };
+    out({ type: 'control_request', request_id: id, request: { subtype: 'can_use_tool', tool_name: 'ExitPlanMode',
+      input: { plan: `# Plan\n\n${text.slice('PLAN:'.length)}` } } });
+    return;
+  }
   if (text.startsWith('AUSWAHL:')) {
     const id = `req-ask-${process.pid}-${Date.now()}`;
     waiting = { id, done: answer, ask: true };

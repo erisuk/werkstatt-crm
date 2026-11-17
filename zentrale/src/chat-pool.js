@@ -45,7 +45,8 @@ class ChatPool {
   // Der bisher sichtbare Chat wandert in den Hintergrund – außer er hatte noch keine einzige Nachricht.
   park(c) {
     if (!c || c.disposed) return;
-    if (!c.sessionSaved() && c.status !== 'busy') { c.dispose().catch(() => {}); return; }
+    // Leer und untätig: weg. Wartet aber eine Nachricht auf einen freien Platz, bleibt er.
+    if (!c.sessionSaved() && c.status !== 'busy' && !(c.queued && c.queued.length)) { c.dispose().catch(() => {}); return; }
     const prev = this.parked.get(c.sessionId);
     if (prev && prev !== c) prev.dispose().catch(() => {});
     c.lastActive = Date.now(); // gerade noch angeschaut – nicht sofort als „untätig“ einschläfern
@@ -82,6 +83,20 @@ class ChatPool {
     return true;
   }
 
+  // Wartende Nachrichten zustellen (c.queued), sobald Platz ist – Chat für Chat, in der Reihenfolge der Liste.
+  // Jede Nachricht wird erst gesendet, wenn der Chat dafür wach sein darf. Gibt zurück, wie viele raus sind.
+  async flushQueued(active) {
+    let sent = 0;
+    for (const c of this.all(active)) {
+      if (c.disposed || !c.queued || !c.queued.length) continue;
+      if (!isAwake(c) && !this.wake(active, c)) break; // noch kein Platz – beim nächsten Freiwerden erneut
+      const texts = c.queued;
+      c.queued = [];
+      for (const t of texts) { if (await c.send(t)) sent += 1; }
+    }
+    return sent;
+  }
+
   // Untätige Hintergrund-Chats nach idleMs einschläfern. Gibt zurück, wie viele es waren.
   sweep(now = Date.now()) {
     const stale = [...this.parked.values()].filter((c) => isAwake(c) && closable(c) && now - (c.lastActive || 0) > this.idleMs);
@@ -97,13 +112,13 @@ class ChatPool {
     return this.all(active).map((c) => ({ sessionId: c.sessionId, title: chatTitle(c), name: path.basename(c.cwd) || c.cwd,
       status: c.status, active: c === active, waiting: c.pendingApprovals().length,
       asleep: !isAwake(c) && c.status !== 'busy' && c.status !== 'error',
-      relayFrom: c.lastRelay ? c.lastRelay.from : null }));
+      relayFrom: c.lastRelay ? c.lastRelay.from : null, queued: (c.queued || []).length }));
   }
 
   // Was beim Neustart der Zentrale wiederkommen soll: alle Chats mit gespeichertem Gespräch.
   saved(active) {
     return this.all(active).filter((c) => !c.disposed && c.sessionSaved())
-      .map((c) => ({ sessionId: c.sessionId, cwd: c.cwd, title: c.title || null, addDirs: c.addDirs || [] }));
+      .map((c) => ({ sessionId: c.sessionId, cwd: c.cwd, title: c.title || null, addDirs: c.addDirs || [], model: c.model || null, effort: c.effort || null }));
   }
 
   fullMessage() {

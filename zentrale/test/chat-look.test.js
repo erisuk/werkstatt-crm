@@ -64,3 +64,23 @@ test('Füllstand eines gespeicherten Gesprächs: letzte Antwort des Hauptchats, 
   assert.strictEqual(lastContext(file), null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('Bildschirmsteuerung: Tastendrücke per osascript, cliclick, CGEvent oder Bildschirm-Werkzeug werden erkannt', () => {
+  const { toolStep, controlsScreen } = require('../src/tool-steps');
+  assert.strictEqual(toolStep('Bash', { command: `osascript -e 'tell application "System Events" to keystroke "x"'` }).screen, true);
+  assert.strictEqual(toolStep('Bash', { command: 'uv run python klick.py 1 2 # CGEventPost' }).screen, true);
+  assert.strictEqual(toolStep('Bash', { command: 'cliclick c:10,10' }).screen, true);
+  assert.strictEqual(controlsScreen('mcp__computer-use__app_click', {}), true);
+  assert.strictEqual(toolStep('Bash', { command: 'ls -la' }).screen, undefined);
+  assert.strictEqual(toolStep('Bash', { command: 'osascript -e \'tell application "Labelnize" to activate\'' }).screen, undefined, 'nur App nach vorn holen tippt nichts');
+  assert.strictEqual(toolStep('Read', { file_path: '/x/System Events.txt' }).screen, undefined);
+});
+
+test('Live-Text: Bruchstücke werden zu „delta“, Unteragenten und andere Ereignisse nicht', () => {
+  const { simplify } = require('../src/claude');
+  const ev = (delta, extra = {}) => ({ type: 'stream_event', api_message_id: 'm1', parent_tool_use_id: null, event: { type: 'content_block_delta', index: 2, delta }, ...extra });
+  assert.deepStrictEqual(simplify(ev({ type: 'text_delta', text: 'Ulm li' })), [{ kind: 'delta', text: 'Ulm li', key: 'm1:2' }]);
+  assert.deepStrictEqual(simplify(ev({ type: 'input_json_delta', partial_json: '{"a' })), []);
+  assert.deepStrictEqual(simplify(ev({ type: 'text_delta', text: 'x' }, { parent_tool_use_id: 'toolu_1' })), []);
+  assert.deepStrictEqual(simplify({ type: 'stream_event', event: { type: 'message_start' } }), []);
+});
