@@ -117,11 +117,28 @@ function connectorsSection(c) {
   return infoSection(`Konnektoren · ${connected} von ${list.length} verbunden`, ...rows, more);
 }
 
+// Ob die gezeigten Dateien noch da sind – einmal nachsehen, dann merken (ui.fileExists).
+function checkOutputs(paths) {
+  const known = ui.fileExists || {};
+  const todo = paths.filter((p) => !(p in known));
+  if (!todo.length || ui.fileCheckBusy) return;
+  ui.fileCheckBusy = true;
+  api.fsExists(todo).then((res) => {
+    ui.fileExists = { ...(ui.fileExists || {}), ...Object.fromEntries(todo.map((p, i) => [p, !!res[i]])) };
+  }).catch(() => {}).finally(() => { ui.fileCheckBusy = false; renderChatInfo(); });
+}
+
 function outputsSection() {
   const outs = chatOutputs();
   if (!outs.length) return infoSection('Ausgaben', h('p', { class: 'info-empty', text: 'Noch keine Dateien in diesem Chat.' }));
-  return infoSection('Ausgaben', ...outs.slice(0, OUTPUTS_SHOWN).map((p) =>
-    infoRow('▤', p.split('/').pop(), { title: `${p}\nKlicken zum Öffnen`, onClick: () => api.fsOpen(p) })));
+  const shown = outs.slice(0, OUTPUTS_SHOWN);
+  checkOutputs(shown);
+  return infoSection('Ausgaben', ...shown.map((p) => {
+    const gone = (ui.fileExists || {})[p] === false;
+    return infoRow('▤', p.split('/').pop(), gone
+      ? { title: `${p}\nGibt es nicht mehr – gelöscht oder verschoben.`, right: 'gelöscht', rightClass: 'gone', onClick: () => openFile(p) }
+      : { title: `${p}\nKlicken zum Öffnen`, onClick: () => openFile(p) });
+  }));
 }
 
 function changesSection(env) {
@@ -176,6 +193,6 @@ function renderChatInfo() {
   const env = ui.chatEnv && ui.chatEnv.cwd === c.cwd ? ui.chatEnv : null;
   const outs = chatOutputs();
   const usedTools = ui.messages.filter((m) => m.kind === 'tool' && /^mcp__/.test(m.tool || '')).map((m) => `${m.tool}|${m.tab || ''}`);
-  if (!changed('chatInfo', [c.cwd, c.context, c.mcp, c.addDirs, outs, env, ui.chatInfoMore, usedTools, ui.kontenAt])) return;
+  if (!changed('chatInfo', [c.cwd, c.context, c.mcp, c.addDirs, outs, env, ui.chatInfoMore, usedTools, ui.kontenAt, ui.fileExists])) return;
   keepFocus(() => fill(box, envSection(c, env), accountsSection(), contextSection(c), connectorsSection(c), outputsSection(), changesSection(env)));
 }

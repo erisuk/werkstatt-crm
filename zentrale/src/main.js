@@ -1075,6 +1075,10 @@ function setup() {
     return err ? { ok: false, error: err } : { ok: true };
   });
 
+  // Gibt es diese Dateien noch? (Liste „Ausgaben“: Gelöschtes vorher grau zeigen statt still nichts tun.)
+  ipcMain.handle('fs-exists', (_e, list) => (Array.isArray(list) ? list.slice(0, 50) : [])
+    .map((p) => files.validPath(p) && fs.existsSync(p)));
+
   ipcMain.handle('fs-reveal', (_e, p) => { if (files.validPath(p)) shell.showItemInFolder(p); });
 
   // Info-Leiste im Chat: Git-Branch, letzte Commits, offener PR des Arbeitsordners (nur lesen, 60 s zwischengespeichert).

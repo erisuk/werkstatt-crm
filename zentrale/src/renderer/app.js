@@ -840,6 +840,16 @@ function stepRow(m) {
   return row;
 }
 
+// Datei öffnen – mit verständlicher Meldung, wenn es sie nicht mehr gibt (statt still nichts zu tun).
+async function openFile(p) {
+  const res = await api.fsOpen(p);
+  if (!res || res.ok || res.cancelled) return;
+  ui.fileExists = { ...(ui.fileExists || {}), [p]: false };
+  const name = String(p).split('/').pop();
+  alert(res.error === 'Nicht gefunden.' ? `„${name}“ gibt es nicht mehr – sie wurde gelöscht oder verschoben.\n\n${p}` : res.error);
+  renderChatInfo();
+}
+
 // Satz und Bildvorschau einer Schrittgruppe neu setzen (neuer Schritt oder Ergebnis eines Schritts).
 function refreshStepGroup(group) {
   group.querySelector('.steps-count').textContent = stepSummary(group._steps);
@@ -849,7 +859,7 @@ function refreshStepGroup(group) {
   api.imageThumb(img).then((url) => {
     if (!url || group.dataset.thumb !== img) return;
     const pic = h('button', { class: 'steps-thumb', 'aria-label': 'Bild öffnen', title: img }, h('img', { src: url, alt: '' }));
-    pic.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); api.fsOpen(img); });
+    pic.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openFile(img); });
     fill(group.querySelector('.steps-thumb-slot'), pic);
   });
 }
