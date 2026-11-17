@@ -92,6 +92,11 @@ function simplify(ev) {
     const mcp = all ? all.map((x) => ({ name: String(x.name), status: String(x.status || 'unknown') })) : null;
     return [{ kind: 'init', sessionId: ev.session_id, model: ev.model || null, servers, mcp }];
   }
+  // Live-Text: Wort für Wort, solange Claude schreibt (--include-partial-messages). Unteragenten nicht.
+  if (ev.type === 'stream_event' && !ev.parent_tool_use_id && ev.event && ev.event.type === 'content_block_delta'
+    && ev.event.delta && ev.event.delta.type === 'text_delta' && ev.event.delta.text) {
+    return [{ kind: 'delta', text: ev.event.delta.text, key: `${ev.api_message_id || ''}:${ev.event.index}` }];
+  }
   if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
     const out = [];
     for (const b of ev.message.content) {
@@ -461,7 +466,7 @@ class ClaudeChat extends EventEmitter {
   start() {
     if (this.alive || this.disposed) return;
     this.needsRestart = false; // startet ohnehin mit den aktuellen Einstellungen
-    const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+    const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
       '--permission-mode', this.permissionMode, '--permission-prompt-tool', 'stdio',
       '--settings', safetySettings(this.permissionMode)];
     args.push(this.sessionSaved() ? '--resume' : '--session-id', this.sessionId);

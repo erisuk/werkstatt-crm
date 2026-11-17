@@ -568,6 +568,7 @@ async function openSession(session) {
 // ---------- Chat ----------
 
 function resetChat(gen, messages) {
+  ui.stream = null;
   ui.chatGen = gen;
   ui.messages = messages;
   ui.shown = 0;
@@ -783,7 +784,7 @@ function messageEl(m) {
       m.details ? h('details', {}, h('summary', { text: 'Details' }), h('pre', { text: m.details })) : null);
   }
   if (m.kind === 'user') return userMessageEl(m.text, m.at);
-  if (m.kind === 'assistant') return h('div', { class: 'msg assistant' }, mdRender(m.text));
+  if (m.kind === 'assistant') return h('div', { class: `msg assistant${m.streaming ? ' streaming' : ''}` }, mdRender(m.text));
   return h('div', { class: `msg ${m.kind}`, text: m.text });
 }
 
@@ -924,7 +925,7 @@ function renderMessages() {
     if (hint) hint.remove();
     for (const m of ui.messages.slice(ui.shown)) {
       if (m.kind === 'tool') addStep(box, typing, m);
-      else box.insertBefore(messageEl(m), typing);
+      else { const el = messageEl(m); if (m.streaming) ui.streamEl = el; box.insertBefore(el, typing); }
     }
     ui.shown = ui.messages.length;
   }
@@ -953,8 +954,48 @@ function notifyChatMirror() {
   if (ui.view === 'automations' && typeof renderAssistant === 'function') renderAssistant();
 }
 
+// Live-Text: Bruchstücke an die laufende Antwort hängen; höchstens einmal pro Bild neu zeichnen.
+function streamDelta(ev) {
+  if (!ui.stream || ui.stream.key !== ev.key) {
+    endStream();
+    const m = { kind: 'assistant', text: '', streaming: true };
+    ui.messages.push(m);
+    ui.stream = { key: ev.key, msg: m };
+  }
+  ui.stream.msg.text += ev.text;
+  if (ui.view !== 'chat') { notifyChatMirror(); return; }
+  if (!ui.streamEl || !ui.streamEl.isConnected) { renderMessages(); return; }
+  if (ui.streamFrame) return;
+  ui.streamFrame = requestAnimationFrame(() => {
+    ui.streamFrame = null;
+    if (!ui.stream || !ui.streamEl || !ui.streamEl.isConnected) return;
+    const box = $('#messages');
+    const nearBottom = box && box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    fill(ui.streamEl, mdRender(ui.stream.msg.text));
+    if (nearBottom) box.scrollTop = box.scrollHeight;
+  });
+}
+
+// Die laufende Antwort abschließen; final: der fertige Text von Claude (ersetzt die Bruchstücke).
+function endStream(final) {
+  const s = ui.stream;
+  if (!s) return false;
+  ui.stream = null;
+  s.msg.streaming = false;
+  if (typeof final === 'string') s.msg.text = final;
+  if (ui.streamEl && ui.streamEl.isConnected) {
+    ui.streamEl.classList.remove('streaming');
+    fill(ui.streamEl, mdRender(s.msg.text));
+  }
+  ui.streamEl = null;
+  return true;
+}
+
 api.onChatEvent((ev) => {
   if (ev.gen !== ui.chatGen) return; // Ereignis eines früheren Chats
+  if (ev.kind === 'delta') { streamDelta(ev); return; }
+  if (ev.kind === 'text' && endStream(ev.text)) { if (ui.view === 'chat') renderMessages(); else notifyChatMirror(); return; }
+  if (ev.kind !== 'usage' && ev.kind !== 'toolResult' && ev.kind !== 'window' && ev.kind !== 'init') endStream();
   if (ev.kind === 'text') ui.messages.push({ kind: 'assistant', text: ev.text });
   else if (ev.kind === 'relay') ui.messages.push({ kind: 'user', text: ev.text, at: Date.now() });
   else if (ev.kind === 'tool') ui.messages.push({ kind: 'tool', id: ev.id, text: ev.text, tool: ev.tool, detail: ev.detail, path: ev.path, tab: ev.tab });

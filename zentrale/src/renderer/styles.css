@@ -963,3 +963,8 @@ h2 { font-size: 16px; font-weight: 600; }
 .screen-lock { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 8px; border-radius: 12px; background: var(--notice-bg); color: var(--notice); font-size: 13px; line-height: 1.4; }
 .screen-lock[hidden] { display: none; }
 .screen-lock .link { color: inherit; font-weight: 600; text-decoration: underline; }
+
+/* Live-Text: blinkender Strich am Ende, solange Claude schreibt */
+.msg.assistant.streaming > :last-child::after { content: ''; display: inline-block; width: .5em; height: 1.05em; margin-left: 2px; vertical-align: text-bottom; background: var(--claude, var(--accent)); border-radius: 2px; animation: stream-caret 1s steps(2, start) infinite; }
+@keyframes stream-caret { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .msg.assistant.streaming > :last-child::after { animation: none; } }
