@@ -31,6 +31,7 @@ function stepDetail(name, input) {
 const SCREEN_COMMAND = /System Events|\bkeystroke\b|\bkey code\b|\bcliclick\b|CGEventPost|CGEventCreate(Mouse|Keyboard)Event|pyautogui|\bxdotool\b/;
 function controlsScreen(name, i) {
   if (/^mcp__computer-use__/.test(name)) return true;
+  if (/^mcp__bildschirm__bildschirm_(klick|tippen|taste|scrollen)$/.test(name)) return true;
   return name === 'Bash' && SCREEN_COMMAND.test(String(i.command || ''));
 }
 

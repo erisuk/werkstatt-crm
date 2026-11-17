@@ -53,6 +53,8 @@ const { BrowserControl, makeBrowserOps } = require('./browser-control');
 const { READ_ONLY_TOOLS: BROWSER_READ_ONLY } = require('./mcp/browser-server');
 const { ALLOWED_TOOLS: KOMMENTARE_TOOLS } = require('./mcp/kommentare-server');
 const { CHATS_TOOLS } = require('./mcp/chats-server');
+const { BILDSCHIRM_TOOLS } = require('./mcp/bildschirm-server');
+const { Bildschirm, makeOps: makeBildschirmOps } = require('./bildschirm');
 const { createChatLink } = require('./chat-link');
 const folderLinks = require('./folder-links');
 const konten = require('./konten');
@@ -107,6 +109,12 @@ const vaultHint = (dir) => `Das Gedächtnis („Gehirn“) des Nutzers ist sein 
   + 'Neue wichtige Erkenntnisse legst du mit /merk-dir ab; Notizen im Vault nie löschen, nur ergänzen.';
 
 // Hinweis an Claude, wenn „Web-Tabs für Claude“ eingeschaltet ist.
+// Bildschirmsteuerung: wann sie dran ist und wie man sie sauber benutzt (wie Computer use in der Claude-App).
+const SCREEN_HINT = 'Mac-Apps ohne eigene Schnittstelle (z. B. Labelnize, Finder, Vorschau, Notizen) bedienst du mit den Werkzeugen '
+  + 'bildschirm_*: erst bildschirm_foto, dann klicken/tippen mit den Bildpunkten aus dem Foto, nach jeder Aktion wieder ein Foto. '
+  + 'Nicht für Webseiten (Chrome-Erweiterung oder Web-Tabs) und nicht für Befehle (Bash). Benutze dafür nie osascript keystroke, '
+  + 'cliclick oder selbstgebaute Klick-Skripte – deren Tastendrücke landen im Fenster, das gerade vorne ist. '
+  + 'Lehnt Eris die Freigabe einer App ab, frag im Chat nach, statt es erneut zu versuchen.';
 // Bilder zeigt der Chat der Zentrale direkt an – Claude soll sie zeigen statt nur den Pfad zu nennen.
 const IMAGE_HINT = 'Der Chat der Zentrale zeigt Bilder direkt an: Schreib ![kurze Beschreibung](/absoluter/pfad.png) für Bilder auf dem Mac '
   + '(auch Bildschirmfotos und Bilder, die du erstellt hast) oder ![Beschreibung](https://…) für Bilder aus dem Netz. '
@@ -169,6 +177,8 @@ function setup() {
   let browser = null;
   let browserConfigFile = null;
   let kommentareConfigFile = null;
+  let bildschirmConfigFile = null;
+  let bildschirmProxy = null; // Bildschirmsteuerung für Mac-Apps (src/bildschirm.js)
   const kommentareFile = () => path.join(app.getPath('userData'), 'kommentare.json');
   let n8nConfig = { url: 'http://localhost:5678', key: null };
   const taskChats = new Map(); // laufende Aufgaben-Chats → Name der Aufgabe
@@ -347,12 +357,18 @@ function setup() {
       args.push(`--mcp-config=${kommentareConfigFile}`);
       allowed.push(...KOMMENTARE_TOOLS.map((t) => `mcp__kommentare__${t}`));
     }
+    // Mac-Apps bedienen (Bildschirmfoto, Klick, Tippen) – die Zentrale fragt je App einmal nach und prüft jede Aktion.
+    if (bildschirmConfigFile) {
+      args.push(`--mcp-config=${bildschirmConfigFile}`);
+      allowed.push(...BILDSCHIRM_TOOLS.map((t) => `mcp__bildschirm__${t}`));
+    }
     // Ein gemeinsamer Hinweis: wo das Gehirn (Obsidian) liegt und – falls an – wie Webseiten bedient werden.
     const hints = [];
     const v = currentVault();
     if (v) hints.push(vaultHint(v.path));
     if (c.web && browserConfigFile) hints.push(WEB_HINT);
     hints.push(IMAGE_HINT);
+    if (bildschirmConfigFile) hints.push(SCREEN_HINT);
     hints.push(learning.systemHint(learnStore().activeLesson()));
     if (hints.length) args.push('--append-system-prompt', hints.join('\n\n'));
     if (allowed.length) args.push(`--allowedTools=${allowed.join(',')}`);
@@ -360,6 +376,30 @@ function setup() {
     return args;
   }
 
+
+  // Bildschirmsteuerung: Freigabe je App per Rückfrage, Fotos vom Hauptbildschirm in Bildschirmpunkten.
+  const bildschirm = new Bildschirm({
+    fragen: async (a) => {
+      if (win && !win.isDestroyed()) { win.show(); }
+      const { response } = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+        type: 'question', buttons: ['Nicht erlauben', 'Erlauben'], defaultId: 1, cancelId: 0,
+        message: `Darf Claude „${a.name}“ bedienen?`,
+        detail: 'Claude macht Bildschirmfotos, klickt und tippt in dieser App – nur solange sie vorne ist, nie in Passwortfelder. Gilt, bis die Zentrale neu startet.' });
+      return response === 1;
+    },
+    foto: async () => {
+      finLock(); // der private Bereich kommt nie aufs Bild
+      const file = path.join(os.tmpdir(), `zentrale-bildschirm-${process.pid}-${Date.now()}.png`);
+      try {
+        await new Promise((resolve) => execFile('/usr/sbin/screencapture', ['-x', '-m', '-t', 'png', file], { timeout: 20000 }, () => resolve()));
+        if (!fs.existsSync(file)) return null;
+        const { width, height } = require('electron').screen.getPrimaryDisplay().size;
+        const img = nativeImage.createFromPath(file);
+        if (img.isEmpty()) return null;
+        return { png: img.resize({ width, height, quality: 'good' }).toPNG(), breite: width, hoehe: height };
+      } finally { fs.rm(file, { force: true }, () => {}); }
+    },
+  });
 
   // Jeder Chat bekommt den Server „chats“ mit seiner eigenen Gesprächs-ID (so weiß die Zentrale, wer schreibt).
   // Die Werkzeuge bleiben in der Zentrale – darum ohne Rückfrage erlaubt.
@@ -432,6 +472,7 @@ function setup() {
     n8nConfigFile = writeMcpConfig('n8n', 'n8n-server.js', { ZENTRALE_N8N_SOCKET: n8nSocketPath(app.getPath('userData')) });
     browserConfigFile = writeMcpConfig('web', 'browser-server.js', { ZENTRALE_BROWSER_SOCKET: n8nSocketPath(app.getPath('userData'), 'browser') });
     kommentareConfigFile = writeMcpConfig('kommentare', 'kommentare-server.js', { ZENTRALE_KOMMENTARE_FILE: kommentareFile() });
+    if (process.platform === 'darwin') bildschirmConfigFile = writeMcpConfig('bildschirm', 'bildschirm-server.js', { ZENTRALE_BILDSCHIRM_SOCKET: n8nSocketPath(app.getPath('userData'), 'bildschirm') });
   }
 
   // ---------- n8n: Adresse und verschlüsselter Schlüssel (macOS-Schlüsselbund) ----------
@@ -2181,6 +2222,7 @@ function setup() {
     browser = new BrowserControl(webTabs);
     browser.on('activity', (a) => send('web-activity', { ...a, name: (webTabs.store.get().portals.find((p) => p.id === a.id) || {}).name || '' }));
     chatsProxy = startProxy(chatLink, n8nSocketPath(app.getPath('userData'), 'chats'));
+    if (process.platform === 'darwin') bildschirmProxy = startProxy(makeBildschirmOps(bildschirm), n8nSocketPath(app.getPath('userData'), 'bildschirm'));
     browserProxy = startProxy(simulation.dryRunOps(makeBrowserOps(browser), simulation.DRY_BROWSER, dryRunActive, 'Web-Tab'), n8nSocketPath(app.getPath('userData'), 'browser'));
     nativeTheme.themeSource = settings.get().theme;
     loadN8n();
@@ -2255,6 +2297,7 @@ function setup() {
     if (n8nProxy) n8nProxy.close();
     if (browserProxy) browserProxy.close();
     if (chatsProxy) chatsProxy.close();
+    if (bildschirmProxy) bildschirmProxy.close();
     for (const c of allChats()) jobs.push(c.dispose());
     Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 6000))]).then(() => app.quit());
   });
