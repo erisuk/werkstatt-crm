@@ -19,7 +19,7 @@ const { TaskScheduler } = require('./tasks');
 const { Settings } = require('./settings');
 const mac = require('./mac');
 const { TopicStore, groupByTopic, TOPICS } = require('./categories');
-const { desktopMeta } = require('./desktop-meta');
+const { desktopMeta, desktopSidebar } = require('./desktop-meta');
 const library = require('./library');
 const files = require('./files');
 const music = require('./music');
@@ -209,10 +209,48 @@ function setup() {
     const generic = /^(wir setzen eine arbeit fort|unten steht der verlauf|ohne titel)/i;
     return projects.map((p) => ({ ...p, sessions: p.sessions.map((x) => {
       const m = meta.get(x.id);
-      if (!m) return x;
+      const local = { ...x, zArchived: zArchive.has(x.id), own: ownChats.has(x.id) };
+      if (!m) return local;
+      x = local;
       // Selbst umbenannt (Zentrale oder /rename) geht vor dem Titel der Claude-App.
       const title = !x.renamed && m.title && !generic.test(m.title) ? m.title : x.title;
-      return { ...x, title, archived: m.archived, scheduled: m.scheduled, desktopOpen: desktopIds.has(x.id) };
+      return { ...x, title, archived: m.archived, scheduled: m.scheduled, desktopOpen: desktopIds.has(x.id), inApp: true, localId: m.localId };
+    }) }));
+  }
+
+  // Eigene Chats der Zentrale (damit sie nicht als automatischer Lauf gelten) und das Archiv der Zentrale.
+  const idSet = (name) => {
+    const file = () => path.join(app.getPath('userData'), name);
+    let set = null;
+    const load = () => { if (!set) { try { set = new Set(JSON.parse(fs.readFileSync(file(), 'utf8')).filter((x) => typeof x === 'string')); } catch { set = new Set(); } } return set; };
+    return {
+      has: (id) => load().has(id),
+      set: (ids, on) => {
+        const next = new Set(load());
+        for (const id of ids) { if (on) next.add(id); else next.delete(id); }
+        set = next;
+        try { fs.writeFileSync(file(), JSON.stringify([...next])); } catch { /* nur Bequemlichkeit */ }
+      },
+    };
+  };
+  const ownChats = idSet('eigene-chats.json');
+  const zArchive = idSet('archiv.json');
+
+  // Wie in der Claude-App: angeheftet, eigene Gruppen, und was ausgeblendet ist (archiviert oder automatischer Lauf).
+  function claudeGroups() {
+    try { return desktopSidebar().groups.map(({ id, name }) => ({ id, name })); } catch { return []; }
+  }
+
+  function withClaudeOrder(projects) {
+    let side;
+    try { side = desktopSidebar(); } catch { side = { pinned: [], groups: [] }; }
+    const pinned = new Set(side.pinned);
+    const groupOf = new Map();
+    for (const g of side.groups) for (const m of g.members) if (!groupOf.has(m)) groupOf.set(m, g.id);
+    return projects.map((p) => ({ ...p, sessions: p.sessions.map((x) => {
+      // Automatisch: kennt die Claude-App nicht, nicht in der Zentrale gestartet, und nur ein einziger Auftrag (z. B. Bit-Pipeline).
+      const auto = !x.inApp && !x.own && (x.topic === 'auto' || (x.entrypoint === 'sdk-cli' && x.prompts < 2));
+      return { ...x, auto, pinned: !!x.localId && pinned.has(x.localId), group: (x.localId && groupOf.get(x.localId)) || null };
     }) }));
   }
 
@@ -268,8 +306,8 @@ function setup() {
       const raw = withDesktopMeta(listProjects());
       const topicOf = new Map();
       for (const g of groupByTopic(raw, topicStore)) for (const x of g.sessions) topicOf.set(x.id, x);
-      projectsCache = raw.map((p) => ({ ...p, sessions: p.sessions.map(({ snippet, ...x }) => ({
-        ...x, topic: topicOf.get(x.id).topic, topicManual: topicOf.get(x.id).topicManual })) }));
+      projectsCache = withClaudeOrder(raw.map((p) => ({ ...p, sessions: p.sessions.map(({ snippet, ...x }) => ({
+        ...x, topic: topicOf.get(x.id).topic, topicManual: topicOf.get(x.id).topicManual })) })));
     } catch { projectsCache = []; }
     const json = JSON.stringify(projectsCache, (k, v) => (k === 'updatedAt' ? Math.floor(v / 60000) : v));
     if (json !== projectsJson) { projectsJson = json; projectsRev += 1; }
@@ -355,6 +393,7 @@ function setup() {
       claude: { found: !!claude.bin, checking: claude.checking, version: claude.version },
       projects: projectsCache,
       topics: TOPICS,
+      claudeGroups: claudeGroups(),
       chat: chatInfo(),
       chats: pool.list(chat),
       tasks: scheduler ? scheduler.list() : [],
@@ -685,6 +724,7 @@ function setup() {
     // Verknüpfte Projekte kommen immer mit, dazu die Ordner, die der Chat schon hatte.
     const dirs = folderLinks.mergeDirs(chatKey(cwd), folderLinks.linked(loadLinks(), chatKey(cwd)), addDirs)
       .filter((d) => folderLinks.cleanDir(d));
+    if (!sessionId) setImmediate(() => ownChats.set([c.sessionId], true)); // in der Zentrale gestartet
     c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true, addDirs: dirs,
       model: MODELS[model] ? model : null, effort: EFFORTS.includes(effort) ? effort : null });
     c.gen = 0;
@@ -757,6 +797,8 @@ function setup() {
       }
     }
     chatsRestored = !!claude.bin; // ohne Claude die gemerkte Liste nicht überschreiben
+    // Was hier offen war, sind Zentrale-Chats – auch die aus der Zeit vor dieser Liste.
+    if (Array.isArray(list)) ownChats.set(list.filter((e) => e && typeof e.sessionId === 'string').map((e) => e.sessionId), true);
     pushState();
   }
 
@@ -929,6 +971,16 @@ function setup() {
     const c = typeof sessionId === 'string' ? pool.get(sessionId) : null;
     if (!c) return false;
     pool.close(c);
+    pushState();
+    return true;
+  });
+
+  // Archiv der Zentrale (zusätzlich zum Archiv der Claude-App): ausblenden bzw. zurückholen.
+  ipcMain.handle('session-archive', (_e, args) => {
+    const ids = args && Array.isArray(args.ids) ? args.ids.filter((x) => typeof x === 'string').slice(0, 500) : [];
+    if (!ids.length) return false;
+    zArchive.set(ids, args.on !== false);
+    refreshProjects();
     pushState();
     return true;
   });

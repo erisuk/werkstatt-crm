@@ -24,7 +24,7 @@ const ui = {
   connectionsLoading: false,
   macTest: null,
   notice: null,
-  groupMode: 'topic',
+  groupMode: 'claude', // wie die Seitenleiste der Claude-App (angeheftet, Gruppen, Gespräche)
   showArchived: false,
   prefill: null,
 };
@@ -373,13 +373,25 @@ function renderToday() {
         'Öffne Mail oder Outlook, um ungelesene Mails zu sehen. Gmail fragst du über „Mails zusammenfassen“ ab.')));
 }
 
-// Gruppen für die Übersicht: nach Thema (Standard) oder nach Projektordner.
-// In der Claude-App archivierte Gespräche sind standardmäßig ausgeblendet.
+// Gruppen für die Übersicht: wie in der Claude-App (Standard), nach Thema oder nach Projektordner.
+// Ausgeblendet sind archivierte Gespräche (Claude-App oder Zentrale) und automatische Läufe (z. B. Bit-Pipeline).
+const isHidden = (x) => !!(x.archived || x.zArchived || x.auto);
 function visibleSessions(list) {
-  return ui.showArchived ? list : list.filter((x) => !x.archived);
+  return ui.showArchived ? list : list.filter((x) => !isHidden(x));
 }
 
 function overviewGroups() {
+  if (ui.groupMode === 'claude') {
+    const all = visibleSessions(projects().flatMap((p) => p.sessions)).sort((a, b) => b.updatedAt - a.updatedAt);
+    const group = (key, name, emoji, sessions) => ({ key, name, emoji, path: null, sessions, updatedAt: sessions.length ? sessions[0].updatedAt : 0 });
+    const groups = (ui.state && ui.state.claudeGroups) || [];
+    const inGroup = new Set(groups.map((g) => g.id));
+    return [
+      group('c:pinned', 'Angeheftet', '📌', all.filter((x) => x.pinned)),
+      ...groups.map((g) => group(`c:${g.id}`, g.name, '🗂', all.filter((x) => x.group === g.id))),
+      group('c:all', 'Gespräche', '💬', all.filter((x) => !x.pinned && !(x.group && inGroup.has(x.group)))),
+    ].filter((g) => g.sessions.length);
+  }
   if (ui.groupMode === 'folder') {
     return projects().map((p) => {
       const sessions = visibleSessions(p.sessions);
@@ -443,7 +455,8 @@ function sessionRow(x, s, showFolder) {
   const isChat = !!s.chat && s.chat.sessionId === x.id;
   const busy = isChat && s.chat.status === 'busy';
   const sub = isChat ? (busy ? 'Claude arbeitet gerade daran' : 'Im Chat geöffnet')
-    : [x.desktopOpen ? 'gerade in der Claude-App offen' : null, x.archived ? 'archiviert' : null, showFolder ? folderName(x.cwd) : null].filter(Boolean).join(' · ') || null;
+    : [x.desktopOpen ? 'gerade in der Claude-App offen' : null, x.archived || x.zArchived ? 'archiviert' : null, x.auto ? 'automatischer Lauf' : null,
+      showFolder ? folderName(x.cwd) : null].filter(Boolean).join(' · ') || null;
   return h('div', { class: 'row session-row' },
     h('span', { class: `dot ${busy ? 'amber pulse' : isChat ? 'green' : ''}` }),
     h('div', { class: 'grow' },
@@ -452,6 +465,10 @@ function sessionRow(x, s, showFolder) {
     h('span', { class: 'when', text: formatWhen(x.updatedAt) }),
     topicSelect(x),
     h('button', { class: 'link', 'data-focus': `open:${x.id}`, onClick: () => openSession(x) }, 'Öffnen'),
+    // Im Archiv der Claude-App liegt es dort; hier lässt sich das Archiv der Zentrale umschalten.
+    x.archived ? null : h('button', { class: 'link subtle', 'data-focus': `archive:${x.id}`, disabled: busy,
+      title: x.zArchived ? 'Wieder in der Liste zeigen' : 'Aus der Liste nehmen (bleibt gespeichert, „Archiv zeigen“ holt es zurück)',
+      onClick: () => api.archiveSessions([x.id], !x.zArchived) }, x.zArchived ? 'Zurückholen' : 'Archivieren'),
     h('button', { class: 'icon-btn', 'aria-label': `„${x.title}“ löschen`, title: 'In den Papierkorb', 'data-focus': `trash:${x.id}`,
       disabled: busy, onClick: () => trashSessions([x]) }, trashIcon()));
 }
@@ -474,7 +491,7 @@ function renderOverview(force) {
   loadCockpit();
 
   const totalSessions = list.reduce((n, p) => n + p.sessions.length, 0);
-  const archivedCount = list.reduce((n, p) => n + p.sessions.filter((x) => x.archived).length, 0);
+  const archivedCount = list.reduce((n, p) => n + p.sessions.filter(isHidden).length, 0);
   const groupCards = visible.map((g) => {
     const isSel = !!sel && g.key === sel.key;
     return h('button', {
@@ -516,16 +533,17 @@ function renderOverview(force) {
     renderCockpit(),
     renderToday(),
     h('div', { class: 'stats' },
-      stat('Projekte', list.length), stat('Gespräche', totalSessions), stat('Tägliche Aufgaben', enabledTasks)),
+      stat('Projekte', list.filter((p) => visibleSessions(p.sessions).length).length), stat('Gespräche', totalSessions - (ui.showArchived ? 0 : archivedCount)),
+      stat('Tägliche Aufgaben', enabledTasks)),
     h('section', { class: 'section' },
-      h('div', { class: 'section-head wrap' }, h('h2', { text: ui.groupMode === 'folder' ? 'Meine Projektordner' : 'Meine Themen' }),
+      h('div', { class: 'section-head wrap' }, h('h2', { text: { folder: 'Meine Projekte', topic: 'Meine Themen', claude: 'Wie in Claude' }[ui.groupMode] || 'Gespräche' }),
         h('span', { class: 'spacer' }),
         archivedCount ? h('label', { class: 'toggle-line' },
-          h('button', { class: 'switch', role: 'switch', 'aria-checked': String(ui.showArchived), 'aria-label': `Archivierte zeigen (${archivedCount})`,
+          h('button', { class: 'switch', role: 'switch', 'aria-checked': String(ui.showArchived), 'aria-label': `Archiv & Automatik zeigen (${archivedCount})`,
             'data-focus': 'show-archived', onClick: () => { ui.showArchived = !ui.showArchived; renderOverview(); } }),
-          `Archivierte zeigen (${archivedCount})`) : null,
+          `Archiv & Automatik zeigen (${archivedCount})`) : null,
         h('div', { class: 'segmented', role: 'group', 'aria-label': 'Gespräche sortieren' },
-          modeBtn('topic', 'Nach Thema'), modeBtn('folder', 'Nach Ordner'))),
+          modeBtn('claude', 'Wie in Claude'), modeBtn('topic', 'Nach Thema'), modeBtn('folder', 'Nach Projekt'))),
       h('div', { class: 'projects' }, groupCards)),
     h('section', { class: 'section' },
       h('div', { class: 'section-head wrap' },

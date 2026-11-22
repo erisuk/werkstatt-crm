@@ -87,8 +87,12 @@ function parseSession(file) {
   let title = null;
   let customTitle = null;
   let snippet = '';
+  let entrypoint = null;
+  let prompts = 0; // echte Eingaben am Anfang – automatische Läufe haben genau eine
   for (const o of parseLines(readHead(file))) {
     if (!cwd && o.cwd) cwd = o.cwd;
+    if (!entrypoint && o.entrypoint) entrypoint = String(o.entrypoint);
+    if (o.type === 'user' && !o.isSidechain && !o.isMeta && !o.isCompactSummary && o.message && isRealPrompt(textOf(o.message.content))) prompts += 1;
     if (o.type === 'custom-title' && o.customTitle) customTitle = o.customTitle;
     if (o.type === 'summary' && o.summary && !customTitle) customTitle = o.summary;
     if (!title && o.type === 'user' && !o.isSidechain && !o.isMeta && !o.isCompactSummary && o.message) {
@@ -104,6 +108,8 @@ function parseSession(file) {
     cwd,
     title: customTitle || title || 'Ohne Titel',
     renamed: !!renamed,
+    entrypoint,
+    prompts,
     firstPrompt: title,
     snippet,
     updatedAt: stat.mtimeMs,

@@ -1021,3 +1021,6 @@ h2 { font-size: 16px; font-weight: 600; }
 .d-del { background: rgba(217, 45, 32, .16); }
 .d-hunk { color: var(--accent-text); background: rgba(59, 130, 246, .08); }
 .d-meta { color: var(--text-2); }
+
+.link.subtle { color: var(--text-2); font-size: 13px; }
+.link.subtle:hover { color: var(--accent-text); }
