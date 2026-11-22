@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('zentrale', {
   chatModel: (model, effort) => ipcRenderer.invoke('chat-model', { model, effort }),
   chatDiff: (cwd, file) => ipcRenderer.invoke('chat-diff', { cwd, file }),
   archiveSessions: (ids, on) => ipcRenderer.invoke('session-archive', { ids, on: on !== false }),
+  claudeLogin: () => ipcRenderer.invoke('claude-login'),
   claudeVersions: (force) => ipcRenderer.invoke('claude-versions', force === true),
   claudeUpdate: () => ipcRenderer.invoke('claude-update'),
   pluginsList: () => ipcRenderer.invoke('plugins-list'),

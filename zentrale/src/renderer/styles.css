@@ -1031,3 +1031,8 @@ h2 { font-size: 16px; font-weight: 600; }
 .plugin-find { margin: 12px 0 8px; }
 .plugin-search { width: 100%; max-width: none; height: 36px; }
 .wrap-sub { white-space: normal !important; }
+
+/* Claude Code abgemeldet: deutlicher Knopf in der Titelleiste */
+.login-pill { height: 32px; padding: 0 14px; border: 0; border-radius: 999px; background: var(--pill-red-bg); color: var(--pill-red); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; -webkit-app-region: no-drag; }
+.login-pill:hover { filter: brightness(.96); }
+.login-pill[hidden] { display: none; }

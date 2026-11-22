@@ -249,6 +249,34 @@ function setup() {
     return lastVersions;
   }
   setInterval(() => { checkVersions(false).catch(() => {}); }, 6 * 60 * 60 * 1000).unref();
+
+  // Ist Claude Code angemeldet? Abgemeldet beantworten weder die Chats der Zentrale noch Automatiken etwas.
+  // Geprüft mit „claude auth status“; abgemeldet → alle 30 s, sonst alle 10 min.
+  let claudeLogin = null;
+  async function checkLogin() {
+    if (!claude.bin) return null;
+    const out = await new Promise((resolve) => execFile(claude.bin, ['auth', 'status'], { env: claude.env, timeout: 20000 }, (err, stdout) => resolve(String(stdout || ''))));
+    let loggedIn = null;
+    try { loggedIn = JSON.parse(out).loggedIn === true; } catch { /* unbekannt – nichts behaupten */ }
+    if (loggedIn !== null && (!claudeLogin || claudeLogin.loggedIn !== loggedIn)) { claudeLogin = { loggedIn, checkedAt: Date.now() }; pushState(); }
+    return claudeLogin;
+  }
+  let loginTimer = null;
+  function scheduleLoginCheck() {
+    clearTimeout(loginTimer);
+    loginTimer = setTimeout(async () => { await checkLogin().catch(() => {}); scheduleLoginCheck(); },
+      claudeLogin && claudeLogin.loggedIn === false ? 30 * 1000 : 10 * 60 * 1000);
+    loginTimer.unref();
+  }
+  claudeReady.then(() => { checkLogin().catch(() => {}).finally(scheduleLoginCheck); });
+  // Anmelden startet Eris selbst: Terminal öffnet sich mit „claude auth login“, der Rest läuft im Browser.
+  ipcMain.handle('claude-login', async () => {
+    if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const script = 'on run argv\n tell application "Terminal"\n activate\n do script (quoted form of item 1 of argv) & " auth login"\n end tell\nend run';
+    await new Promise((resolve) => execFile('/usr/bin/osascript', ['-e', script, claude.bin], { timeout: 15000 }, () => resolve()));
+    scheduleLoginCheck();
+    return { ok: true };
+  });
   setTimeout(() => { checkVersions(false).catch(() => {}); }, 90 * 1000).unref();
   ipcMain.handle('claude-versions', (_e, force) => checkVersions(force === true));
   ipcMain.handle('claude-update', async () => {
@@ -435,6 +463,7 @@ function setup() {
       topics: TOPICS,
       claudeGroups: claudeGroups(),
       claudeVersions: lastVersions,
+      claudeLogin,
       chat: chatInfo(),
       chats: pool.list(chat),
       tasks: scheduler ? scheduler.list() : [],
@@ -777,7 +806,7 @@ function setup() {
       if (ev.kind === 'init' && ev.mcp) lastKnown.mcp = ev.mcp;
       send('chat-event', { ...ev, gen: c.gen });
       // Abgemeldet? (Fehler mit Login/OAuth) – fällt im Kontrollraum als blinder Fleck auf.
-      if (ev.kind === 'error' && /log ?in|oauth|authent|401|anmeld/i.test(`${ev.text || ''} ${ev.details || ''}`)) claudeAuthProblemAt = Date.now();
+      if (ev.kind === 'error' && /log ?in|oauth|authent|401|anmeld/i.test(`${ev.text || ''} ${ev.details || ''}`)) { claudeAuthProblemAt = Date.now(); checkLogin().catch(() => {}); }
       else if (ev.kind === 'text' || ev.kind === 'result') claudeAuthProblemAt = 0;
     });
     c.on('status', () => {

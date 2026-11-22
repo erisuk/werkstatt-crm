@@ -141,6 +141,7 @@ function chatStatus() {
   if (!s) return { dot: '', text: 'Lädt …' };
   if (s.claude.checking) return { dot: 'amber pulse', text: 'Claude wird gestartet …' };
   if (!s.claude.found) return { dot: 'red', text: 'Claude Code nicht gefunden' };
+  if (s.claudeLogin && s.claudeLogin.loggedIn === false) return { dot: 'red', text: 'Claude abgemeldet', pill: 'red', short: 'abgemeldet' };
   if ((s.approvals || []).length) return { dot: 'blue pulse', text: 'Claude wartet auf dich', pill: 'blue', short: 'wartet auf dich' };
   if (!s.chat) return { dot: '', text: 'Kein Chat offen' };
   if (s.chat.desktopOpen && s.chat.status !== 'busy') return { dot: 'blue', text: 'Gerade in der Claude-App offen – hier nur lesen', pill: 'blue', short: 'in Claude-App offen' };
@@ -157,6 +158,8 @@ function chatBusy() {
 // ---------- Titelleiste, Menü, Darstellung ----------
 
 function renderStatus() {
+  const login = $('#login-status');
+  if (login) login.hidden = !(ui.state && ui.state.claudeLogin && ui.state.claudeLogin.loggedIn === false);
   const st = chatStatus();
   const dry = ui.state && ui.state.dryRun;
   if (!changed('status', [st, dry])) return;
@@ -1309,6 +1312,7 @@ $('#search').addEventListener('input', (e) => {
 });
 $('#aside-new-task').addEventListener('click', () => editTask({}));
 $('#lock-btn').addEventListener('click', () => api.appLock());
+$('#login-status').addEventListener('click', () => api.claudeLogin());
 $('#quick-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const input = $('#quick-input');
