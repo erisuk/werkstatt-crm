@@ -1061,7 +1061,8 @@ function notifyChatMirror() {
   if (ui.view === 'automations' && typeof renderAssistant === 'function') renderAssistant();
 }
 
-// Live-Text: Bruchstücke an die laufende Antwort hängen; höchstens einmal pro Bild neu zeichnen.
+// Live-Text: Bruchstücke an die laufende Antwort hängen; höchstens alle 40 ms neu zeichnen.
+// Bewusst kein requestAnimationFrame: das pausiert, solange das Fenster nicht vorne ist – dann hinge der Text.
 function streamDelta(ev) {
   if (!ui.stream || ui.stream.key !== ev.key) {
     endStream();
@@ -1073,14 +1074,14 @@ function streamDelta(ev) {
   if (ui.view !== 'chat') { notifyChatMirror(); return; }
   if (!ui.streamEl || !ui.streamEl.isConnected) { renderMessages(); return; }
   if (ui.streamFrame) return;
-  ui.streamFrame = requestAnimationFrame(() => {
+  ui.streamFrame = setTimeout(() => {
     ui.streamFrame = null;
     if (!ui.stream || !ui.streamEl || !ui.streamEl.isConnected) return;
     const box = $('#messages');
     const nearBottom = box && box.scrollHeight - box.scrollTop - box.clientHeight < 80;
     fill(ui.streamEl, mdRender(ui.stream.msg.text));
     if (nearBottom) box.scrollTop = box.scrollHeight;
-  });
+  }, 40);
 }
 
 // Die laufende Antwort abschließen; final: der fertige Text von Claude (ersetzt die Bruchstücke).

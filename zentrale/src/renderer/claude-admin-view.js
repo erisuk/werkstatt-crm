@@ -2,11 +2,19 @@
 // Plugins an/aus, aktualisieren, entfernen, suchen und installieren. Nutzt die Helfer aus app.js (h, fill, ui, api …).
 const ca = { plugins: null, loading: false, busy: null, query: '', results: null, searching: false, message: null };
 
+// Fehlgeschlagen (z. B. Claude beim Start noch nicht gefunden): nichts merken, beim nächsten Anzeigen erneut – höchstens alle 10 s.
 function loadPlugins() {
-  if (ca.loading) return;
+  if (ca.loading || (ca.failedAt && Date.now() - ca.failedAt < 10000)) return;
   ca.loading = true;
-  api.pluginsList().then((r) => { ca.plugins = r && r.ok ? r.data : []; ca.message = r && !r.ok ? r.error : null; })
-    .catch(() => {}).finally(() => { ca.loading = false; if (ui.view === 'connections') renderConnections(); });
+  api.pluginsList().then((r) => {
+    if (r && r.ok) { ca.plugins = r.data; ca.message = null; ca.failedAt = 0; } else { ca.plugins = null; ca.failedAt = Date.now(); ca.message = (r && r.error) || null; }
+  })
+    .catch(() => {}).finally(() => {
+      ca.loading = false;
+      if (ui.view === 'connections') renderConnections();
+      // Nicht geklappt: in 10 s von selbst nochmal (nur solange die Seite offen ist).
+      if (ca.failedAt) setTimeout(() => { if (ui.view === 'connections' && !ca.plugins) renderConnections(); }, 10500);
+    });
 }
 
 async function pluginDo(op, id) {
@@ -38,6 +46,8 @@ function pluginSearch(q) {
 // Karte „Claude“: installierte Version, neueste Version, Update-Knopf.
 function claudeVersionCard() {
   const v = ui.state && ui.state.claudeVersions;
+  // Noch nicht geprüft (die Hintergrundprüfung kommt erst 90 s nach dem Start): jetzt gleich nachsehen.
+  if (!v && !ca.versionsAsked) { ca.versionsAsked = true; api.claudeVersions(false).catch(() => {}).finally(() => { ca.versionsAsked = false; }); }
   const update = async (btn) => {
     btn.disabled = true;
     btn.textContent = 'Wird aktualisiert …';
@@ -81,7 +91,7 @@ function pluginsSection() {
     h('div', { class: 'section-head wrap' }, h('h2', { text: 'Plugins' }), h('span', { class: 'spacer' }),
       h('button', { class: 'btn ghost', 'data-focus': 'plugins-refresh', onClick: loadPlugins }, ca.loading ? 'Lädt …' : 'Neu laden')),
     ca.message ? h('div', { class: 'notice', text: ca.message }) : null,
-    h('div', { class: 'card list' }, ca.plugins === null ? h('div', { class: 'empty', text: 'Lädt …' })
+    h('div', { class: 'card list' }, ca.plugins === null ? h('div', { class: 'empty', text: ca.failedAt ? 'Noch nicht lesbar – versucht es gleich nochmal.' : 'Lädt …' })
       : ca.plugins.length ? ca.plugins.map(pluginRow) : h('div', { class: 'empty', text: 'Keine Plugins installiert.' })),
     h('div', { class: 'plugin-find' }, search),
     ca.results ? h('div', { class: 'card list' }, ca.searching ? h('div', { class: 'empty', text: 'Sucht …' })
