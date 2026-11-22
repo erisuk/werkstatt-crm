@@ -24,7 +24,7 @@ const ui = {
   connectionsLoading: false,
   macTest: null,
   notice: null,
-  groupMode: 'topic',
+  groupMode: 'claude', // wie die Seitenleiste der Claude-App (angeheftet, Gruppen, Gespräche)
   showArchived: false,
   prefill: null,
 };
@@ -141,8 +141,10 @@ function chatStatus() {
   if (!s) return { dot: '', text: 'Lädt …' };
   if (s.claude.checking) return { dot: 'amber pulse', text: 'Claude wird gestartet …' };
   if (!s.claude.found) return { dot: 'red', text: 'Claude Code nicht gefunden' };
+  if (s.claudeLogin && s.claudeLogin.loggedIn === false) return { dot: 'red', text: 'Claude abgemeldet', pill: 'red', short: 'abgemeldet' };
   if ((s.approvals || []).length) return { dot: 'blue pulse', text: 'Claude wartet auf dich', pill: 'blue', short: 'wartet auf dich' };
   if (!s.chat) return { dot: '', text: 'Kein Chat offen' };
+  if (s.chat.desktopOpen && s.chat.status !== 'busy') return { dot: 'blue', text: 'Gerade in der Claude-App offen – hier nur lesen', pill: 'blue', short: 'in Claude-App offen' };
   if (s.chat.queued) return { dot: 'amber pulse', text: 'Nachricht wartet – 5 Chats arbeiten schon', pill: 'amber', short: 'wartet auf Platz' };
   if (s.chat.status === 'busy') return { dot: 'amber pulse', text: 'Claude arbeitet …', pill: 'amber', short: 'arbeitet' };
   if (s.chat.status === 'error') return { dot: 'red', text: 'Claude hatte einen Fehler', pill: 'red', short: 'Fehler' };
@@ -156,6 +158,8 @@ function chatBusy() {
 // ---------- Titelleiste, Menü, Darstellung ----------
 
 function renderStatus() {
+  const login = $('#login-status');
+  if (login) login.hidden = !(ui.state && ui.state.claudeLogin && ui.state.claudeLogin.loggedIn === false);
   const st = chatStatus();
   const dry = ui.state && ui.state.dryRun;
   if (!changed('status', [st, dry])) return;
@@ -168,7 +172,10 @@ function renderStatus() {
 }
 
 function renderNav() {
+  const update = !!(ui.state && ui.state.claudeVersions && ui.state.claudeVersions.update);
   document.querySelectorAll('.nav-item').forEach((b) => {
+    // Neue Claude-Version: Punkt an „Verbindungen“ – wie der Update-Hinweis der Claude-App.
+    if (b.dataset.view === 'connections') { b.classList.toggle('has-update', update); b.title = update ? `Claude-Update verfügbar: ${ui.state.claudeVersions.latest}` : ''; }
     const on = b.dataset.view === ui.view;
     b.classList.toggle('active', on);
     if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
@@ -372,13 +379,25 @@ function renderToday() {
         'Öffne Mail oder Outlook, um ungelesene Mails zu sehen. Gmail fragst du über „Mails zusammenfassen“ ab.')));
 }
 
-// Gruppen für die Übersicht: nach Thema (Standard) oder nach Projektordner.
-// In der Claude-App archivierte Gespräche sind standardmäßig ausgeblendet.
+// Gruppen für die Übersicht: wie in der Claude-App (Standard), nach Thema oder nach Projektordner.
+// Ausgeblendet sind archivierte Gespräche (Claude-App oder Zentrale) und automatische Läufe (z. B. Bit-Pipeline).
+const isHidden = (x) => !!(x.archived || x.zArchived || x.auto);
 function visibleSessions(list) {
-  return ui.showArchived ? list : list.filter((x) => !x.archived);
+  return ui.showArchived ? list : list.filter((x) => !isHidden(x));
 }
 
 function overviewGroups() {
+  if (ui.groupMode === 'claude') {
+    const all = visibleSessions(projects().flatMap((p) => p.sessions)).sort((a, b) => b.updatedAt - a.updatedAt);
+    const group = (key, name, emoji, sessions) => ({ key, name, emoji, path: null, sessions, updatedAt: sessions.length ? sessions[0].updatedAt : 0 });
+    const groups = (ui.state && ui.state.claudeGroups) || [];
+    const inGroup = new Set(groups.map((g) => g.id));
+    return [
+      group('c:pinned', 'Angeheftet', '📌', all.filter((x) => x.pinned)),
+      ...groups.map((g) => group(`c:${g.id}`, g.name, '🗂', all.filter((x) => x.group === g.id))),
+      group('c:all', 'Gespräche', '💬', all.filter((x) => !x.pinned && !(x.group && inGroup.has(x.group)))),
+    ].filter((g) => g.sessions.length);
+  }
   if (ui.groupMode === 'folder') {
     return projects().map((p) => {
       const sessions = visibleSessions(p.sessions);
@@ -442,7 +461,8 @@ function sessionRow(x, s, showFolder) {
   const isChat = !!s.chat && s.chat.sessionId === x.id;
   const busy = isChat && s.chat.status === 'busy';
   const sub = isChat ? (busy ? 'Claude arbeitet gerade daran' : 'Im Chat geöffnet')
-    : [x.archived ? 'archiviert' : null, showFolder ? folderName(x.cwd) : null].filter(Boolean).join(' · ') || null;
+    : [x.desktopOpen ? 'gerade in der Claude-App offen' : null, x.archived || x.zArchived ? 'archiviert' : null, x.auto ? 'automatischer Lauf' : null,
+      showFolder ? folderName(x.cwd) : null].filter(Boolean).join(' · ') || null;
   return h('div', { class: 'row session-row' },
     h('span', { class: `dot ${busy ? 'amber pulse' : isChat ? 'green' : ''}` }),
     h('div', { class: 'grow' },
@@ -451,6 +471,10 @@ function sessionRow(x, s, showFolder) {
     h('span', { class: 'when', text: formatWhen(x.updatedAt) }),
     topicSelect(x),
     h('button', { class: 'link', 'data-focus': `open:${x.id}`, onClick: () => openSession(x) }, 'Öffnen'),
+    // Im Archiv der Claude-App liegt es dort; hier lässt sich das Archiv der Zentrale umschalten.
+    x.archived ? null : h('button', { class: 'link subtle', 'data-focus': `archive:${x.id}`, disabled: busy,
+      title: x.zArchived ? 'Wieder in der Liste zeigen' : 'Aus der Liste nehmen (bleibt gespeichert, „Archiv zeigen“ holt es zurück)',
+      onClick: () => api.archiveSessions([x.id], !x.zArchived) }, x.zArchived ? 'Zurückholen' : 'Archivieren'),
     h('button', { class: 'icon-btn', 'aria-label': `„${x.title}“ löschen`, title: 'In den Papierkorb', 'data-focus': `trash:${x.id}`,
       disabled: busy, onClick: () => trashSessions([x]) }, trashIcon()));
 }
@@ -473,7 +497,7 @@ function renderOverview(force) {
   loadCockpit();
 
   const totalSessions = list.reduce((n, p) => n + p.sessions.length, 0);
-  const archivedCount = list.reduce((n, p) => n + p.sessions.filter((x) => x.archived).length, 0);
+  const archivedCount = list.reduce((n, p) => n + p.sessions.filter(isHidden).length, 0);
   const groupCards = visible.map((g) => {
     const isSel = !!sel && g.key === sel.key;
     return h('button', {
@@ -515,16 +539,17 @@ function renderOverview(force) {
     renderCockpit(),
     renderToday(),
     h('div', { class: 'stats' },
-      stat('Projekte', list.length), stat('Gespräche', totalSessions), stat('Tägliche Aufgaben', enabledTasks)),
+      stat('Projekte', list.filter((p) => visibleSessions(p.sessions).length).length), stat('Gespräche', totalSessions - (ui.showArchived ? 0 : archivedCount)),
+      stat('Tägliche Aufgaben', enabledTasks)),
     h('section', { class: 'section' },
-      h('div', { class: 'section-head wrap' }, h('h2', { text: ui.groupMode === 'folder' ? 'Meine Projektordner' : 'Meine Themen' }),
+      h('div', { class: 'section-head wrap' }, h('h2', { text: { folder: 'Meine Projekte', topic: 'Meine Themen', claude: 'Wie in Claude' }[ui.groupMode] || 'Gespräche' }),
         h('span', { class: 'spacer' }),
         archivedCount ? h('label', { class: 'toggle-line' },
-          h('button', { class: 'switch', role: 'switch', 'aria-checked': String(ui.showArchived), 'aria-label': `Archivierte zeigen (${archivedCount})`,
+          h('button', { class: 'switch', role: 'switch', 'aria-checked': String(ui.showArchived), 'aria-label': `Archiv & Automatik zeigen (${archivedCount})`,
             'data-focus': 'show-archived', onClick: () => { ui.showArchived = !ui.showArchived; renderOverview(); } }),
-          `Archivierte zeigen (${archivedCount})`) : null,
+          `Archiv & Automatik zeigen (${archivedCount})`) : null,
         h('div', { class: 'segmented', role: 'group', 'aria-label': 'Gespräche sortieren' },
-          modeBtn('topic', 'Nach Thema'), modeBtn('folder', 'Nach Ordner'))),
+          modeBtn('claude', 'Wie in Claude'), modeBtn('topic', 'Nach Thema'), modeBtn('folder', 'Nach Projekt'))),
       h('div', { class: 'projects' }, groupCards)),
     h('section', { class: 'section' },
       h('div', { class: 'section-head wrap' },
@@ -624,6 +649,8 @@ function renderChat() {
     h('div', { class: 'chat-bottom' },
       h('div', { id: 'chat-approvals', class: 'chat-approvals' }),
       h('div', { id: 'chat-screen-lock', class: 'screen-lock', role: 'status', hidden: true }),
+      h('div', { id: 'chat-desktop-note', class: 'screen-lock', role: 'status', hidden: true,
+        text: 'Dieses Gespräch ist gerade in der Claude-App offen. Was du dort schreibst, erscheint hier live. Weiterschreiben geht hier, sobald du es in der Claude-App beendest (Sitzung stoppen).' }),
       form)));
   ui.sig.chatHead = null;
   ui.shown = 0;
@@ -631,6 +658,7 @@ function renderChat() {
   renderMessages();
   renderChatApprovals();
   renderScreenLock();
+  $('#chat-desktop-note').hidden = !(ui.state.chat && ui.state.chat.desktopOpen);
   ui.sig.modelPicker = null;
   renderModelPicker();
   // Aus „Skills & Agenten“: der Skill-Name steht schon im Eingabefeld.
@@ -1033,7 +1061,8 @@ function notifyChatMirror() {
   if (ui.view === 'automations' && typeof renderAssistant === 'function') renderAssistant();
 }
 
-// Live-Text: Bruchstücke an die laufende Antwort hängen; höchstens einmal pro Bild neu zeichnen.
+// Live-Text: Bruchstücke an die laufende Antwort hängen; höchstens alle 40 ms neu zeichnen.
+// Bewusst kein requestAnimationFrame: das pausiert, solange das Fenster nicht vorne ist – dann hinge der Text.
 function streamDelta(ev) {
   if (!ui.stream || ui.stream.key !== ev.key) {
     endStream();
@@ -1045,14 +1074,14 @@ function streamDelta(ev) {
   if (ui.view !== 'chat') { notifyChatMirror(); return; }
   if (!ui.streamEl || !ui.streamEl.isConnected) { renderMessages(); return; }
   if (ui.streamFrame) return;
-  ui.streamFrame = requestAnimationFrame(() => {
+  ui.streamFrame = setTimeout(() => {
     ui.streamFrame = null;
     if (!ui.stream || !ui.streamEl || !ui.streamEl.isConnected) return;
     const box = $('#messages');
     const nearBottom = box && box.scrollHeight - box.scrollTop - box.clientHeight < 80;
     fill(ui.streamEl, mdRender(ui.stream.msg.text));
     if (nearBottom) box.scrollTop = box.scrollHeight;
-  });
+  }, 40);
 }
 
 // Die laufende Antwort abschließen; final: der fertige Text von Claude (ersetzt die Bruchstücke).
@@ -1069,6 +1098,13 @@ function endStream(final) {
   ui.streamEl = null;
   return true;
 }
+
+// Live-Abgleich mit der Claude-App: dort weitergeschrieben → Verlauf hier neu (gleiche Form wie beim Öffnen).
+api.onChatReload((ev) => {
+  if (!ev || ev.gen !== ui.chatGen || ui.stream) return;
+  resetChat(ev.gen, (ev.history || []).map((m) => ({ kind: m.role, id: m.id, text: m.text, tool: m.tool, detail: m.detail, path: m.path, tab: m.tab, error: m.error, at: m.at })));
+  if (ui.view === 'chat') renderMessages(); else notifyChatMirror();
+});
 
 api.onChatEvent((ev) => {
   if (ev.gen !== ui.chatGen) return; // Ereignis eines früheren Chats
@@ -1242,8 +1278,11 @@ function applyState(next) {
   }
   renderStatus();
   renderTheme();
+  renderNav();
   renderAside();
   renderScreenLock();
+  const note = $('#chat-desktop-note');
+  if (note) note.hidden = !(s.chat && s.chat.desktopOpen);
   if (firstLoad) { renderMain(); return; }
   if (ui.view === 'overview') renderOverview();
   else if (ui.view === 'chat') {
@@ -1274,6 +1313,7 @@ $('#search').addEventListener('input', (e) => {
 });
 $('#aside-new-task').addEventListener('click', () => editTask({}));
 $('#lock-btn').addEventListener('click', () => api.appLock());
+$('#login-status').addEventListener('click', () => api.claudeLogin());
 $('#quick-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const input = $('#quick-input');

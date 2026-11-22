@@ -80,6 +80,8 @@ function renderConnections() {
         ui.connectionsLoading ? 'Wird geprüft …' : 'Status prüfen')),
     h('p', { class: 'date', text: `Hier verbindest du Claude mit deinem Mac und deinen Konten. ${settings().askFirst ? 'Lesen geht ohne Rückfrage – bevor Claude etwas sendet, anlegt, öffnet oder löscht, fragt die Zentrale dich.' : 'Claude arbeitet ohne Rückfrage (umschaltbar im Kontrollraum → Schutz → Rückfragen).'}` }),
     ui.notice ? h('div', { class: 'notice', text: ui.notice }) : null,
+    claudeVersionCard(),
+    pluginsSection(),
 
     connCard({ icon: '⌘', title: 'Mein Mac',
       text: 'Kalender, Erinnerungen, Notizen, Apple Mail, Outlook-App, Dateisuche – und jede andere App per AppleScript.',
@@ -133,6 +135,10 @@ function renderConnections() {
         : others.length
           ? h('div', { class: 'card list' }, others.map((c) => h('div', { class: 'row' },
             h('div', { class: 'grow' }, h('div', { class: 'title', text: c.name }), h('div', { class: 'sub', text: c.statusText })),
+            // Anmelden direkt von hier: claude.ai-Konnektoren auf claude.ai, lokale im Terminal mit /mcp.
+            c.status === 'auth' ? h('button', { class: 'btn ghost', onClick: () => (/^claude\.ai\s/.test(c.name)
+              ? api.openExternal('https://claude.ai/settings/connectors')
+              : alert(`„${c.name}“ meldest du im Terminal an: „claude“ starten, dann „/mcp“ eingeben und den Server auswählen.`)) }, 'Anmelden') : null,
             h('span', { class: `pill ${STATUS_PILL[c.status]}`, text: STATUS_LABEL[c.status] }))))
           : h('div', { class: 'card empty', text: 'Keine weiteren Verbindungen eingerichtet.' }))));
 }

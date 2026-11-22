@@ -19,7 +19,7 @@ const { TaskScheduler } = require('./tasks');
 const { Settings } = require('./settings');
 const mac = require('./mac');
 const { TopicStore, groupByTopic, TOPICS } = require('./categories');
-const { desktopMeta } = require('./desktop-meta');
+const { desktopMeta, desktopSidebar } = require('./desktop-meta');
 const library = require('./library');
 const files = require('./files');
 const music = require('./music');
@@ -59,6 +59,8 @@ const { createChatLink } = require('./chat-link');
 const folderLinks = require('./folder-links');
 const chatPlan = require('./chat-plan');
 const chatDiff = require('./chat-diff');
+const { createDesktopLive } = require('./desktop-live');
+const { createClaudeAdmin } = require('./claude-admin');
 const konten = require('./konten');
 const { loginState, cookieDomain } = require('./login-check');
 const kommentare = require('./kommentare');
@@ -72,6 +74,7 @@ const KOMMENTARE_PROMPT = 'Hol dir mit dem Werkzeug kommentare_auftrag den aktue
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
   'https://claude.ai/settings/connectors',
+  'https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md',
   'https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
@@ -208,20 +211,171 @@ function setup() {
     const generic = /^(wir setzen eine arbeit fort|unten steht der verlauf|ohne titel)/i;
     return projects.map((p) => ({ ...p, sessions: p.sessions.map((x) => {
       const m = meta.get(x.id);
-      if (!m) return x;
+      const local = { ...x, zArchived: zArchive.has(x.id), own: ownChats.has(x.id) };
+      if (!m) return local;
+      x = local;
       // Selbst umbenannt (Zentrale oder /rename) geht vor dem Titel der Claude-App.
       const title = !x.renamed && m.title && !generic.test(m.title) ? m.title : x.title;
-      return { ...x, title, archived: m.archived, scheduled: m.scheduled };
+      return { ...x, title, archived: m.archived, scheduled: m.scheduled, desktopOpen: desktopIds.has(x.id), inApp: true, localId: m.localId };
     }) }));
   }
+
+  // Eigene Chats der Zentrale (damit sie nicht als automatischer Lauf gelten) und das Archiv der Zentrale.
+  const idSet = (name) => {
+    const file = () => path.join(app.getPath('userData'), name);
+    let set = null;
+    const load = () => { if (!set) { try { set = new Set(JSON.parse(fs.readFileSync(file(), 'utf8')).filter((x) => typeof x === 'string')); } catch { set = new Set(); } } return set; };
+    return {
+      has: (id) => load().has(id),
+      set: (ids, on) => {
+        const next = new Set(load());
+        for (const id of ids) { if (on) next.add(id); else next.delete(id); }
+        set = next;
+        try { fs.writeFileSync(file(), JSON.stringify([...next])); } catch { /* nur Bequemlichkeit */ }
+      },
+    };
+  };
+  const ownChats = idSet('eigene-chats.json');
+  const zArchive = idSet('archiv.json');
+
+  // Wie in der Claude-App: angeheftet, eigene Gruppen, und was ausgeblendet ist (archiviert oder automatischer Lauf).
+  // Claude verwalten (src/claude-admin.js): Versionen/Update und Plugins – über die offiziellen Befehle.
+  const admin = createClaudeAdmin({ claude: () => claude.bin, env: () => claude.env });
+  let lastVersions = null;
+  async function checkVersions(force) {
+    if (!claude.bin) return null;
+    try { lastVersions = await admin.versions({ force }); } catch { /* ohne Netz: beim nächsten Mal */ }
+    pushState();
+    return lastVersions;
+  }
+  setInterval(() => { checkVersions(false).catch(() => {}); }, 6 * 60 * 60 * 1000).unref();
+
+  // Ist Claude Code angemeldet? Abgemeldet beantworten weder die Chats der Zentrale noch Automatiken etwas.
+  // Geprüft mit „claude auth status“; abgemeldet → alle 30 s, sonst alle 10 min.
+  let claudeLogin = null;
+  async function checkLogin() {
+    if (!claude.bin) return null;
+    const out = await new Promise((resolve) => execFile(claude.bin, ['auth', 'status'], { env: claude.env, timeout: 20000 }, (err, stdout) => resolve(String(stdout || ''))));
+    let loggedIn = null;
+    try { loggedIn = JSON.parse(out).loggedIn === true; } catch { /* unbekannt – nichts behaupten */ }
+    if (loggedIn !== null && (!claudeLogin || claudeLogin.loggedIn !== loggedIn)) { claudeLogin = { loggedIn, checkedAt: Date.now() }; pushState(); }
+    return claudeLogin;
+  }
+  let loginTimer = null;
+  function scheduleLoginCheck() {
+    clearTimeout(loginTimer);
+    loginTimer = setTimeout(async () => { await checkLogin().catch(() => {}); scheduleLoginCheck(); },
+      claudeLogin && claudeLogin.loggedIn === false ? 30 * 1000 : 10 * 60 * 1000);
+    loginTimer.unref();
+  }
+  claudeReady.then(() => { checkLogin().catch(() => {}).finally(scheduleLoginCheck); });
+  // Anmelden startet Eris selbst: Terminal öffnet sich mit „claude auth login“, der Rest läuft im Browser.
+  ipcMain.handle('claude-login', async () => {
+    if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const script = 'on run argv\n tell application "Terminal"\n activate\n do script (quoted form of item 1 of argv) & " auth login"\n end tell\nend run';
+    await new Promise((resolve) => execFile('/usr/bin/osascript', ['-e', script, claude.bin], { timeout: 15000 }, () => resolve()));
+    scheduleLoginCheck();
+    return { ok: true };
+  });
+  setTimeout(() => { checkVersions(false).catch(() => {}); }, 90 * 1000).unref();
+  ipcMain.handle('claude-versions', (_e, force) => checkVersions(force === true));
+  ipcMain.handle('claude-update', async () => {
+    if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const { response } = await dialog.showMessageBox(win, { type: 'question', buttons: ['Abbrechen', 'Aktualisieren'], defaultId: 1, cancelId: 0,
+      message: 'Claude Code aktualisieren?', detail: 'Lädt die neueste Version (npm install -g @anthropic-ai/claude-code). Laufende Chats arbeiten mit der alten Version weiter, neue Chats nehmen die neue.' });
+    if (response !== 1) return { ok: false, cancelled: true };
+    const r = await admin.updateClaude();
+    if (r.ok) { lastVersions = r.data; pushState(); }
+    return r;
+  });
+  ipcMain.handle('plugins-list', () => (claude.bin ? admin.plugins() : { ok: false, error: 'Claude Code wurde nicht gefunden.' }));
+  ipcMain.handle('plugins-search', (_e, q) => (claude.bin ? admin.search(q) : { ok: true, data: [] }));
+  ipcMain.handle('plugins-action', async (_e, args) => {
+    const op = args && args.op;
+    const id = args && args.id;
+    if (op === 'uninstall' || op === 'install') {
+      const { response } = await dialog.showMessageBox(win, { type: 'question', buttons: ['Abbrechen', op === 'install' ? 'Installieren' : 'Entfernen'], defaultId: 1, cancelId: 0,
+        message: op === 'install' ? `Plugin „${id}“ installieren?` : `Plugin „${id}“ entfernen?`,
+        detail: op === 'install' ? 'Plugins bringen Skills, Befehle oder Konnektoren mit. Installier nur, was du kennst. Gilt ab dem nächsten Chat.' : 'Gilt ab dem nächsten Chat. Du kannst es später wieder installieren.' });
+      if (response !== 1) return { ok: false, cancelled: true };
+    }
+    const r = await admin.action(op, id);
+    // Neue Werkzeuge erst nach Neustart des Claude-Prozesses: beim nächsten Senden.
+    if (r.ok) for (const c of allChats()) if (c.alive) c.needsRestart = true;
+    return r;
+  });
+
+  function claudeGroups() {
+    try { return desktopSidebar().groups.map(({ id, name }) => ({ id, name })); } catch { return []; }
+  }
+
+  function withClaudeOrder(projects) {
+    let side;
+    try { side = desktopSidebar(); } catch { side = { pinned: [], groups: [] }; }
+    const pinned = new Set(side.pinned);
+    const groupOf = new Map();
+    for (const g of side.groups) for (const m of g.members) if (!groupOf.has(m)) groupOf.set(m, g.id);
+    return projects.map((p) => ({ ...p, sessions: p.sessions.map((x) => {
+      // Automatisch: kennt die Claude-App nicht, nicht in der Zentrale gestartet, und nur ein einziger Auftrag (z. B. Bit-Pipeline).
+      const auto = !x.inApp && !x.own && (x.topic === 'auto' || (x.entrypoint === 'sdk-cli' && x.prompts < 2));
+      return { ...x, auto, pinned: !!x.localId && pinned.has(x.localId), group: (x.localId && groupOf.get(x.localId)) || null };
+    }) }));
+  }
+
+  // Abgleich mit der Claude-App: welche Gespräche dort gerade offen sind (src/desktop-live.js).
+  // Die nie gleichzeitig hier beschreiben – sonst spaltet sich der Verlauf auf.
+  const desktopOpen = createDesktopLive();
+  let desktopIds = new Set();
+  async function refreshDesktop({ force = false } = {}) {
+    const ids = await desktopOpen({ force }).catch(() => desktopIds);
+    const changed = ids.size !== desktopIds.size || [...ids].some((id) => !desktopIds.has(id));
+    desktopIds = ids;
+    // Ausgangsstand merken, sobald ein hier offenes Gespräch in der Claude-App aufgeht – jede spätere Änderung kam von dort.
+    for (const c of allChats()) {
+      if (!ids.has(c.sessionId)) { c.desktopMtime = 0; continue; }
+      if (c.desktopMtime) continue;
+      try { c.desktopMtime = fs.statSync(sessionFile(c)).mtimeMs; } catch { /* noch keine Datei */ }
+    }
+    if (changed) { refreshProjects(); pushState(); }
+    return ids;
+  }
+  setInterval(() => { refreshDesktop().catch(() => {}); }, 5000).unref();
+
+  // Hat die Claude-App in ein Gespräch geschrieben, das hier offen ist: Verlauf im Fenster neu laden, und den
+  // Claude-Prozess der Zentrale vor der nächsten Nachricht neu starten – sonst schreibt er mit altem Stand weiter.
+  let desktopSyncTimer = null;
+  function syncFromDesktop() {
+    clearTimeout(desktopSyncTimer);
+    return new Promise((resolve) => { desktopSyncTimer = setTimeout(() => resolve(doSyncFromDesktop()), 700); });
+  }
+  async function doSyncFromDesktop() {
+    const ids = await refreshDesktop();
+    for (const c of allChats()) {
+      if (!ids.has(c.sessionId) || c.status === 'busy') continue;
+      const f = sessionFile(c);
+      let mtime = 0;
+      try { mtime = fs.statSync(f).mtimeMs; } catch { continue; }
+      if (!c.desktopMtime || mtime <= c.desktopMtime) continue;
+      c.desktopMtime = mtime;
+      if (c.alive) c.needsRestart = true;
+      try { c.context = lastContext(f) || c.context; } catch { /* ohne Füllstand */ }
+      if (c === chat) {
+        let history = [];
+        try { history = readMessages(f, 400, { tools: true }); } catch { continue; }
+        send('chat-reload', { gen: c.gen, history });
+      }
+    }
+  }
+  const DESKTOP_BUSY = 'Dieses Gespräch ist gerade in der Claude-App offen. Schreib dort weiter – oder beende es dort (Sitzung stoppen), '
+    + 'dann geht es hier weiter. Sonst schreiben zwei Claude gleichzeitig in denselben Verlauf.';
 
   function refreshProjects() {
     try {
       const raw = withDesktopMeta(listProjects());
       const topicOf = new Map();
       for (const g of groupByTopic(raw, topicStore)) for (const x of g.sessions) topicOf.set(x.id, x);
-      projectsCache = raw.map((p) => ({ ...p, sessions: p.sessions.map(({ snippet, ...x }) => ({
-        ...x, topic: topicOf.get(x.id).topic, topicManual: topicOf.get(x.id).topicManual })) }));
+      projectsCache = withClaudeOrder(raw.map((p) => ({ ...p, sessions: p.sessions.map(({ snippet, ...x }) => ({
+        ...x, topic: topicOf.get(x.id).topic, topicManual: topicOf.get(x.id).topicManual })) })));
     } catch { projectsCache = []; }
     const json = JSON.stringify(projectsCache, (k, v) => (k === 'updatedAt' ? Math.floor(v / 60000) : v));
     if (json !== projectsJson) { projectsJson = json; projectsRev += 1; }
@@ -260,7 +414,7 @@ function setup() {
       context: chat.context ? { used: chat.context, window: chat.contextWindow || knownWindow(), baseline: chat.baseline || null } : null,
       mcp: chat.mcp || lastKnown.mcp,
       model: chat.model || null, effort: chat.effort || null, activeModel: chat.activeModel || null, defaultModel: defaultModel(),
-      plan: chat.plan || null, nextStep: chat.nextStep || null, planMode: !!chat.planMode,
+      plan: chat.plan || null, nextStep: chat.nextStep || null, planMode: !!chat.planMode, desktopOpen: desktopIds.has(chat.sessionId),
       addDirs: (chat.addDirs || []).map((d) => ({ path: d, name: path.basename(d), linked: folderLinks.linked(loadLinks(), chatKey(chat.cwd)).includes(d) })) };
   }
 
@@ -307,6 +461,9 @@ function setup() {
       claude: { found: !!claude.bin, checking: claude.checking, version: claude.version },
       projects: projectsCache,
       topics: TOPICS,
+      claudeGroups: claudeGroups(),
+      claudeVersions: lastVersions,
+      claudeLogin,
       chat: chatInfo(),
       chats: pool.list(chat),
       tasks: scheduler ? scheduler.list() : [],
@@ -497,6 +654,7 @@ function setup() {
     chats: () => allChats(),
     history: (c, n) => { const f = sessionFile(c); return f ? readMessages(f, n) : []; },
     deliver: async (c, text, from, hops) => {
+      if ((await refreshDesktop({ force: true })).has(c.sessionId)) return { ok: false, error: DESKTOP_BUSY };
       if (!c.alive && !pool.wake(chat, c)) return { ok: false, error: pool.fullMessage() };
       c.relayHops = hops;
       c.lastRelay = { from: chatTitle(from), at: Date.now() };
@@ -636,6 +794,7 @@ function setup() {
     // Verknüpfte Projekte kommen immer mit, dazu die Ordner, die der Chat schon hatte.
     const dirs = folderLinks.mergeDirs(chatKey(cwd), folderLinks.linked(loadLinks(), chatKey(cwd)), addDirs)
       .filter((d) => folderLinks.cleanDir(d));
+    if (!sessionId) setImmediate(() => ownChats.set([c.sessionId], true)); // in der Zentrale gestartet
     c = new ClaudeChat({ bin: claude.bin, env: claude.env, cwd, resume: sessionId, title, extraArgs: args, approvalInfo, allowAll, askQuestions: true, addDirs: dirs,
       model: MODELS[model] ? model : null, effort: EFFORTS.includes(effort) ? effort : null });
     c.gen = 0;
@@ -647,7 +806,7 @@ function setup() {
       if (ev.kind === 'init' && ev.mcp) lastKnown.mcp = ev.mcp;
       send('chat-event', { ...ev, gen: c.gen });
       // Abgemeldet? (Fehler mit Login/OAuth) – fällt im Kontrollraum als blinder Fleck auf.
-      if (ev.kind === 'error' && /log ?in|oauth|authent|401|anmeld/i.test(`${ev.text || ''} ${ev.details || ''}`)) claudeAuthProblemAt = Date.now();
+      if (ev.kind === 'error' && /log ?in|oauth|authent|401|anmeld/i.test(`${ev.text || ''} ${ev.details || ''}`)) { claudeAuthProblemAt = Date.now(); checkLogin().catch(() => {}); }
       else if (ev.kind === 'text' || ev.kind === 'result') claudeAuthProblemAt = 0;
     });
     c.on('status', () => {
@@ -708,6 +867,8 @@ function setup() {
       }
     }
     chatsRestored = !!claude.bin; // ohne Claude die gemerkte Liste nicht überschreiben
+    // Was hier offen war, sind Zentrale-Chats – auch die aus der Zeit vor dieser Liste.
+    if (Array.isArray(list)) ownChats.set(list.filter((e) => e && typeof e.sessionId === 'string').map((e) => e.sessionId), true);
     pushState();
   }
 
@@ -851,6 +1012,8 @@ function setup() {
     const gen = chatGen;
     if (!c) return { ok: false, error: 'Der Chat wurde geschlossen, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     if (!c.title) { c.title = shortTitle(t); pushState(); }
+    // In der Claude-App offen: hier nicht auch noch schreiben (frisch nachsehen, nicht nur der Zwischenstand).
+    if ((await refreshDesktop({ force: true })).has(c.sessionId)) return { ok: false, error: DESKTOP_BUSY };
     c.relayHops = 0; // Eris schreibt selbst – die Kette der Weiterleitungen beginnt neu
     // Neue Nachricht von Eris: die alte Box „Nächster Schritt“ ist beantwortet, die alte Liste erledigt.
     if (c.nextStep || c.plan) { c.nextStep = null; c.plan = null; pushState(); }
@@ -878,6 +1041,16 @@ function setup() {
     const c = typeof sessionId === 'string' ? pool.get(sessionId) : null;
     if (!c) return false;
     pool.close(c);
+    pushState();
+    return true;
+  });
+
+  // Archiv der Zentrale (zusätzlich zum Archiv der Claude-App): ausblenden bzw. zurückholen.
+  ipcMain.handle('session-archive', (_e, args) => {
+    const ids = args && Array.isArray(args.ids) ? args.ids.filter((x) => typeof x === 'string').slice(0, 500) : [];
+    if (!ids.length) return false;
+    zArchive.set(ids, args.on !== false);
+    refreshProjects();
     pushState();
     return true;
   });
@@ -2362,7 +2535,7 @@ function setup() {
     scheduler.on('change', pushState);
 
     sessionWatcher = watchSessions(DEFAULT_ROOT);
-    sessionWatcher.on('change', () => { refreshProjects(); pushState(); });
+    sessionWatcher.on('change', () => { refreshProjects(); pushState(); syncFromDesktop().catch(() => {}); });
 
     // Claude suchen, ohne das Fenster zu blockieren; dann sofort im letzten Projekt starten.
     claude = { ...(await resolveClaude()), checking: false };

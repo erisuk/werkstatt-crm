@@ -3,7 +3,7 @@
 
 const sw = { open: false, query: '', index: 0, items: [], servers: null, sites: null };
 const SW_PAGES = [['overview', 'Übersicht'], ['chat', 'Chat'], ['brain', 'Gehirn'], ['web', 'Web'], ['websites', 'Websites'], ['planner', 'Planer'],
-  ['bitvideos', 'Bit-Videos'], ['automations', 'Automatisierungen'], ['local', 'Localhost'], ['projects', 'Projekte & Server'], ['mac', 'Mein Mac'],
+  ['automations', 'Automatisierungen'], ['local', 'Localhost'], ['projects', 'Projekte & Server'], ['mac', 'Mein Mac'],
   ['library', 'Skills & Agenten'], ['tasks', 'Tägliche Aufgaben'], ['finance', 'Privat'], ['lernen', 'Lernen & Training'], ['kontrolle', 'Kontrollraum'], ['connections', 'Verbindungen']];
 
 // Einfache Treffer-Bewertung: Wortanfang schlägt Mitte, alle Suchwörter müssen vorkommen.

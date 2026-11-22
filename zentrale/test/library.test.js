@@ -168,11 +168,12 @@ test('Apps werden aus allen Programme-Ordnern gesammelt, doppelte nur einmal', (
 
 test('Claude-App-Daten: Titel, Archiv und geplante Läufe je Gespräch', () => {
   const root = tmp('desktop-');
-  write(path.join(root, 'konto', 'x', 'local_1.json'), JSON.stringify({ cliSessionId: 's1', title: 'Shop-Projekt', isArchived: true }));
+  write(path.join(root, 'konto', 'x', 'local_1.json'), JSON.stringify({ cliSessionId: 's1', sessionId: 'local_1', title: 'Shop-Projekt', isArchived: true }));
   write(path.join(root, 'konto', 'local_2.json'), JSON.stringify({ cliSessionId: 's2', title: 'Morgen', scheduledTaskId: 'morgen' }));
   write(path.join(root, 'konto', 'local_3.json'), 'kaputt');
   const m = desktopMeta(root);
-  assert.deepStrictEqual(m.get('s1'), { id: 's1', title: 'Shop-Projekt', archived: true, scheduled: false });
+  assert.deepStrictEqual(m.get('s1'), { id: 's1', localId: 'local_1', title: 'Shop-Projekt', archived: true, scheduled: false });
+  assert.strictEqual(m.get('s2').localId, null);
   assert.strictEqual(m.get('s2').scheduled, true);
   assert.strictEqual(m.size, 2);
 });
