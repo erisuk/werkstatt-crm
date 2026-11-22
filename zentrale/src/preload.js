@@ -208,4 +208,5 @@ contextBridge.exposeInMainWorld('zentrale', {
   onWebActivity: (fn) => ipcRenderer.on('web-activity', (_e, a) => fn(a)),
   onState: (fn) => ipcRenderer.on('state', (_e, s) => fn(s)),
   onChatEvent: (fn) => ipcRenderer.on('chat-event', (_e, ev) => fn(ev)),
+  onChatReload: (fn) => ipcRenderer.on('chat-reload', (_e, ev) => fn(ev)),
 });

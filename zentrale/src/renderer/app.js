@@ -143,6 +143,7 @@ function chatStatus() {
   if (!s.claude.found) return { dot: 'red', text: 'Claude Code nicht gefunden' };
   if ((s.approvals || []).length) return { dot: 'blue pulse', text: 'Claude wartet auf dich', pill: 'blue', short: 'wartet auf dich' };
   if (!s.chat) return { dot: '', text: 'Kein Chat offen' };
+  if (s.chat.desktopOpen && s.chat.status !== 'busy') return { dot: 'blue', text: 'Gerade in der Claude-App offen – hier nur lesen', pill: 'blue', short: 'in Claude-App offen' };
   if (s.chat.queued) return { dot: 'amber pulse', text: 'Nachricht wartet – 5 Chats arbeiten schon', pill: 'amber', short: 'wartet auf Platz' };
   if (s.chat.status === 'busy') return { dot: 'amber pulse', text: 'Claude arbeitet …', pill: 'amber', short: 'arbeitet' };
   if (s.chat.status === 'error') return { dot: 'red', text: 'Claude hatte einen Fehler', pill: 'red', short: 'Fehler' };
@@ -442,7 +443,7 @@ function sessionRow(x, s, showFolder) {
   const isChat = !!s.chat && s.chat.sessionId === x.id;
   const busy = isChat && s.chat.status === 'busy';
   const sub = isChat ? (busy ? 'Claude arbeitet gerade daran' : 'Im Chat geöffnet')
-    : [x.archived ? 'archiviert' : null, showFolder ? folderName(x.cwd) : null].filter(Boolean).join(' · ') || null;
+    : [x.desktopOpen ? 'gerade in der Claude-App offen' : null, x.archived ? 'archiviert' : null, showFolder ? folderName(x.cwd) : null].filter(Boolean).join(' · ') || null;
   return h('div', { class: 'row session-row' },
     h('span', { class: `dot ${busy ? 'amber pulse' : isChat ? 'green' : ''}` }),
     h('div', { class: 'grow' },
@@ -624,6 +625,8 @@ function renderChat() {
     h('div', { class: 'chat-bottom' },
       h('div', { id: 'chat-approvals', class: 'chat-approvals' }),
       h('div', { id: 'chat-screen-lock', class: 'screen-lock', role: 'status', hidden: true }),
+      h('div', { id: 'chat-desktop-note', class: 'screen-lock', role: 'status', hidden: true,
+        text: 'Dieses Gespräch ist gerade in der Claude-App offen. Was du dort schreibst, erscheint hier live. Weiterschreiben geht hier, sobald du es in der Claude-App beendest (Sitzung stoppen).' }),
       form)));
   ui.sig.chatHead = null;
   ui.shown = 0;
@@ -631,6 +634,7 @@ function renderChat() {
   renderMessages();
   renderChatApprovals();
   renderScreenLock();
+  $('#chat-desktop-note').hidden = !(ui.state.chat && ui.state.chat.desktopOpen);
   ui.sig.modelPicker = null;
   renderModelPicker();
   // Aus „Skills & Agenten“: der Skill-Name steht schon im Eingabefeld.
@@ -1070,6 +1074,13 @@ function endStream(final) {
   return true;
 }
 
+// Live-Abgleich mit der Claude-App: dort weitergeschrieben → Verlauf hier neu (gleiche Form wie beim Öffnen).
+api.onChatReload((ev) => {
+  if (!ev || ev.gen !== ui.chatGen || ui.stream) return;
+  resetChat(ev.gen, (ev.history || []).map((m) => ({ kind: m.role, id: m.id, text: m.text, tool: m.tool, detail: m.detail, path: m.path, tab: m.tab, error: m.error, at: m.at })));
+  if (ui.view === 'chat') renderMessages(); else notifyChatMirror();
+});
+
 api.onChatEvent((ev) => {
   if (ev.gen !== ui.chatGen) return; // Ereignis eines früheren Chats
   if (ev.kind === 'delta') { streamDelta(ev); return; }
@@ -1244,6 +1255,8 @@ function applyState(next) {
   renderTheme();
   renderAside();
   renderScreenLock();
+  const note = $('#chat-desktop-note');
+  if (note) note.hidden = !(s.chat && s.chat.desktopOpen);
   if (firstLoad) { renderMain(); return; }
   if (ui.view === 'overview') renderOverview();
   else if (ui.view === 'chat') {

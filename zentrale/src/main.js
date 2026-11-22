@@ -59,6 +59,7 @@ const { createChatLink } = require('./chat-link');
 const folderLinks = require('./folder-links');
 const chatPlan = require('./chat-plan');
 const chatDiff = require('./chat-diff');
+const { createDesktopLive } = require('./desktop-live');
 const konten = require('./konten');
 const { loginState, cookieDomain } = require('./login-check');
 const kommentare = require('./kommentare');
@@ -211,9 +212,56 @@ function setup() {
       if (!m) return x;
       // Selbst umbenannt (Zentrale oder /rename) geht vor dem Titel der Claude-App.
       const title = !x.renamed && m.title && !generic.test(m.title) ? m.title : x.title;
-      return { ...x, title, archived: m.archived, scheduled: m.scheduled };
+      return { ...x, title, archived: m.archived, scheduled: m.scheduled, desktopOpen: desktopIds.has(x.id) };
     }) }));
   }
+
+  // Abgleich mit der Claude-App: welche Gespräche dort gerade offen sind (src/desktop-live.js).
+  // Die nie gleichzeitig hier beschreiben – sonst spaltet sich der Verlauf auf.
+  const desktopOpen = createDesktopLive();
+  let desktopIds = new Set();
+  async function refreshDesktop({ force = false } = {}) {
+    const ids = await desktopOpen({ force }).catch(() => desktopIds);
+    const changed = ids.size !== desktopIds.size || [...ids].some((id) => !desktopIds.has(id));
+    desktopIds = ids;
+    // Ausgangsstand merken, sobald ein hier offenes Gespräch in der Claude-App aufgeht – jede spätere Änderung kam von dort.
+    for (const c of allChats()) {
+      if (!ids.has(c.sessionId)) { c.desktopMtime = 0; continue; }
+      if (c.desktopMtime) continue;
+      try { c.desktopMtime = fs.statSync(sessionFile(c)).mtimeMs; } catch { /* noch keine Datei */ }
+    }
+    if (changed) { refreshProjects(); pushState(); }
+    return ids;
+  }
+  setInterval(() => { refreshDesktop().catch(() => {}); }, 5000).unref();
+
+  // Hat die Claude-App in ein Gespräch geschrieben, das hier offen ist: Verlauf im Fenster neu laden, und den
+  // Claude-Prozess der Zentrale vor der nächsten Nachricht neu starten – sonst schreibt er mit altem Stand weiter.
+  let desktopSyncTimer = null;
+  function syncFromDesktop() {
+    clearTimeout(desktopSyncTimer);
+    return new Promise((resolve) => { desktopSyncTimer = setTimeout(() => resolve(doSyncFromDesktop()), 700); });
+  }
+  async function doSyncFromDesktop() {
+    const ids = await refreshDesktop();
+    for (const c of allChats()) {
+      if (!ids.has(c.sessionId) || c.status === 'busy') continue;
+      const f = sessionFile(c);
+      let mtime = 0;
+      try { mtime = fs.statSync(f).mtimeMs; } catch { continue; }
+      if (!c.desktopMtime || mtime <= c.desktopMtime) continue;
+      c.desktopMtime = mtime;
+      if (c.alive) c.needsRestart = true;
+      try { c.context = lastContext(f) || c.context; } catch { /* ohne Füllstand */ }
+      if (c === chat) {
+        let history = [];
+        try { history = readMessages(f, 400, { tools: true }); } catch { continue; }
+        send('chat-reload', { gen: c.gen, history });
+      }
+    }
+  }
+  const DESKTOP_BUSY = 'Dieses Gespräch ist gerade in der Claude-App offen. Schreib dort weiter – oder beende es dort (Sitzung stoppen), '
+    + 'dann geht es hier weiter. Sonst schreiben zwei Claude gleichzeitig in denselben Verlauf.';
 
   function refreshProjects() {
     try {
@@ -260,7 +308,7 @@ function setup() {
       context: chat.context ? { used: chat.context, window: chat.contextWindow || knownWindow(), baseline: chat.baseline || null } : null,
       mcp: chat.mcp || lastKnown.mcp,
       model: chat.model || null, effort: chat.effort || null, activeModel: chat.activeModel || null, defaultModel: defaultModel(),
-      plan: chat.plan || null, nextStep: chat.nextStep || null, planMode: !!chat.planMode,
+      plan: chat.plan || null, nextStep: chat.nextStep || null, planMode: !!chat.planMode, desktopOpen: desktopIds.has(chat.sessionId),
       addDirs: (chat.addDirs || []).map((d) => ({ path: d, name: path.basename(d), linked: folderLinks.linked(loadLinks(), chatKey(chat.cwd)).includes(d) })) };
   }
 
@@ -497,6 +545,7 @@ function setup() {
     chats: () => allChats(),
     history: (c, n) => { const f = sessionFile(c); return f ? readMessages(f, n) : []; },
     deliver: async (c, text, from, hops) => {
+      if ((await refreshDesktop({ force: true })).has(c.sessionId)) return { ok: false, error: DESKTOP_BUSY };
       if (!c.alive && !pool.wake(chat, c)) return { ok: false, error: pool.fullMessage() };
       c.relayHops = hops;
       c.lastRelay = { from: chatTitle(from), at: Date.now() };
@@ -851,6 +900,8 @@ function setup() {
     const gen = chatGen;
     if (!c) return { ok: false, error: 'Der Chat wurde geschlossen, bevor die Nachricht ankam. Bitte noch einmal senden.' };
     if (!c.title) { c.title = shortTitle(t); pushState(); }
+    // In der Claude-App offen: hier nicht auch noch schreiben (frisch nachsehen, nicht nur der Zwischenstand).
+    if ((await refreshDesktop({ force: true })).has(c.sessionId)) return { ok: false, error: DESKTOP_BUSY };
     c.relayHops = 0; // Eris schreibt selbst – die Kette der Weiterleitungen beginnt neu
     // Neue Nachricht von Eris: die alte Box „Nächster Schritt“ ist beantwortet, die alte Liste erledigt.
     if (c.nextStep || c.plan) { c.nextStep = null; c.plan = null; pushState(); }
@@ -2362,7 +2413,7 @@ function setup() {
     scheduler.on('change', pushState);
 
     sessionWatcher = watchSessions(DEFAULT_ROOT);
-    sessionWatcher.on('change', () => { refreshProjects(); pushState(); });
+    sessionWatcher.on('change', () => { refreshProjects(); pushState(); syncFromDesktop().catch(() => {}); });
 
     // Claude suchen, ohne das Fenster zu blockieren; dann sofort im letzten Projekt starten.
     claude = { ...(await resolveClaude()), checking: false };
