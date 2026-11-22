@@ -1024,3 +1024,10 @@ h2 { font-size: 16px; font-weight: 600; }
 
 .link.subtle { color: var(--text-2); font-size: 13px; }
 .link.subtle:hover { color: var(--accent-text); }
+
+/* Claude verwalten: Update-Punkt in der Navigation, Plugin-Suche */
+.nav-item.has-update { position: relative; }
+.nav-item.has-update::after { content: ''; position: absolute; right: 12px; top: 50%; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%; background: var(--claude, var(--accent)); box-shadow: 0 0 0 3px var(--panel); }
+.plugin-find { margin: 12px 0 8px; }
+.plugin-search { width: 100%; max-width: none; height: 36px; }
+.wrap-sub { white-space: normal !important; }

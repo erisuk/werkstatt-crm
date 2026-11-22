@@ -169,7 +169,10 @@ function renderStatus() {
 }
 
 function renderNav() {
+  const update = !!(ui.state && ui.state.claudeVersions && ui.state.claudeVersions.update);
   document.querySelectorAll('.nav-item').forEach((b) => {
+    // Neue Claude-Version: Punkt an „Verbindungen“ – wie der Update-Hinweis der Claude-App.
+    if (b.dataset.view === 'connections') { b.classList.toggle('has-update', update); b.title = update ? `Claude-Update verfügbar: ${ui.state.claudeVersions.latest}` : ''; }
     const on = b.dataset.view === ui.view;
     b.classList.toggle('active', on);
     if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
@@ -1271,6 +1274,7 @@ function applyState(next) {
   }
   renderStatus();
   renderTheme();
+  renderNav();
   renderAside();
   renderScreenLock();
   const note = $('#chat-desktop-note');

@@ -60,6 +60,7 @@ const folderLinks = require('./folder-links');
 const chatPlan = require('./chat-plan');
 const chatDiff = require('./chat-diff');
 const { createDesktopLive } = require('./desktop-live');
+const { createClaudeAdmin } = require('./claude-admin');
 const konten = require('./konten');
 const { loginState, cookieDomain } = require('./login-check');
 const kommentare = require('./kommentare');
@@ -73,6 +74,7 @@ const KOMMENTARE_PROMPT = 'Hol dir mit dem Werkzeug kommentare_auftrag den aktue
 // Links, die die Oberfläche öffnen darf.
 const EXTERNAL_LINKS = new Set([
   'https://claude.ai/settings/connectors',
+  'https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md',
   'https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
@@ -237,6 +239,44 @@ function setup() {
   const zArchive = idSet('archiv.json');
 
   // Wie in der Claude-App: angeheftet, eigene Gruppen, und was ausgeblendet ist (archiviert oder automatischer Lauf).
+  // Claude verwalten (src/claude-admin.js): Versionen/Update und Plugins – über die offiziellen Befehle.
+  const admin = createClaudeAdmin({ claude: () => claude.bin, env: () => claude.env });
+  let lastVersions = null;
+  async function checkVersions(force) {
+    if (!claude.bin) return null;
+    try { lastVersions = await admin.versions({ force }); } catch { /* ohne Netz: beim nächsten Mal */ }
+    pushState();
+    return lastVersions;
+  }
+  setInterval(() => { checkVersions(false).catch(() => {}); }, 6 * 60 * 60 * 1000).unref();
+  setTimeout(() => { checkVersions(false).catch(() => {}); }, 90 * 1000).unref();
+  ipcMain.handle('claude-versions', (_e, force) => checkVersions(force === true));
+  ipcMain.handle('claude-update', async () => {
+    if (!claude.bin) return { ok: false, error: 'Claude Code wurde nicht gefunden.' };
+    const { response } = await dialog.showMessageBox(win, { type: 'question', buttons: ['Abbrechen', 'Aktualisieren'], defaultId: 1, cancelId: 0,
+      message: 'Claude Code aktualisieren?', detail: 'Lädt die neueste Version (npm install -g @anthropic-ai/claude-code). Laufende Chats arbeiten mit der alten Version weiter, neue Chats nehmen die neue.' });
+    if (response !== 1) return { ok: false, cancelled: true };
+    const r = await admin.updateClaude();
+    if (r.ok) { lastVersions = r.data; pushState(); }
+    return r;
+  });
+  ipcMain.handle('plugins-list', () => (claude.bin ? admin.plugins() : { ok: false, error: 'Claude Code wurde nicht gefunden.' }));
+  ipcMain.handle('plugins-search', (_e, q) => (claude.bin ? admin.search(q) : { ok: true, data: [] }));
+  ipcMain.handle('plugins-action', async (_e, args) => {
+    const op = args && args.op;
+    const id = args && args.id;
+    if (op === 'uninstall' || op === 'install') {
+      const { response } = await dialog.showMessageBox(win, { type: 'question', buttons: ['Abbrechen', op === 'install' ? 'Installieren' : 'Entfernen'], defaultId: 1, cancelId: 0,
+        message: op === 'install' ? `Plugin „${id}“ installieren?` : `Plugin „${id}“ entfernen?`,
+        detail: op === 'install' ? 'Plugins bringen Skills, Befehle oder Konnektoren mit. Installier nur, was du kennst. Gilt ab dem nächsten Chat.' : 'Gilt ab dem nächsten Chat. Du kannst es später wieder installieren.' });
+      if (response !== 1) return { ok: false, cancelled: true };
+    }
+    const r = await admin.action(op, id);
+    // Neue Werkzeuge erst nach Neustart des Claude-Prozesses: beim nächsten Senden.
+    if (r.ok) for (const c of allChats()) if (c.alive) c.needsRestart = true;
+    return r;
+  });
+
   function claudeGroups() {
     try { return desktopSidebar().groups.map(({ id, name }) => ({ id, name })); } catch { return []; }
   }
@@ -394,6 +434,7 @@ function setup() {
       projects: projectsCache,
       topics: TOPICS,
       claudeGroups: claudeGroups(),
+      claudeVersions: lastVersions,
       chat: chatInfo(),
       chats: pool.list(chat),
       tasks: scheduler ? scheduler.list() : [],
