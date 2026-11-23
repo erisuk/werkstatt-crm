@@ -38,6 +38,9 @@ function parseNumstat(text) {
   return map;
 }
 
+// Zeilen einer Datei wie Git: Der Zeilenumbruch am Ende ist keine eigene Zeile, leere Datei = 0 Zeilen.
+const lines = (t) => (t === '' ? [] : t.replace(/\n$/, '').split('\n'));
+
 // Datei gehört wirklich zum Repository (kein ../, keine Verknüpfung nach draußen).
 function inside(root, rel) {
   const p = path.resolve(root, rel);
@@ -59,7 +62,7 @@ async function changes(cwd, git = run) {
     if (f.status === 'neu') {
       const full = inside(root, f.path);
       let plus = null;
-      try { const t = fs.readFileSync(full, 'utf8'); plus = t.includes('\0') ? null : t.split('\n').length; } catch { /* nicht lesbar */ }
+      try { const t = fs.readFileSync(full, 'utf8'); plus = t.includes('\0') ? null : lines(t).length; } catch { /* nicht lesbar */ }
       return { ...f, plus, minus: 0 };
     }
     return { ...f, plus: null, minus: null };
@@ -82,7 +85,7 @@ async function fileDiff(cwd, rel, git = run) {
       try {
         const body = fs.readFileSync(full, 'utf8');
         if (body.includes('\0')) return { ok: true, data: { path: relClean, diff: '', binary: true } };
-        text = `+++ ${relClean} (neu)\n${body.split('\n').map((l) => `+${l}`).join('\n')}`;
+        text = `+++ ${relClean} (neu)\n${lines(body).map((l) => `+${l}`).join('\n')}`;
       } catch { return { ok: false, error: 'Die Datei gibt es nicht mehr.' }; }
     }
   }

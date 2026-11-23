@@ -20,6 +20,8 @@ test.before(() => {
   fs.rmSync(path.join(repo, 'weg.txt'));
   fs.mkdirSync(path.join(repo, 'neu'));
   fs.writeFileSync(path.join(repo, 'neu', 'b.txt'), 'hallo\nwelt');
+  fs.writeFileSync(path.join(repo, 'neu', 'c.txt'), 'x\ny\n');
+  fs.writeFileSync(path.join(repo, 'neu', 'leer.txt'), '');
 });
 
 test('Änderungen: geändert, gelöscht und neu mit Zahlen', async () => {
@@ -29,6 +31,8 @@ test('Änderungen: geändert, gelöscht und neu mit Zahlen', async () => {
   assert.deepStrictEqual([by['a.txt'].status, by['a.txt'].plus, by['a.txt'].minus], ['geändert', 2, 1]);
   assert.strictEqual(by['weg.txt'].status, 'gelöscht');
   assert.deepStrictEqual([by['neu/b.txt'].status, by['neu/b.txt'].plus], ['neu', 2]);
+  assert.strictEqual(by['neu/c.txt'].plus, 2, 'Zeilenumbruch am Ende zählt nicht als eigene Zeile');
+  assert.strictEqual(by['neu/leer.txt'].plus, 0);
 });
 
 test('Änderungen: eingebettete Git-Ordner stehen als Ordner am Ende', async () => {
@@ -48,6 +52,8 @@ test('Diff: geänderte und neue Datei, nichts außerhalb des Projekts', async ()
   assert.match(a.data.diff, /^\+ZWEI$/m);
   const b = await fileDiff(repo, 'neu/b.txt');
   assert.match(b.data.diff, /^\+hallo$/m);
+  const c = await fileDiff(repo, 'neu/c.txt');
+  assert.deepStrictEqual(c.data.diff.split('\n').slice(1), ['+x', '+y'], 'keine leere +-Zeile am Ende');
   assert.strictEqual((await fileDiff(repo, '../../etc/hosts')).ok, false);
   assert.strictEqual((await fileDiff(os.tmpdir(), 'x')).ok, false, 'kein Git-Projekt');
 });
